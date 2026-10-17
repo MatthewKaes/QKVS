@@ -2,8 +2,8 @@
 
 > **Research reset:** the v1-v5 exact-pointer progression is frozen. Current work first tests
 > whether a selected historical block has measurable downstream utility for a frozen pretrained
-> model. See [the retrieval-utility decision](docs/retrieval_utility_decision.md). No new router is
-> justified unless the Stage A rolling-versus-oracle gate passes.
+> model. See [the retrieval-utility decision](docs/retrieval_utility_decision.md). Stage A V3 passes;
+> Stage B remains subject to arbitration, and no new router has been implemented.
 
 This repository is an independent research prototype for a decoder-only transformer with an
 independent `S` projection at every layer. `S` predicts normalized addresses of old KV-cache
@@ -125,28 +125,12 @@ On the affected Linux host, run CUDA commands from the user's terminal rather th
 Codex tool executor. Ordinary CPU tests and diagnostics remain safe to run through Codex.
 
 The checkpointed Stage A utility gate is separate from the legacy synthetic experiments. V1 is
-invalidated and V2 is nondecisive. Before V3, run its actual-checkpoint BF16 CUDA mask smoke:
-
-```bash
-HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
-  .venv/bin/python -m qkvs.checkpoint_mask_audit \
-  --config configs/retrieval_utility_stage_a_v3.json \
-  --device cuda \
-  --output artifacts/results/retrieval_utility_cuda_mask_smoke.json
-```
-
-Only after that reports `"passed": true`, run the first V3 example:
-
-```bash
-HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
-  .venv/bin/python -m qkvs.utility_gate \
-  --config configs/retrieval_utility_stage_a_v3.json \
-  --device cuda \
-  --max-examples-this-run 1
-```
-
-Use one example as a memory/time smoke test, then run checkpointed slices. It evaluates only a
-frozen 0.5B model; it performs no optimization or backward pass.
+invalidated, V2 is nondecisive, and V3 completed from frozen source revision `b72cefc`. Its BF16
+CUDA mask smoke and all four primary sparse-utility checks passed. The
+[raw V3 result](artifacts/results/retrieval_utility_stage_a_v3.json),
+[CUDA smoke](artifacts/results/retrieval_utility_cuda_mask_smoke.json), and
+[decision document](docs/retrieval_utility_decision.md#v3-result-and-decision) preserve the complete
+evidence.
 
 The first five-example Stage A pilot is retained but invalidated: its full-attention condition could
 see the fixed task prompt while its sparse conditions could not. The V2 configuration makes that
@@ -158,6 +142,7 @@ baselines from the same candidate set, places all candidate evidence beyond the 
 receptive field, verifies masks on the actual checkpoint, and rejects resumes from a different
 source revision.
 
-Full attention remains a recorded diagnostic in V3, not a pass condition. The primary gate requires
-the annotated block to reach at least 50% accuracy and beat rolling, fair random, and
-candidate-recency under the preregistered paired loss criteria.
+Full attention remains a recorded diagnostic in V3, not a pass condition. The annotated block
+reached 91.7% accuracy and beat rolling, fair random, and candidate-recency under every
+preregistered paired loss criterion. This establishes useful selected-history headroom, not learned
+or deployment-compatible routing.

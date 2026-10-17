@@ -8,9 +8,9 @@ objective for learned sparse attention. No v6 router is planned.
 
 The only active investigation is the Stage A gate below. It asks whether one selected old block can
 improve a frozen pretrained model's prediction at all. Training `S` is not justified until that
-opportunity is demonstrated. V1 is invalidated, V2 is complete but nondecisive, and V3 has
-conditional approval with its final gate amendment frozen before execution. Every protocol and raw
-result remains separate.
+opportunity is demonstrated. V1 is invalidated, V2 is complete but nondecisive, and V3 completed
+after its conditionally approved final gate amendment was frozen. V3 passes Stage A. Every protocol
+and raw result remains separate.
 
 ## What the previous experiments established
 
@@ -162,7 +162,7 @@ Stage B.
 
 V3 changes only data geometry, factor randomization, baseline sampling, mask validation, and resume
 integrity. It does not implement `S`, change an `S` loss, or add a routing architecture. Full
-execution is blocked pending review of this amendment.
+execution followed conditional approval and the final gate amendment recorded below.
 
 ### Hypothesis
 
@@ -257,7 +257,55 @@ configuration, `pyproject.toml`, and `uv.lock`. Initial execution requires those
 committed and clean. Every resume recomputes and exactly compares the revision, hashes,
 configuration, dataset checksum, and device before loading additional measurements.
 
-The amended configuration is `configs/retrieval_utility_stage_a_v3.json`. Its data preparation has
-been executed, but no V3 model measurement has run. The final gate amendment is frozen before the
-CUDA smoke and full evaluation. Further QKVS investment remains unjustified until the smoke and the
-primary sparse-utility gate pass.
+The amended configuration is `configs/retrieval_utility_stage_a_v3.json`. The final gate amendment
+was frozen in revision `b72cefc9c7208e3fad00448e4938eaa4ffb802d2` before the CUDA smoke and full
+evaluation.
+
+## V3 result and decision
+
+The BF16 CUDA smoke passed before the dataset evaluation. Built-in causal attention and the explicit
+dense mask produced identical hidden states, logits, and top-1 token on the pinned checkpoint. The
+raw smoke is
+[retrieval_utility_cuda_mask_smoke.json](../artifacts/results/retrieval_utility_cuda_mask_smoke.json).
+
+All 24 V3 examples then completed from the exact preregistered source revision. Sequence lengths
+were 7,251-7,274, minimum support distance was 6,197 tokens, and peak CUDA allocation was 1.379 GB.
+The raw result and all per-block interventions are in
+[retrieval_utility_stage_a_v3.json](../artifacts/results/retrieval_utility_stage_a_v3.json).
+
+| Condition | Accuracy | Mean loss | Mean utility vs rolling |
+|---|---:|---:|---:|
+| Full | 79.2% | 0.511 | 0.177 |
+| Rolling | 83.3% | 0.688 | 0.000 |
+| Fair random | 83.3% | 0.525 | 0.163 |
+| Candidate-recency | 83.3% | 0.675 | 0.0136 |
+| Annotated block | 91.7% | 0.305 | 0.383 |
+| Utility oracle | 91.7% | 0.245 | 0.443 |
+
+The four primary checks all passed:
+
+| Primary check | Observation | Required |
+|---|---:|---:|
+| Annotated reader accuracy | 91.7% | at least 50% |
+| Annotated minus rolling utility | 0.383 nat, 95% interval [0.137, 0.725] | lower bound at least 0.05 |
+| Annotated minus fair-random utility | 0.219 nat, 95% interval [0.080, 0.409] | lower bound above zero |
+| Annotated minus candidate-recency utility | 0.369 nat, 95% interval [0.131, 0.676] | lower bound above zero |
+
+Full attention remained diagnostic. Its improvement over rolling was 0.177 nat with interval
+[-0.182, 0.611], so the previous full-superiority check would not pass. Descriptively, the selected
+annotated block was both more accurate and lower-loss than full attention; this is consistent with
+selective retrieval suppressing interference, but the annotated-versus-full contrast was not a
+predeclared primary test.
+
+The result is not carried by only one example. Annotated retrieval lowered loss on 23/24 examples.
+Against fair random it won 20, tied two, and lost two; against candidate-recency it won 20, tied
+three, and lost one. It corrected two rolling-answer errors and introduced none. The label-dependent
+utility oracle chose the annotated support block on 21/24 examples. Two examples still defeated the
+reader even with the annotated block; they remain in the raw result.
+
+Stage A therefore passes: a correctly selected, bounded historical block can improve a frozen
+pretrained reader when the evidence is beyond all rolling relay paths, and it beats fixed sparse
+baselines at the same budget. This justifies arbitration of Stage B. It does **not** show that `S`
+can infer the block without scanning, that the current hidden state contains the required location
+information, or that independently conditioned retrieval beats fixed sparse attention. No `S`
+implementation or training change follows automatically from this result.
