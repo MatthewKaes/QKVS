@@ -42,6 +42,31 @@ trained. `S` executes in FP32 even when Q/K/V use BF16 autocast so scalar precis
 the immediate address bottleneck. This is not claimed as semantic retrieval: it isolates whether
 direct address prediction and layer-conditioned pointer following are learnable.
 
+The current route target covers only retrieval slot zero. With multiple `S` outputs, hard indexing
+also prevents answer gradients from reaching the other slots, so those outputs are unsupervised.
+Controlled memory experiments therefore use `R = W = 16`, giving `S` exactly one output. Returning
+to multiple windows requires a set-valued or per-slot objective that gives every output a causal
+target.
+
+Teacher and oracle controls can mask historical windows independently of their decoded addresses.
+The strict oracle sets slot zero to the correct block and disables every other historical slot for
+the final query; the rolling window is unchanged. This separates access to the intended cached
+entry from interference by native selections.
+
+## Memory write/read diagnostics
+
+The controlled memory tasks place a source outside the marker's retrieved block but inside its
+rolling window. The marker must therefore absorb the source through ordinary local attention, and
+a distant final query must retrieve the marker through QKVS. An auxiliary marker-token loss is a
+training signal, not by itself proof that the marker's cached representation is readable: K/V at
+layer `k` are formed from the state entering that layer, before that layer's attention and MLP.
+
+The cache-path probe consequently performs separate forwards in which only one layer may read the
+oracle marker window. It also recomputes attention weights from the actual per-layer Q/K inputs and
+selected cache indices for source-to-marker and marker-to-query edges. Success with one enabled
+layer demonstrates that information was present in that layer's immutable marker K/V, rather than
+only in the marker's final classifier state.
+
 ## Initial decisions
 
 - Addresses are absolute fractions of the eligible historical-start range.

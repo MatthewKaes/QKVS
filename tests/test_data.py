@@ -143,6 +143,26 @@ def test_memory_anchor_has_no_pointer_and_source_is_in_configured_window() -> No
         assert batch.answers[item] == batch.values[item, source]
 
 
+def test_memory_anchor_supports_exact_non_leaking_source_offset() -> None:
+    batch = make_memory_anchor_batch(
+        batch_size=4,
+        seq_len=512,
+        vocab_size=16,
+        dense_window=64,
+        address_stride=16,
+        n_layers=4,
+        source_window=64,
+        source_offset=32,
+        generator=torch.Generator().manual_seed(82),
+    )
+    marker = 256
+    source = marker - 32
+    assert batch.memory_targets is not None
+    assert torch.all(batch.token_types[:, source] == RECORD)
+    assert torch.all(batch.memory_targets[:, marker] == batch.answers)
+    assert source < marker - 16
+
+
 def test_scaled_memory_bank_is_beyond_rolling_receptive_field() -> None:
     batch = make_memory_bank_batch(
         batch_size=2,

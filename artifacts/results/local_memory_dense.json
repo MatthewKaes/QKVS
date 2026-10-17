@@ -1,0 +1,164 @@
+{
+  "completed_step": 300,
+  "elapsed_seconds": 0.8978433100000984,
+  "environment": {
+    "cuda_available": true,
+    "git_revision": "5f615d13e6ead46b8065790a7749d722d7d0b641",
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "nvidia_driver_module": "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  610.57.04  Release Build  (root@)  ",
+    "pid": 77858,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "evaluations": {},
+  "history": [
+    {
+      "answer_loss": 2.768005132675171,
+      "loss": 5.531686782836914,
+      "memory_loss": 2.763681411743164,
+      "route_loss": 0.0,
+      "step": 1,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7472000122070312,
+      "loss": 5.494058132171631,
+      "memory_loss": 2.7468581199645996,
+      "route_loss": 0.0,
+      "step": 50,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.836024522781372,
+      "loss": 5.671027660369873,
+      "memory_loss": 2.835003137588501,
+      "route_loss": 0.0,
+      "step": 100,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.4810402393341064,
+      "loss": 4.959113121032715,
+      "memory_loss": 2.4780726432800293,
+      "route_loss": 0.0,
+      "step": 150,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.5524386763572693,
+      "loss": 1.1054751873016357,
+      "memory_loss": 0.5530365109443665,
+      "route_loss": 0.0,
+      "step": 200,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.02358720451593399,
+      "loss": 0.047192420810461044,
+      "memory_loss": 0.023605216294527054,
+      "route_loss": 0.0,
+      "step": 250,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.009334111586213112,
+      "loss": 0.018708471208810806,
+      "memory_loss": 0.009374360553920269,
+      "route_loss": 0.0,
+      "step": 300,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    }
+  ],
+  "model": {
+    "address_stride": 16,
+    "attention_kind": "dense",
+    "block_size": 16,
+    "candidate_tile_size": 16,
+    "checkpoint_sparse": true,
+    "d_model": 128,
+    "dense_window": 64,
+    "dropout": 0.0,
+    "mlp_ratio": 2,
+    "n_heads": 4,
+    "n_layers": 4,
+    "n_token_types": 4,
+    "pointer_encoding": "fourier",
+    "query_chunk_size": 64,
+    "retrieval_budget": 16,
+    "router_mode": "learned",
+    "semantic_vocab_size": 0,
+    "sparse_backend": "streaming",
+    "vocab_size": 16
+  },
+  "name": "local_memory_dense",
+  "peak_training_cuda_memory_bytes": 189556224,
+  "training": {
+    "answer_vocab_size": 16,
+    "batch_size": 16,
+    "checkpoint_every": 50,
+    "eval_batch_size": 16,
+    "eval_batches": 16,
+    "eval_seq_lens": [
+      512,
+      1024
+    ],
+    "fixed_training_batch": false,
+    "hop_curriculum": [],
+    "hops": 1,
+    "learning_rate": 0.0006,
+    "log_every": 50,
+    "memory_anchor_source_offset": 32,
+    "memory_bank_distractors": 3,
+    "memory_bank_keys": 8,
+    "memory_bank_source_offset": 32,
+    "memory_loss_weight": 1.0,
+    "memory_source_window": 64,
+    "name": "local_memory_dense",
+    "query_only_retrieval": true,
+    "route_loss_space": "blocks",
+    "route_loss_weight": 0.1,
+    "seed": 15703,
+    "semantic_keys": 8,
+    "steps": 1200,
+    "task": "memory_anchor",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 1.0,
+    "teacher_only_oracle_window": true,
+    "train_seq_len": 512,
+    "train_seq_lengths": [],
+    "weight_decay": 0.01
+  },
+  "training_complete": false
+}

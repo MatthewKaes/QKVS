@@ -61,3 +61,26 @@ Longer runs can be split into independent driver sessions with `--max-steps-this
 from atomic model/optimizer/RNG checkpoints. The streaming sparse backend uses online softmax,
 bounded query/candidate tiles, and activation checkpointing to avoid sequence-wide selected-K/V
 materialization during training.
+
+The controlled write/read diagnostics use one supervised historical window, a true oracle that
+disables unrelated historical windows, and per-layer probes of the actual selected marker K/V:
+
+```bash
+uv run python -m qkvs.gradient_audit
+uv run python -m qkvs.experiment --config configs/local_memory_diagnostics.json \
+  --run local_memory_general --max-steps-this-run 50
+uv run python -m qkvs.memory_diagnostic \
+  --config configs/local_memory_diagnostics.json \
+  --run local_memory_general \
+  --checkpoint artifacts/checkpoints/local_memory_general.pt \
+  --output artifacts/results/local_memory_general_diagnostic.json
+uv run python -m qkvs.memory_path_probe \
+  --config configs/local_memory_diagnostics.json \
+  --run local_memory_general \
+  --checkpoint artifacts/checkpoints/local_memory_general.pt \
+  --output artifacts/results/local_memory_general_kv_probe.json
+```
+
+The matching model-only checkpoints and hashes are listed in
+[artifacts/models/README.md](artifacts/models/README.md). On the affected host, keep CUDA invocations
+short and checkpointed because the driver has a known history of sporadic bus-loss failures.

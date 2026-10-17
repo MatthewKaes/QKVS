@@ -140,6 +140,7 @@ def make_memory_anchor_batch(
     address_stride: int,
     n_layers: int,
     source_window: int,
+    source_offset: int | None = None,
     generator: torch.Generator,
 ) -> PointerBatch:
     """Place a record near a pointer-free memory sink retrieved much later."""
@@ -153,9 +154,16 @@ def make_memory_anchor_batch(
     pointers = torch.full((batch_size, seq_len), -1.0)
     token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
     answers = torch.empty(batch_size, dtype=torch.long)
+    memory_targets = torch.full((batch_size, seq_len), -100, dtype=torch.long)
     marker_positions = torch.full((n_layers, batch_size), marker, dtype=torch.long)
     for item in range(batch_size):
-        distance = torch.randint(1, source_window, (), generator=generator)
+        distance = (
+            torch.randint(1, source_window, (), generator=generator)
+            if source_offset is None
+            else source_offset
+        )
+        if not 0 < distance < source_window:
+            raise ValueError("source offset must fall inside the dense source window")
         source = marker - distance
         token_types[item, source] = RECORD
         token_types[item, marker] = MEMORY
@@ -163,6 +171,7 @@ def make_memory_anchor_batch(
         values[item, marker] = 0
         values[item, -1] = 0
         answers[item] = values[item, source]
+        memory_targets[item, marker] = answers[item]
     route_addresses = normalized_window_addresses(marker_positions, history_end, address_stride)
     return PointerBatch(
         values,
@@ -172,6 +181,7 @@ def make_memory_anchor_batch(
         route_addresses,
         marker_positions,
         1,
+        memory_targets=memory_targets,
     )
 
 
@@ -338,3 +348,22 @@ def make_address_overrides(
     )
     overrides[:, :, -1, 0] = batch.route_addresses.to(device)
     return overrides
+
+
+def make_oracle_window_masks(
+    batch: PointerBatch,
+    *,
+    seq_len: int,
+    n_windows: int,
+    device: torch.device,
+) -> Tensor:
+    """Enable only the oracle-addressed historical window for the final query."""
+    layers, batch_size = batch.route_addresses.shape
+    masks = torch.ones(
+        (layers, batch_size, seq_len, n_windows),
+        dtype=torch.bool,
+        device=device,
+    )
+    masks[:, :, -1] = False
+    masks[:, :, -1, 0] = True
+    return masks

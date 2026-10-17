@@ -164,3 +164,23 @@ def test_retrieval_mask_disables_only_sparse_historical_slots() -> None:
     assert output.selection.valid[0, 3, :4].all()
     assert not output.selection.valid[0, -1, :2].any()
     assert output.selection.valid[0, -1, 2:].all()
+
+
+def test_window_mask_can_disable_unrelated_historical_windows() -> None:
+    attention = CausalSelfAttention(
+        AttentionConfig(
+            d_model=16,
+            n_heads=4,
+            dense_window=4,
+            retrieval_budget=4,
+            block_size=2,
+        )
+    ).eval()
+    hidden = torch.randn(1, 10, 16)
+    window_mask = torch.ones(1, 10, 2, dtype=torch.bool)
+    window_mask[:, -1, 1] = False
+    output = attention(hidden, historical_window_mask=window_mask)
+    assert output.selection is not None
+    assert output.selection.valid[0, -1, :2].all()
+    assert not output.selection.valid[0, -1, 2:4].any()
+    assert output.selection.valid[0, -1, 4:].all()

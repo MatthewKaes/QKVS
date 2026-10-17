@@ -87,8 +87,14 @@ class DecoderBlock(nn.Module):
         hidden: Tensor,
         address_override: Tensor | None = None,
         retrieval_mask: Tensor | None = None,
+        historical_window_mask: Tensor | None = None,
     ) -> tuple[Tensor, AttentionOutput]:
-        attention = self.attention(self.attention_norm(hidden), address_override, retrieval_mask)
+        attention = self.attention(
+            self.attention_norm(hidden),
+            address_override,
+            retrieval_mask,
+            historical_window_mask,
+        )
         hidden = hidden + attention.hidden
         hidden = hidden + self.mlp(self.mlp_norm(hidden))
         return hidden, attention
@@ -162,6 +168,7 @@ class QKVSDecoder(nn.Module):
         address_overrides: Tensor | None = None,
         retrieval_mask: Tensor | None = None,
         semantic_ids: Tensor | None = None,
+        historical_window_masks: Tensor | None = None,
     ) -> DecoderOutput:
         if address_overrides is not None and address_overrides.shape[0] != len(self.layers):
             raise ValueError("address overrides need one leading entry per layer")
@@ -169,7 +176,10 @@ class QKVSDecoder(nn.Module):
         layer_addresses: list[Tensor] = []
         for index, layer in enumerate(self.layers):
             override = None if address_overrides is None else address_overrides[index]
-            hidden, attention = layer(hidden, override, retrieval_mask)
+            window_mask = (
+                None if historical_window_masks is None else historical_window_masks[index]
+            )
+            hidden, attention = layer(hidden, override, retrieval_mask, window_mask)
             if attention.addresses is not None:
                 layer_addresses.append(attention.addresses)
         logits = self.output(self.final_norm(hidden))

@@ -62,7 +62,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--run", required=True)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--output", default="artifacts/results")
+    parser.add_argument("--output", default="artifacts/results/scaled_memory_diagnostic.json")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batches", type=int, default=32)
     arguments = parser.parse_args()
@@ -125,7 +125,7 @@ def main() -> None:
             "stored-content capacity from native routing."
         ),
     }
-    output = Path(arguments.output) / "scaled_memory_diagnostic.json"
+    output = Path(arguments.output)
     write_json(output, result)
     print(f"wrote {output}")
 

@@ -16,6 +16,7 @@ from qkvs.data import (
     make_address_overrides,
     make_memory_anchor_batch,
     make_memory_bank_batch,
+    make_oracle_window_masks,
     make_pointer_batch,
     make_semantic_batch,
     make_span_batch,
@@ -33,10 +34,12 @@ class TrainConfig:
     semantic_keys: int = 8
     answer_vocab_size: int = 16
     memory_source_window: int = 8
+    memory_anchor_source_offset: int | None = None
     memory_bank_keys: int = 8
     memory_bank_distractors: int = 3
     memory_bank_source_offset: int = 32
     memory_loss_weight: float = 0.0
+    fixed_training_batch: bool = False
     train_seq_len: int = 64
     train_seq_lengths: tuple[int, ...] = ()
     eval_seq_lens: tuple[int, ...] = (64, 128)
@@ -50,6 +53,7 @@ class TrainConfig:
     route_loss_space: str = "normalized"
     teacher_decay_fraction: float = 0.8
     teacher_floor: float = 0.0
+    teacher_only_oracle_window: bool = False
     hop_curriculum: tuple[int, ...] = ()
     query_only_retrieval: bool = False
     checkpoint_every: int = 100
@@ -105,6 +109,7 @@ def _batch(
             address_stride=model_config.attention().stride,
             n_layers=model_config.n_layers,
             source_window=train_config.memory_source_window,
+            source_offset=train_config.memory_anchor_source_offset,
             generator=generator,
         )
     if train_config.task == "memory_bank":
@@ -135,15 +140,16 @@ def _batch(
     )
 
 
-def _teacher_overrides(
+def _teacher_controls(
     batch: PointerBatch,
     model_config: ModelConfig,
     probability: float,
     generator: torch.Generator,
     device: torch.device,
-) -> Tensor | None:
+    only_oracle_window: bool,
+) -> tuple[Tensor | None, Tensor | None]:
     if model_config.attention_kind != "qkvs" or probability <= 0.0:
-        return None
+        return None, None
     overrides = make_address_overrides(
         batch,
         seq_len=batch.values.shape[1],
@@ -152,7 +158,13 @@ def _teacher_overrides(
     )
     teacher_mask = torch.rand(batch.values.shape[0], generator=generator) < probability
     overrides[:, ~teacher_mask.to(device), :, :] = torch.nan
-    return overrides
+    if not only_oracle_window:
+        return overrides, None
+    window_masks = torch.ones_like(overrides, dtype=torch.bool)
+    teacher_on_device = teacher_mask.to(device)
+    window_masks[:, teacher_on_device, -1] = False
+    window_masks[:, teacher_on_device, -1, 0] = True
+    return overrides, window_masks
 
 
 def _route_loss(
@@ -287,8 +299,15 @@ def evaluate(
             batch_size=train_config.eval_batch_size,
         ).to(device)
         overrides = None
+        window_masks = None
         if oracle and model_config.attention_kind == "qkvs":
             overrides = make_address_overrides(
+                batch,
+                seq_len=seq_len,
+                n_windows=model_config.attention().n_windows,
+                device=device,
+            )
+            window_masks = make_oracle_window_masks(
                 batch,
                 seq_len=seq_len,
                 n_windows=model_config.attention().n_windows,
@@ -309,6 +328,7 @@ def evaluate(
                 address_overrides=overrides,
                 retrieval_mask=_retrieval_mask(batch, train_config),
                 semantic_ids=batch.semantic_ids,
+                historical_window_masks=window_masks,
             )
             logits = output.logits[:, -1].float()
         losses.append(F.cross_entropy(logits, batch.answers).item())
@@ -401,6 +421,17 @@ def train_run(
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
+    fixed_batch: PointerBatch | None = None
+    if train_config.fixed_training_batch:
+        if train_config.train_seq_lengths or train_config.hop_curriculum:
+            raise ValueError("fixed training batches do not support length or hop curricula")
+        fixed_batch = _batch(
+            model_config,
+            train_config,
+            train_config.train_seq_len,
+            torch.Generator().manual_seed(train_config.seed + 404),
+        )
+
     end_step = train_config.steps
     if max_steps_this_run is not None:
         end_step = min(end_step, start_step + max_steps_this_run - 1)
@@ -419,23 +450,28 @@ def train_run(
                 (step - 1) * len(train_config.hop_curriculum) // train_config.steps,
             )
             training_hops = train_config.hop_curriculum[phase]
-        batch = _batch(
-            model_config,
-            train_config,
-            train_seq_len,
-            generator,
-            hops=training_hops,
+        batch = (
+            fixed_batch
+            if fixed_batch is not None
+            else _batch(
+                model_config,
+                train_config,
+                train_seq_len,
+                generator,
+                hops=training_hops,
+            )
         ).to(device)
         decay_steps = max(1, int(train_config.steps * train_config.teacher_decay_fraction))
         teacher_probability = train_config.teacher_floor + (1.0 - train_config.teacher_floor) * max(
             0.0, 1.0 - (step - 1) / decay_steps
         )
-        overrides = _teacher_overrides(
+        overrides, window_masks = _teacher_controls(
             batch,
             model_config,
             teacher_probability,
             generator,
             device,
+            train_config.teacher_only_oracle_window,
         )
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
@@ -450,6 +486,7 @@ def train_run(
                 address_overrides=overrides,
                 retrieval_mask=_retrieval_mask(batch, train_config),
                 semantic_ids=batch.semantic_ids,
+                historical_window_masks=window_masks,
             )
             answer_loss = F.cross_entropy(output.logits[:, -1].float(), batch.answers)
             route_loss = _route_loss(output, batch, model_config, train_config)

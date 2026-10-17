@@ -1,0 +1,193 @@
+{
+  "completed_step": 400,
+  "elapsed_seconds": 38.61871874299959,
+  "environment": {
+    "cuda_available": true,
+    "git_revision": "5f615d13e6ead46b8065790a7749d722d7d0b641",
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "nvidia_driver_module": "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  610.57.04  Release Build  (root@)  ",
+    "pid": 76933,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "evaluations": {},
+  "history": [
+    {
+      "answer_loss": 2.8760275840759277,
+      "loss": 5.911863803863525,
+      "memory_loss": 2.823812484741211,
+      "route_accuracy_mean": 0.0,
+      "route_loss": 2.1202385425567627,
+      "step": 1,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.8651669025421143,
+      "loss": 5.7354936599731445,
+      "memory_loss": 2.8657608032226562,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.04565759748220444,
+      "step": 50,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7764554023742676,
+      "loss": 5.474226474761963,
+      "memory_loss": 2.69748592376709,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.002852535340934992,
+      "step": 100,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.736060619354248,
+      "loss": 3.2438716888427734,
+      "memory_loss": 0.5060585737228394,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.017524071037769318,
+      "step": 150,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0915028303861618,
+      "loss": 0.1784018576145172,
+      "memory_loss": 0.07904882729053497,
+      "route_accuracy_mean": 0.9375,
+      "route_loss": 0.07850193232297897,
+      "step": 200,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.019005373120307922,
+      "loss": 0.04451948031783104,
+      "memory_loss": 0.01873193308711052,
+      "route_accuracy_mean": 0.9375,
+      "route_loss": 0.06782173365354538,
+      "step": 250,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.008561455644667149,
+      "loss": 0.023320278152823448,
+      "memory_loss": 0.008470621891319752,
+      "route_accuracy_mean": 0.953125,
+      "route_loss": 0.06288200616836548,
+      "step": 300,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.004730081185698509,
+      "loss": 0.011134503409266472,
+      "memory_loss": 0.004690607078373432,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.017138155177235603,
+      "step": 350,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0030499789863824844,
+      "loss": 0.006263278890401125,
+      "memory_loss": 0.003028426319360733,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.0018487363122403622,
+      "step": 400,
+      "teacher_probability": 1.0,
+      "train_seq_len": 512,
+      "training_hops": 1
+    }
+  ],
+  "model": {
+    "address_stride": 16,
+    "attention_kind": "qkvs",
+    "block_size": 16,
+    "candidate_tile_size": 16,
+    "checkpoint_sparse": true,
+    "d_model": 128,
+    "dense_window": 64,
+    "dropout": 0.0,
+    "mlp_ratio": 2,
+    "n_heads": 4,
+    "n_layers": 4,
+    "n_token_types": 4,
+    "pointer_encoding": "fourier",
+    "query_chunk_size": 64,
+    "retrieval_budget": 16,
+    "router_mode": "learned",
+    "semantic_vocab_size": 0,
+    "sparse_backend": "streaming",
+    "vocab_size": 16
+  },
+  "name": "local_memory_general",
+  "peak_training_cuda_memory_bytes": 283412992,
+  "training": {
+    "answer_vocab_size": 16,
+    "batch_size": 16,
+    "checkpoint_every": 50,
+    "eval_batch_size": 16,
+    "eval_batches": 16,
+    "eval_seq_lens": [
+      512,
+      1024
+    ],
+    "fixed_training_batch": false,
+    "hop_curriculum": [],
+    "hops": 1,
+    "learning_rate": 0.0006,
+    "log_every": 50,
+    "memory_anchor_source_offset": 32,
+    "memory_bank_distractors": 3,
+    "memory_bank_keys": 8,
+    "memory_bank_source_offset": 32,
+    "memory_loss_weight": 1.0,
+    "memory_source_window": 64,
+    "name": "local_memory_general",
+    "query_only_retrieval": true,
+    "route_loss_space": "blocks",
+    "route_loss_weight": 0.1,
+    "seed": 15702,
+    "semantic_keys": 8,
+    "steps": 1200,
+    "task": "memory_anchor",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 1.0,
+    "teacher_only_oracle_window": true,
+    "train_seq_len": 512,
+    "train_seq_lengths": [],
+    "weight_decay": 0.01
+  },
+  "training_complete": false
+}

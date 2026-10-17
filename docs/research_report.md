@@ -1,4 +1,4 @@
-# Learned direct-address sparse attention: initial research report
+# Learned direct-address sparse attention: research report
 
 Date: 2026-10-17
 
@@ -29,6 +29,14 @@ randomized, native QKVS remained near the 6.25% task chance rate while dense con
 reached 100%, 95.3%, and 65.6%. Direct addressing cannot infer a per-example random address from a
 query that contains no placement information; an index-building mechanism or content search would
 be required.
+
+A later controlled write/read iteration resolves the apparent memory-formation failure in the
+first scaled experiment. With one fully supervised historical window, fresh-example models learned
+both a single memory and a four-key, three-distractor memory bank. At length 512, marker, native,
+and strict-oracle answer accuracy were all 100%. Layer-isolated reads show that the answer is
+present in actual cached marker K/V. At an unseen length of 1,024, strict-oracle answers remain
+100% while native routing drops to 8.2% and 41.4%, respectively. The remaining demonstrated failure
+is address extrapolation, not local memory writing or cached-content reading.
 
 The eager PyTorch implementation demonstrates bounded work but no wall-clock speedup. Its
 materialized gather and many small address-decoding kernels cost about 0.355 ms per one-layer decode
@@ -90,7 +98,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 21 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 23 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -438,11 +446,13 @@ main task nor an explicit sink-content auxiliary objective learned reliably:
 | 1,024 | 3.1% | 9.4% | 9.4% |
 | 2,048 | 6.25% | 9.4% | 9.4% |
 
-Chance is 6.25%; each metric used 128 marker examples or 32 final-query examples. Because oracle
-query-to-sink routing did not improve answers, this is a memory-formation failure, not evidence of
-router failure. The task went through two discarded diagnostic versions—one with a direct source
-leak inside the retrieved window and one with needlessly composite token IDs—before this controlled
-form. Those versions are not used as evidence.
+Chance is 6.25%; each metric used 128 marker examples or 32 final-query examples. At the time,
+equivalent native and first-slot-override results appeared to indicate memory-formation failure.
+The later audit showed that this was not a strict oracle: seven unrelated, unsupervised windows
+remained active. The result is retained as an undertrained negative observation, but its failure
+can no longer be attributed specifically to memory writing. The task went through two discarded
+diagnostic versions—one with a direct source leak inside the retrieved window and one with
+needlessly composite token IDs—before this form. Those versions are not used as evidence.
 
 This negative result is bounded: 400 batch-two steps are far less data than the successful tiny
 controls, and the Python streaming backend discourages brute-force training. It does show that
@@ -457,5 +467,108 @@ with shared keys and supervised sink targets. See
   kernel task.
 - Bounded eager decode becomes faster than dense attention only at very long contexts for the
   measured 512-token budget.
-- The first realistic competing-memory task is negative on memory formation, so larger contexts or
-  parameter counts are not justified until the storage objective/model is improved on this task.
+- The first realistic competing-memory run remains an undertrained negative result, but the
+  subsequent controlled experiments show that local storage and cached-content retrieval work.
+  Native address extrapolation and the larger task's optimization remain unresolved.
+
+## Controlled memory write/read iteration
+
+The fourth iteration keeps the four-layer, width-128 architecture and isolates gradient coverage,
+memory writing, cached-content reading, and routing. CUDA work was kept in short checkpointed
+processes because of the host's known driver instability.
+
+### Router gradient coverage and strict oracle
+
+An exact backward audit reproduced the reviewer's finding. With `R=128`, `W=16`, both tested
+layers gave nonzero `S` weight-gradient norm only to output zero:
+
+| Layer | Window 0 | Windows 1-7 |
+|---:|---:|---:|
+| 0 | 0.3050 | 0.0 each |
+| 1 | 0.3048 | 0.0 each |
+
+With `R=W=16`, the sole output received norms 0.7997 and 0.5086. The controlled configurations use
+this one-window form. Multiwindow training is not repaired generically; it still needs an objective
+covering every output.
+
+Oracle evaluation now both supplies the correct first address and masks every unrelated historical
+window at the final query. This is a true read control, not the earlier first-window-only override.
+The audit is recorded in
+[router_gradient_audit.json](../artifacts/results/router_gradient_audit.json).
+
+### Fixed-batch capacity and fresh-example learning
+
+The local task puts one source exactly 32 tokens before a marker. The source is inside the marker's
+64-token rolling window but outside the marker's 16-token block; the final query is beyond the
+rolling-only receptive field. The competing task adds four semantic keys and three same-key
+distractors per marker. Training always consumes the strict oracle while `S` learns from its route
+loss; native routing is evaluated separately.
+
+| Run | Step | Last train answer / marker loss | Held-out marker | Held-out native / strict oracle at 512 |
+|---|---:|---:|---:|---:|
+| Local fixed batch | 300 | 0.00065 / 0.00065 | not claimed | 5.5% / 6.25% |
+| Local fresh examples | 400 | 0.00305 / 0.00303 | 100.0% | 100.0% / 100.0% |
+| Local dense SDPA | 300 | 0.00933 / 0.00937 | 100.0% | 100.0% / n/a |
+| Competing fixed batch | 150 | 0.00291 / 0.00471 | not claimed | not evaluated |
+| Competing fresh examples | 400 | 0.00484 / 0.00460 | 100.0% | 100.0% / 100.0% |
+
+The fixed-batch result establishes optimizer/model capacity but, correctly, does not generalize to
+fresh random values. Each fresh-example result is evaluated on 256 independent final queries;
+marker evaluation covers 256 local markers and 1,024 competing-task markers. The fresh checkpoints
+are intentionally stopped at step 400 after convergence, before their configured 1,200- and
+800-step maxima.
+
+At twice the training length:
+
+| Model | Marker accuracy | Native answer | Strict-oracle answer |
+|---|---:|---:|---:|
+| Local QKVS | 100.0% | 8.2% | 100.0% |
+| Local dense SDPA | 100.0% | 8.2% | n/a |
+| Competing QKVS | 100.0% | 41.4% | 100.0% |
+
+Chance is 6.25%. The dense baseline also fails to extrapolate its final answer from 512 to 1,024,
+while QKVS's supplied direct address still exposes fully usable stored content. Results are in
+[local_memory_general_diagnostic.json](../artifacts/results/local_memory_general_diagnostic.json),
+[local_memory_dense_diagnostic.json](../artifacts/results/local_memory_dense_diagnostic.json), and
+[competing_memory_general_diagnostic.json](../artifacts/results/competing_memory_general_diagnostic.json).
+
+### Actual cached-K/V retrievability
+
+The layer probe disables all historical windows, then enables exactly the oracle marker window at
+one layer. It hooks the state entering each attention layer and recomputes weights from the actual
+Q/K projections and selected cache entries. These 64-example probes distinguish a readable cached
+representation from a marker that is merely classifiable after the final layer.
+
+| Task / length | No historical read | Layer 0 only | Layer 1 only | Layer 2 only | Layer 3 only | Native | All-layer oracle |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Local / 512 | 1.6% | 1.6% | 12.5% | 100.0% | 40.6% | 100.0% | 100.0% |
+| Local / 1,024 | 4.7% | 4.7% | 7.8% | 100.0% | 56.2% | 9.4% | 100.0% |
+| Competing / 512 | 0.0% | 0.0% | 0.0% | 0.0% | 100.0% | 100.0% | 100.0% |
+| Competing / 1,024 | 7.8% | 7.8% | 7.8% | 7.8% | 100.0% | 46.9% | 100.0% |
+
+For the local model, layer-0 source-to-marker attention averages 84.6%, and layer-2
+marker-to-query attention averages 71.7% at length 512. For the competing model those roles are
+similarly concentrated in layer 0 (69.1%) and layer 3 (81.2%). This directly demonstrates a write
+into a representation exposed through immutable marker K/V and a later read from that cache. The
+corresponding traces are
+[local_memory_general_kv_probe.json](../artifacts/results/local_memory_general_kv_probe.json),
+[local_memory_general_kv_probe_1024.json](../artifacts/results/local_memory_general_kv_probe_1024.json),
+[competing_memory_general_kv_probe.json](../artifacts/results/competing_memory_general_kv_probe.json),
+and
+[competing_memory_general_kv_probe_1024.json](../artifacts/results/competing_memory_general_kv_probe_1024.json).
+
+### Updated learning boundary
+
+- **Memory writing:** passes both the single-record and keyed, distracted controls on fresh examples.
+- **Memory reading:** passes strict all-layer and layer-isolated reads from actual cached marker K/V.
+- **In-distribution routing:** reaches 100% on both controlled tasks at length 512 under supervised
+  `S` training.
+- **Address extrapolation:** remains the active failure; native performance falls while the exact
+  same checkpoints retain 100% oracle readability at length 1,024.
+- **Optimization/capacity:** fixed-batch and fresh-example convergence provide no reason yet to add
+  parameters for these controlled tasks.
+- **Autonomous propagation:** remains untested here because `query_only_retrieval=true` deliberately
+  disables historical retrieval for intermediate tokens. Re-enabling it is the next learning step.
+
+Replayable model-only checkpoints for both fresh-example runs, with SHA-256 hashes, are listed in
+[artifacts/models/README.md](../artifacts/models/README.md).

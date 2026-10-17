@@ -1,0 +1,56 @@
+{
+  "name": "competing_memory_write_read",
+  "seed": 16701,
+  "model": {
+    "vocab_size": 16,
+    "d_model": 128,
+    "n_heads": 4,
+    "n_layers": 4,
+    "mlp_ratio": 2,
+    "dense_window": 64,
+    "retrieval_budget": 16,
+    "block_size": 16,
+    "address_stride": 16,
+    "dropout": 0.0,
+    "attention_kind": "qkvs",
+    "router_mode": "learned",
+    "n_token_types": 4,
+    "pointer_encoding": "fourier",
+    "semantic_vocab_size": 4,
+    "sparse_backend": "streaming",
+    "query_chunk_size": 64,
+    "candidate_tile_size": 16,
+    "checkpoint_sparse": true
+  },
+  "training": {
+    "task": "memory_bank",
+    "hops": 1,
+    "answer_vocab_size": 16,
+    "memory_bank_keys": 4,
+    "memory_bank_distractors": 3,
+    "memory_bank_source_offset": 32,
+    "memory_loss_weight": 1.0,
+    "train_seq_len": 512,
+    "eval_seq_lens": [512, 1024],
+    "batch_size": 16,
+    "eval_batch_size": 16,
+    "steps": 800,
+    "eval_batches": 16,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.01,
+    "route_loss_weight": 0.1,
+    "route_loss_space": "blocks",
+    "teacher_floor": 1.0,
+    "teacher_only_oracle_window": true,
+    "query_only_retrieval": true,
+    "checkpoint_every": 50,
+    "log_every": 50
+  },
+  "runs": [
+    {
+      "name": "competing_memory_fixed_overfit",
+      "training": {"steps": 300, "fixed_training_batch": true}
+    },
+    {"name": "competing_memory_general"}
+  ]
+}

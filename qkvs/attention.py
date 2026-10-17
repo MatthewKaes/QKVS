@@ -396,6 +396,7 @@ class CausalSelfAttention(nn.Module):
         hidden: Tensor,
         address_override: Tensor | None = None,
         retrieval_mask: Tensor | None = None,
+        historical_window_mask: Tensor | None = None,
     ) -> AttentionOutput:
         batch, time, _ = hidden.shape
         positions = torch.arange(time, device=hidden.device)
@@ -438,6 +439,16 @@ class CausalSelfAttention(nn.Module):
                 retrieval_enabled = retrieval_mask | below_threshold.unsqueeze(0)
                 valid = selection.valid.clone()
                 valid[..., : self.config.retrieval_budget] &= retrieval_enabled.unsqueeze(-1)
+                selection = Selection(selection.indices, valid)
+            if historical_window_mask is not None:
+                expected = (batch, time, self.config.n_windows)
+                if historical_window_mask.shape != expected:
+                    raise ValueError(f"historical window mask must have shape {expected}")
+                token_mask = historical_window_mask.repeat_interleave(
+                    self.config.block_size, dim=-1
+                )
+                valid = selection.valid.clone()
+                valid[..., : self.config.retrieval_budget] &= token_mask
                 selection = Selection(selection.indices, valid)
             threshold = min(time, self.config.dense_window + self.config.retrieval_budget)
             dense_prefix = F.scaled_dot_product_attention(
