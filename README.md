@@ -85,22 +85,30 @@ The matching model-only checkpoints and hashes are listed in
 [artifacts/models/README.md](artifacts/models/README.md). On the affected host, keep CUDA invocations
 short and checkpointed because the driver has a known history of sporadic bus-loss failures.
 
-The multi-selection study fixes `L=R=256` and router capacity at eight outputs while varying active
-window count, width, and stride. Its explicit pointer-set task separates attention geometry from
-semantic address discovery:
+The corrected multi-selection study fixes `L=R=256` and router capacity at eight outputs while
+varying active window count, width, and stride. All 100 candidate records are tagged, populated, and
+labeled with their own address; only the explicit query pointer set selects the requested records.
+The generator also rejects candidate layouts that collapse multiple records onto one stride
+address:
 
 ```bash
 uv run python -m qkvs.training_benchmark \
   --config configs/training_benchmark_multiselect.json
 uv run python -m qkvs.experiment \
   --config configs/multiselect_geometry.json \
-  --run regions8_windows8_width32_stride16_fixed4k \
+  --run v3_regions1_dense_batch32 \
+  --max-steps-this-run 25
+uv run python -m qkvs.experiment \
+  --config configs/multiselect_geometry.json \
+  --run v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k \
   --max-steps-this-run 25
 uv run python -m qkvs.multiselect_diagnostic \
   --config configs/multiselect_geometry.json \
-  --run regions8_windows8_width32_stride16_fixed4k \
-  --checkpoint artifacts/checkpoints/regions8_windows8_width32_stride16_fixed4k.pt \
-  --output artifacts/results/regions8_windows8_width32_stride16_fixed4k_diagnostic.json
+  --run v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k \
+  --checkpoint \
+    artifacts/checkpoints/v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k.pt \
+  --output \
+    artifacts/results/v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k_diagnostic.json
 ```
 
 The `chunked` sparse backend is the current training default for this study. It gathers only one

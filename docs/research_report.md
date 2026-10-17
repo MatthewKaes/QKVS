@@ -38,13 +38,17 @@ present in actual cached marker K/V. At an unseen length of 1,024, strict-oracle
 100% while native routing drops to 8.2% and 41.4%, respectively. The remaining demonstrated failure
 is address extrapolation, not local memory writing or cached-content reading.
 
-The subsequent multi-selection study reaches the intended initial geometry (`L=R=256`, eight
-width-32 windows, stride 16, context 4K) and trains every active S output with a
-permutation-invariant set loss. The downstream task and oracle path learn, but native target
-coverage remains 10.3%, close to random, after 200 fixed-4K steps. This is the first controlled
-negative result specifically for simultaneous multi-address learning. Separately, a chunked-SDPA
-backend improves the 8K training step from 5,011 ms to 367 ms at the same 512-token selection
-budget, a 13.6x speedup, though dense SDPA remains much faster.
+The subsequent multi-selection implementation reaches the intended initial geometry (`L=R=256`,
+eight width-32 windows, stride 16, context 4K) and trains every active S output with a
+permutation-invariant set loss. Its first learning comparison is invalid as evidence for
+address-dependent aggregation: only requested records were tagged and nonzero, so the answer was
+also the sum of all input values. The recorded 10.3% native target coverage after 200 steps remains
+a preliminary optimization observation, not a converged failure or evidence against continuous
+scalar routing. A corrected task and counterfactual now make the pointer set the only selection
+signal. Two 1,200-step, batch-four dense controls remained pointer-insensitive; the higher-exposure
+task-validity gate and fresh multi-address results are pending. Separately, a chunked-SDPA backend
+improves the 8K training step from 5,011 ms to 367 ms at the same 512-token selection budget, a
+13.6x speedup, though dense SDPA remains much faster.
 
 The eager PyTorch implementation demonstrates bounded work but no wall-clock speedup. Its
 materialized gather and many small address-decoding kernels cost about 0.355 ms per one-layer decode
@@ -106,7 +110,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 33 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 35 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -622,19 +626,32 @@ to close that constant-factor gap. Raw results are in
 and
 [rtx5070_multiselect_training_batch4.json](../artifacts/benchmarks/rtx5070_multiselect_training_batch4.json).
 
-### Constant-budget multi-region control
+### Corrected constant-budget multi-region control
 
-The new task places 100 candidate record positions before the four-layer rolling receptive field.
-The query receives a permutation-invariant set of explicit normalized pointers; the requested
-records contain balanced binary values, and the answer is their exact count. Only requested records
-carry the record tag. This deliberately tests geometry and multi-record aggregation, not semantic
-address discovery.
+The first version of this task placed 100 candidate positions before the four-layer rolling
+receptive field, but only the eight requested positions carried the record tag or a potentially
+nonzero value. Consequently, the answer equaled the sum of every input value and a dense model
+could ignore the pointer set. That shortcut invalidates the original dense comparison and prevents
+the original answer accuracies from supporting an address-dependent aggregation claim.
+
+The corrected generator tags all 100 candidates and fills each example with a randomly permuted,
+balanced bank of plausible binary values. It samples a balanced answer class, then selects the
+corresponding mixture of zero and one records. The total historical sum is constant while the
+requested sum ranges from zero through eight, so the query's permutation-invariant pointer set is
+the only input that distinguishes requested records. Every candidate now also receives its own
+address label, giving dense attention an explicit key to compare with the query without identifying
+that candidate as requested. A paired counterfactual holds all historical values, token types, and
+self-addresses fixed, changes only the final query pointer set, and guarantees a different answer.
+Candidate positions must also occupy distinct stride cells; this exposed the original 2K/100-record
+geometry as ambiguous, so corrected mixed-length training begins at 3,072 tokens.
 
 The configuration keeps `L=256`, `R=256`, four layers, width 128, and an eight-output router head.
 Geometry controls activate one, two, four, or eight outputs with widths 256, 128, 64, or 32 while
-holding total sparse tokens and model parameters fixed. The eight-window control also defines
-strides 32, 16, and 8. Problems requesting one, two, four, and eight independent regions share the
-same infrastructure.
+holding total sparse tokens, model parameters, and stride 16 fixed. This separates window count and
+width from address resolution. The eight-window control also defines stride 8. Stride 32 is not a
+valid member of the 3K/4K, 100-candidate grid because fewer than 100 distinct address cells remain
+outside the rolling receptive field. Problems requesting one, two, four, and eight independent
+regions share the same infrastructure.
 
 Multiwindow supervision has two permutation-invariant terms:
 
@@ -642,13 +659,13 @@ Multiwindow supervision has two permutation-invariant terms:
 - a one-dimensional sorted matching loss that assigns every active output while permitting target
   repetition when outputs outnumber required regions.
 
-The recorded 4K capacity run uses eight width-32 windows at stride 16. It additionally gives S a
+The original 4K capacity run used eight width-32 windows at stride 16. It additionally gave S a
 canonical sorted Fourier encoding of the explicit pointer set, a two-layer router MLP, detached
 auxiliary-router inputs, a dedicated router learning rate, and separate base/router gradient
 clipping. These controls favor the router. At the final logged step, all 32 active output rows
 across four layers had nonzero gradient norms (minimum 1.23).
 
-### Capacity result
+### Invalidated pilot result
 
 | Model / control | Step | Held-out 4K answer | Held-out target coverage |
 |---|---:|---:|---:|
@@ -657,19 +674,58 @@ across four layers had nonzero gradient norms (minimum 1.23).
 | QKVS, eight regions, coverage oracle | 200 | 43.8% | oracle supplied |
 | QKVS, eight regions, native S | 200 | 15.6% | 10.3% |
 
-The answer baseline is 50% for one region and 11.1% for eight. Each held-out entry uses 32 fresh
-examples, so the exact percentages are preliminary. The important separation is nevertheless
-clear: dense aggregation learns, and the QKVS model can use the correct eight windows, while native
-S remains near random target coverage. The result is in
+The answer baseline is 50% for one region and 11.1% for eight. Each held-out entry used only 32
+fresh examples, the models had different step counts, and all were trained on the shortcut-bearing
+generator. These values are retained for provenance but are not valid evidence that dense
+address-dependent aggregation learned or that oracle QKVS was superior. The result is in
 [regions8_windows8_width32_stride16_fixed4k_diagnostic.json](../artifacts/results/regions8_windows8_width32_stride16_fixed4k_diagnostic.json),
 with dense controls in
 [regions1_dense_diagnostic.json](../artifacts/results/regions1_dense_diagnostic.json) and
 [regions8_dense_diagnostic.json](../artifacts/results/regions8_dense_diagnostic.json).
 
-This run stops the geometry grid before wasting compute: comparing window counts and strides is not
-meaningful until the principal eight-output router learns its supervised target set. The failure is
-not missing gradients, downstream task capacity, rolling leakage, or insufficient attention
-budget. Under the tested controls, simultaneous continuous scalar address regression is the active
-optimization failure. The next router experiment should use categorical or hierarchical
-coarse/fine address predictions with permutation-invariant matching; only after that control passes
-should the full constant-budget geometry grid and autonomous intermediate retrieval run.
+The native route loss did decline from about 92.9 to 19.2, while coverage remained near 10%. That is
+consistent with learning the broad target distribution without yet resolving each query-dependent
+address, but 200 of 1,200 configured steps and roughly 800 training examples are not convergence
+evidence. Permanent teacher forcing and detached router inputs further isolate rather than complete
+the end-to-end learning problem. Fresh corrected controls therefore start from new checkpoint names
+and distinguish three questions: oracle downstream capacity, detached supervised routing, and
+joint representation learning with teacher decay. Categorical or hierarchical addresses remain a
+later ablation, not the conclusion of this pilot.
+
+### Corrected task-validity result
+
+The corrected one-region dense control completed 1,200 steps, alternating 3,072- and 4,096-token
+examples in batches of four. Its final training loss was 0.721, versus 0.693 for an exactly balanced
+binary task. Held-out accuracy was 57.8% on 64 examples at 4K and 54.7% on 64 examples at 6K. A
+separate 16-pair counterfactual at 4K held every historical value and token type fixed, changed only
+the requested pointer, and required the answer to flip; the model changed its prediction in 0% of
+pairs and got both answers correct in 0%. These small samples are compatible with chance and give no
+evidence that the current dense model interprets the pointer.
+
+This is a useful stop condition: the corrected multi-address study is not yet a valid router
+comparison because its simplest one-address dense task-validity control does not learn. The
+eight-region dense and QKVS runs were therefore not launched. That v2 control relied on RoPE alone
+to relate a numerical query pointer to a candidate's position. The v3 task now labels every
+candidate with the same normalized self-address representation while preserving the paired
+counterfactual invariant.
+
+The first v3 run deliberately retained the other settings for a direct comparison. After the full
+1,200 steps at batch four, it produced the same 57.8%/54.7% held-out accuracies and again changed
+its prediction on 0% of 16 paired counterfactuals. Thus candidate self-addresses alone did not make
+the low-sample control learn. The next registered dense gate raises batch size from four to 32,
+increasing training exposure from 4,800 to 38,400 examples without changing context geometry. It
+has not run because the GPU became unavailable. Regardless of that result, dense answer-only
+training and QKVS's explicitly supervised router are different optimization controls and must not
+be described as a matched routing comparison.
+
+The run itself completed normally in 11.2 seconds with a 324 MiB peak PyTorch allocation. Immediately
+afterward `nvidia-smi` could no longer communicate with the driver. No OOM or process failure was
+reported, and no new kernel Xid was available in the accessible journal, so this is recorded only as
+another host-driver outage, not as a workload-caused failure. See
+[gpu_unavailable_after_v2_dense_2026-10-17.json](../artifacts/system/gpu_unavailable_after_v2_dense_2026-10-17.json).
+The learning results are in [v2_regions1_dense.json](../artifacts/results/v2_regions1_dense.json)
+and the paired check in
+[v2_regions1_dense_diagnostic.json](../artifacts/results/v2_regions1_dense_diagnostic.json).
+The self-address follow-up is in
+[v3_regions1_dense.json](../artifacts/results/v3_regions1_dense.json) and
+[v3_regions1_dense_diagnostic.json](../artifacts/results/v3_regions1_dense_diagnostic.json).

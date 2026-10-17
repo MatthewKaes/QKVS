@@ -52,6 +52,9 @@ Controlled memory experiments therefore use `R = W = 16`, giving `S` exactly one
 to multiple windows requires a separate set-valued objective.
 
 The multi-selection control supplies several required regions and trains their addresses as a set.
+Every candidate record carries its normalized self-address, while only the query carries the set
+that marks candidates as requested. This gives dense attention a content key for a fair
+address-matching control without leaking requested status through record tags or values.
 For each target, a coverage term is zero for any decoded window start that contains it. A second
 one-dimensional order-statistic term sorts both predicted addresses and target intervals before
 matching them, making supervision invariant to output-slot permutations while giving every active
@@ -59,11 +62,12 @@ output a gradient. Repetition remains possible when there are more outputs than 
 The router head can reserve a fixed maximum output capacity so geometries with different active
 window counts have identical parameters.
 
-The 4K capacity diagnostic additionally isolates the auxiliary router optimizer: the explicit
-pointer set is encoded canonically, S reads a detached hidden state, and router/base gradients use
-separate clipping and learning rates. An optional two-layer S MLP tests multi-address decoder
-capacity without enlarging the transformer. These are supervised geometry controls, not a claim
-that semantic address discovery has been solved.
+The detached 4K capacity diagnostic isolates the auxiliary router optimizer: the explicit pointer
+set is encoded canonically, S reads a detached hidden state, and router/base gradients use separate
+clipping and learning rates. Matched corrected controls allow routing gradients into the shared
+representation and either retain the full oracle schedule or decay it. An optional two-layer S MLP
+tests multi-address decoder capacity without enlarging the transformer. These are supervised
+geometry controls, not a claim that semantic address discovery has been solved.
 
 Teacher and oracle controls can mask historical windows independently of their decoded addresses.
 The strict oracle sets slot zero to the correct block and disables every other historical slot for
@@ -102,8 +106,8 @@ only in the marker's final classifier state.
   extrapolation but has not solved later-hop composition; a fixed raw-scalar embedding performed
   worse.
 - A categorical or hierarchical address representation that avoids high-precision simultaneous
-  scalar regression. Set supervision now covers all outputs, but eight continuous addresses did
-  not train reliably at 4K.
+  scalar regression. Set supervision now covers all outputs, but the first eight-address 4K pilot
+  was undertrained and its downstream task was confounded; corrected scalar controls come first.
 - Straight-through, soft-window, or policy-gradient training without address labels.
 - Whether each attention head should own addresses.
 - Whether explicit previous-address forwarding helps after controlling for parameter count.

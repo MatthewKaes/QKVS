@@ -290,40 +290,228 @@ def make_multi_region_batch(
     required_regions: int,
     generator: torch.Generator,
 ) -> PointerBatch:
-    """Expose a pointer set whose balanced count requires every requested historical record."""
+    """Count selected records when every candidate has a value, tag, and self-address."""
+    record_positions = _multi_region_record_positions(
+        seq_len=seq_len,
+        dense_window=dense_window,
+        address_stride=address_stride,
+        n_layers=n_layers,
+        n_records=n_records,
+        required_regions=required_regions,
+    )
+    record_values = _balanced_binary_record_values(
+        batch_size=batch_size,
+        n_records=n_records,
+        generator=generator,
+    )
+    requested_counts = torch.randint(
+        required_regions + 1,
+        (batch_size,),
+        generator=generator,
+    )
+    requested_keys = torch.stack(
+        [
+            _sample_record_keys(
+                record_values[item],
+                required_regions=required_regions,
+                requested_count=int(requested_counts[item]),
+                generator=generator,
+            )
+            for item in range(batch_size)
+        ]
+    )
+    return _make_multi_region_batch_from_records(
+        seq_len=seq_len,
+        dense_window=dense_window,
+        block_size=block_size,
+        address_stride=address_stride,
+        n_windows=n_windows,
+        n_layers=n_layers,
+        record_positions=record_positions,
+        record_values=record_values,
+        requested_keys=requested_keys,
+    )
+
+
+def make_multi_region_counterfactual_pair(
+    *,
+    batch_size: int,
+    seq_len: int,
+    dense_window: int,
+    block_size: int,
+    address_stride: int,
+    n_windows: int,
+    n_layers: int,
+    n_records: int,
+    required_regions: int,
+    generator: torch.Generator,
+) -> tuple[PointerBatch, PointerBatch]:
+    """Hold candidate records fixed while changing only the requested pointer set and answer."""
+    record_positions = _multi_region_record_positions(
+        seq_len=seq_len,
+        dense_window=dense_window,
+        address_stride=address_stride,
+        n_layers=n_layers,
+        n_records=n_records,
+        required_regions=required_regions,
+    )
+    record_values = _balanced_binary_record_values(
+        batch_size=batch_size,
+        n_records=n_records,
+        generator=generator,
+    )
+    first_counts = torch.randint(
+        required_regions + 1,
+        (batch_size,),
+        generator=generator,
+    )
+    count_offsets = torch.randint(
+        1,
+        required_regions + 1,
+        (batch_size,),
+        generator=generator,
+    )
+    second_counts = (first_counts + count_offsets) % (required_regions + 1)
+
+    def sample_keys(counts: Tensor) -> Tensor:
+        return torch.stack(
+            [
+                _sample_record_keys(
+                    record_values[item],
+                    required_regions=required_regions,
+                    requested_count=int(counts[item]),
+                    generator=generator,
+                )
+                for item in range(batch_size)
+            ]
+        )
+
+    shared = {
+        "seq_len": seq_len,
+        "dense_window": dense_window,
+        "block_size": block_size,
+        "address_stride": address_stride,
+        "n_windows": n_windows,
+        "n_layers": n_layers,
+        "record_positions": record_positions,
+        "record_values": record_values,
+    }
+    return (
+        _make_multi_region_batch_from_records(
+            **shared,
+            requested_keys=sample_keys(first_counts),
+        ),
+        _make_multi_region_batch_from_records(
+            **shared,
+            requested_keys=sample_keys(second_counts),
+        ),
+    )
+
+
+def _multi_region_record_positions(
+    *,
+    seq_len: int,
+    dense_window: int,
+    address_stride: int,
+    n_layers: int,
+    n_records: int,
+    required_regions: int,
+) -> Tensor:
     if not 1 <= required_regions <= n_records:
         raise ValueError("required regions must fall between one and the record count")
+    if n_records < 2 * required_regions:
+        raise ValueError("balanced answers require at least twice as many records as regions")
     rolling_receptive_field = 1 + n_layers * (dense_window - 1)
     record_history_end = seq_len - rolling_receptive_field - dense_window
     if record_history_end < n_records:
         raise ValueError("sequence is too short to isolate all records from rolling attention")
-
     record_positions = torch.div(
         (torch.arange(n_records) * 2 + 1) * record_history_end,
         2 * n_records,
         rounding_mode="floor",
     )
+    address_cells = torch.div(record_positions, address_stride, rounding_mode="floor")
+    if torch.unique(address_cells).numel() != n_records:
+        raise ValueError(
+            "candidate records do not have distinct pointer addresses; increase sequence length "
+            "or reduce the record count or address stride"
+        )
+    return record_positions
+
+
+def _balanced_binary_record_values(
+    *,
+    batch_size: int,
+    n_records: int,
+    generator: torch.Generator,
+) -> Tensor:
+    base = torch.cat(
+        (
+            torch.zeros(n_records // 2, dtype=torch.long),
+            torch.ones(n_records - n_records // 2, dtype=torch.long),
+        )
+    )
+    return torch.stack(
+        [base[torch.randperm(n_records, generator=generator)] for _ in range(batch_size)]
+    )
+
+
+def _sample_record_keys(
+    record_values: Tensor,
+    *,
+    required_regions: int,
+    requested_count: int,
+    generator: torch.Generator,
+) -> Tensor:
+    one_keys = torch.nonzero(record_values == 1).flatten()
+    zero_keys = torch.nonzero(record_values == 0).flatten()
+    if requested_count > one_keys.numel() or required_regions - requested_count > zero_keys.numel():
+        raise ValueError("record bank cannot supply the requested balanced answer")
+    selected = torch.cat(
+        (
+            one_keys[torch.randperm(one_keys.numel(), generator=generator)[:requested_count]],
+            zero_keys[
+                torch.randperm(zero_keys.numel(), generator=generator)[
+                    : required_regions - requested_count
+                ]
+            ],
+        )
+    )
+    return selected[torch.randperm(required_regions, generator=generator)]
+
+
+def _make_multi_region_batch_from_records(
+    *,
+    seq_len: int,
+    dense_window: int,
+    block_size: int,
+    address_stride: int,
+    n_windows: int,
+    n_layers: int,
+    record_positions: Tensor,
+    record_values: Tensor,
+    requested_keys: Tensor,
+) -> PointerBatch:
+    batch_size, _ = record_values.shape
+    if requested_keys.shape[0] != batch_size:
+        raise ValueError("record values and requested keys need the same batch size")
+    required_regions = requested_keys.shape[1]
     values = torch.zeros((batch_size, seq_len), dtype=torch.long)
     pointers = torch.full((batch_size, seq_len, required_regions), -1.0)
     token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
-    answers = torch.empty(batch_size, dtype=torch.long)
-    targets = torch.empty((batch_size, required_regions), dtype=torch.long)
-
-    for item in range(batch_size):
-        requested_keys = torch.randperm(n_records, generator=generator)[:required_regions]
-        requested_count = torch.randint(required_regions + 1, (), generator=generator)
-        requested_values = torch.zeros(required_regions, dtype=torch.long)
-        if requested_count:
-            ones = torch.randperm(required_regions, generator=generator)[:requested_count]
-            requested_values[ones] = 1
-        requested_positions = record_positions[requested_keys]
-        values[item, requested_positions] = requested_values
-        token_types[item, requested_positions] = RECORD
-        token_types[item, -1] = QUERY
-        answers[item] = requested_count
-        targets[item] = requested_positions
+    values[:, record_positions] = record_values
+    token_types[:, record_positions] = RECORD
+    token_types[:, -1] = QUERY
+    answers = record_values.gather(1, requested_keys).sum(dim=1)
+    targets = record_positions[requested_keys]
 
     history_end = seq_len - dense_window
+    record_addresses = normalized_window_addresses(
+        record_positions,
+        history_end,
+        address_stride,
+    )
+    pointers[:, record_positions, 0] = record_addresses
     pointers[:, -1] = normalized_window_addresses(targets, history_end, address_stride)
     target_positions = targets.unsqueeze(0).expand(n_layers, -1, -1).clone()
     target_addresses = _coverage_window_addresses(
