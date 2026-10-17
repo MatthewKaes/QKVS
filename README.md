@@ -129,10 +129,15 @@ The checkpointed Stage A utility gate is run separately from the legacy syntheti
 ```bash
 HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
   .venv/bin/python -m qkvs.utility_gate \
-  --config configs/retrieval_utility_stage_a.json \
+  --config configs/retrieval_utility_stage_a_v2.json \
   --device cuda \
   --max-examples-this-run 4
 ```
 
 Repeat the command until the artifact reports 24 completed examples. It evaluates only a frozen
 0.5B model; it performs no optimization or backward pass.
+
+The first five-example Stage A pilot is retained but invalidated: its full-attention condition could
+see the fixed task prompt while its sparse conditions could not. The V2 configuration makes that
+32-token prefix globally visible in every condition without changing the one-block historical
+budget.

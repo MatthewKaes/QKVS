@@ -40,6 +40,7 @@ class SquadRecord:
 class UtilityExample:
     index: int
     input_ids: tuple[int, ...]
+    global_prefix_end: int
     query_start: int
     block_ranges: tuple[tuple[int, int], ...]
     eligible_blocks: tuple[int, ...]
@@ -224,6 +225,7 @@ def build_examples(
         "documents. Reply with only A, B, C, or D.<|im_end|>\n<|im_start|>user\n",
         add_special_tokens=False,
     )
+    global_prefix_end = len(system_ids)
     examples: list[UtilityExample] = []
     pool_cursor = 0
     for index in range(count):
@@ -276,6 +278,7 @@ def build_examples(
             UtilityExample(
                 index=index,
                 input_ids=tuple(input_ids),
+                global_prefix_end=global_prefix_end,
                 query_start=query_start,
                 block_ranges=tuple(block_ranges),
                 eligible_blocks=eligible_blocks,
@@ -299,6 +302,7 @@ def build_attention_mask(
     device: torch.device,
     rolling_tokens: int | None = None,
     query_start: int | None = None,
+    global_ranges: Sequence[tuple[int, int]] = (),
     selected_ranges: Sequence[tuple[int, int]] = (),
 ) -> Tensor:
     positions = torch.arange(length, device=device)
@@ -307,6 +311,10 @@ def build_attention_mask(
     allowed = key_positions <= query_positions
     if rolling_tokens is not None:
         allowed &= key_positions > query_positions - rolling_tokens
+    for start, end in global_ranges:
+        allowed |= (
+            (key_positions >= start) & (key_positions < end) & (key_positions <= query_positions)
+        )
     if selected_ranges:
         if query_start is None:
             raise ValueError("query_start is required for historical selections")
@@ -327,17 +335,20 @@ def _score(
     model_dtype: torch.dtype,
     rolling_tokens: int | None,
     selected_blocks: Sequence[int] = (),
+    global_prefix_attention: bool = False,
 ) -> dict[str, Any]:
     input_ids = torch.tensor(example.input_ids, dtype=torch.long, device=device)[None]
     attention_mask = None
     if rolling_tokens is not None:
         selected_ranges = [example.block_ranges[index] for index in selected_blocks]
+        global_ranges = [(0, example.global_prefix_end)] if global_prefix_attention else []
         attention_mask = build_attention_mask(
             input_ids.shape[1],
             dtype=model_dtype,
             device=device,
             rolling_tokens=rolling_tokens,
             query_start=example.query_start,
+            global_ranges=global_ranges,
             selected_ranges=selected_ranges,
         )
     if device.type == "cuda":
@@ -373,6 +384,7 @@ def evaluate_example(
     device: torch.device,
     model_dtype: torch.dtype,
     rolling_tokens: int,
+    global_prefix_attention: bool,
 ) -> dict[str, Any]:
     modes = {
         "full": _score(
@@ -388,6 +400,7 @@ def evaluate_example(
             device=device,
             model_dtype=model_dtype,
             rolling_tokens=rolling_tokens,
+            global_prefix_attention=global_prefix_attention,
         ),
         "random": _score(
             model,
@@ -395,6 +408,7 @@ def evaluate_example(
             device=device,
             model_dtype=model_dtype,
             rolling_tokens=rolling_tokens,
+            global_prefix_attention=global_prefix_attention,
             selected_blocks=[example.random_block],
         ),
         "recency": _score(
@@ -403,6 +417,7 @@ def evaluate_example(
             device=device,
             model_dtype=model_dtype,
             rolling_tokens=rolling_tokens,
+            global_prefix_attention=global_prefix_attention,
             selected_blocks=[example.recency_block],
         ),
         "annotated_oracle": _score(
@@ -411,6 +426,7 @@ def evaluate_example(
             device=device,
             model_dtype=model_dtype,
             rolling_tokens=rolling_tokens,
+            global_prefix_attention=global_prefix_attention,
             selected_blocks=[example.target_block],
         ),
     }
@@ -428,6 +444,7 @@ def evaluate_example(
                 device=device,
                 model_dtype=model_dtype,
                 rolling_tokens=rolling_tokens,
+                global_prefix_attention=global_prefix_attention,
                 selected_blocks=[block],
             )
         block_scores[str(block)] = measured_blocks[block]
@@ -451,6 +468,7 @@ def evaluate_example(
         "random_block": example.random_block,
         "recency_block": example.recency_block,
         "eligible_blocks": list(example.eligible_blocks),
+        "global_prefix_tokens": example.global_prefix_end,
         "query_start": example.query_start,
         "sequence_tokens": len(example.input_ids),
         "input_token_sha256": token_digest,
@@ -698,6 +716,7 @@ def main() -> None:
             device=torch.device(args.device),
             model_dtype=model_dtype,
             rolling_tokens=specification["rolling_tokens"],
+            global_prefix_attention=specification.get("global_prefix_attention", False),
         )
         result["examples"].append(measured)
         result["examples"].sort(key=lambda value: value["index"])

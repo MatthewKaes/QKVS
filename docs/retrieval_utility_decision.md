@@ -6,10 +6,12 @@ The v1-v5 pointer-recall progression is stopped. Those experiments remain useful
 negative evidence, but they do not establish that exact address reconstruction is the right
 objective for learned sparse attention. No v6 router is planned.
 
-The only active experiment is the Stage A gate below. It asks whether one selected old block can
-improve a frozen pretrained model's prediction at all. Training `S` is not justified until that
-opportunity is demonstrated. The CUDA measurement is pending; the protocol, data construction,
-model checkpoint, masks, thresholds, and raw-result schema are frozen before observing results.
+The only active experiment is the corrected Stage A gate below. It asks whether one selected old
+block can improve a frozen pretrained model's prediction at all. Training `S` is not justified
+until that opportunity is demonstrated. The original preregistered mask had a task-prompt
+visibility confound discovered after five examples; those results are invalidated and preserved.
+The corrected protocol changes only visibility of the fixed prompt and has its own configuration
+and result artifact.
 
 ## What the previous experiments established
 
@@ -132,15 +134,16 @@ creating competing evidence. Correct labels and target block positions are balan
 always outside the 256-token rolling window, and no example is selected or rejected based on model
 performance.
 
-Every token is computed with rolling-local attention for sparse conditions. Only query tokens gain
-access to the selected old block, at its original RoPE position. This retains the pretrained
-model's local memory formation while controlling historical retrieval. Sequences contain
-1,618-1,638 tokens.
+Every token is computed with rolling-local attention for sparse conditions. The fixed 32-token
+system and user-role prefix is globally visible in every condition; it contains task instructions
+but no question, answer option, or document evidence. Only query tokens gain access to the selected
+old block, at its original RoPE position. The constant global prefix prevents instruction
+visibility from varying with the historical-block condition. Sequences contain 1,621-1,644 tokens.
 
 ### Compared conditions
 
 - `full`: ordinary full causal attention.
-- `rolling`: the last 256 tokens only.
+- `rolling`: the last 256 tokens plus the fixed 32-token task prefix.
 - `random`: rolling plus one uniformly sampled eligible old block.
 - `recency`: rolling plus the most recent fully historical block.
 - `annotated_oracle`: rolling plus the SQuAD supporting block.
@@ -166,14 +169,36 @@ If any check fails, stop before training `S`. A failure means this model/task/pr
 provide the retrieval opportunity needed for the next claim; it does not by itself disprove every
 possible model or task.
 
-## Execution and result
+## Invalidated five-example pilot
+
+The first mask allowed full attention to see the system instruction while sparse conditions lost it
+after it left the rolling window. After five examples, full attention was 5/5, rolling and the
+annotated block were each 2/5, and the label-dependent utility oracle was 5/5 but selected the
+annotated block 0/5 times. These numbers do not measure historical-block utility because task
+instructions were not held constant.
+
+A one-variable CPU counterfactual retained the same inputs, rolling window, annotated block, model,
+and output labels while making only the fixed 32-token prefix globally visible. Annotated-block
+accuracy changed from 2/5 to 5/5 and mean loss from 1.706 to 0.00233. This reverses every previously
+incorrect annotated prediction and demonstrates that prompt visibility, not missing evidence in the
+annotated block, caused the pilot mismatch. The raw pilot and audit are preserved in
+[retrieval_utility_stage_a_invalid_prompt_visibility.json](../artifacts/results/retrieval_utility_stage_a_invalid_prompt_visibility.json)
+and
+[retrieval_utility_stage_a_prompt_visibility_audit.json](../artifacts/results/retrieval_utility_stage_a_prompt_visibility_audit.json).
+
+The audit is a protocol correction, not a Stage A result: it inspected only five examples and did
+not recompute the rolling, random, or recency baselines under the corrected mask.
+
+## Corrected execution and result
 
 The CPU mask tests and an actual-checkpoint CPU integration forward pass both pass. The natural
 dataset and model revisions are cached and checksum-pinned. The CUDA measurement must be run from
 the user's terminal because invoking this host's GPU through Codex has repeatedly destabilized the
 driver.
 
-At this checkpoint the result is **pending**. Further QKVS investment is not yet justified. If the
-gate passes, Stage B may compare a deployment-compatible minimal selector with random and positional
-priors. If it fails, the correct outcome is to stop or change the frozen model/task foundation—not
-to add another router architecture.
+The corrected configuration is `configs/retrieval_utility_stage_a_v2.json`; it writes to a new raw
+artifact and cannot resume from the invalid pilot. At this checkpoint the corrected result is
+**pending**. Further QKVS investment is not yet justified. If the gate passes, Stage B may compare a
+deployment-compatible minimal selector with random and positional priors. If it fails, the correct
+outcome is to stop or change the frozen model/task foundation—not to add another router
+architecture.

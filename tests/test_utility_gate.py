@@ -39,6 +39,21 @@ def test_selected_history_is_visible_only_from_query_start() -> None:
     assert not allowed[8, 0]
 
 
+def test_global_prefix_is_visible_to_every_later_position() -> None:
+    mask = build_attention_mask(
+        10,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        rolling_tokens=3,
+        global_ranges=[(0, 2)],
+    )
+    allowed = _allowed(mask)
+    assert allowed[4, 0]
+    assert allowed[9, 1]
+    assert not allowed[0, 1]
+    assert not allowed[9, 2]
+
+
 def test_squad_records_use_the_majority_answer_annotation() -> None:
     payload = {
         "data": [
