@@ -1,0 +1,480 @@
+{
+  "config": {
+    "block_size": 16,
+    "d_model": 128,
+    "decode_lengths": [
+      256,
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "dense_window": 256,
+    "n_heads": 4,
+    "n_layers": 4,
+    "name": "rtx5070_reference",
+    "prefill_lengths": [
+      128,
+      256,
+      512,
+      1024,
+      2048
+    ],
+    "prefill_repeats": 8,
+    "repeats": 50,
+    "retrieval_budget": 256,
+    "seed": 1701,
+    "warmup": 10
+  },
+  "decode": [
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.324864000082016,
+        "median_ms": 0.20265600085258484,
+        "minimum_ms": 0.19577600061893463,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4934.470214515955
+      },
+      "address_projection": {
+        "maximum_ms": 0.022143999114632607,
+        "median_ms": 0.015023999847471714,
+        "minimum_ms": 0.014783999882638454,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 66560.1710697756
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.4705280065536499,
+        "median_ms": 0.36001600325107574,
+        "minimum_ms": 0.32870399951934814,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2777.654301391148
+      },
+      "full_attention": {
+        "maximum_ms": 0.04102399945259094,
+        "median_ms": 0.011231999844312668,
+        "minimum_ms": 0.010879999957978725,
+        "peak_temporary_bytes": 2048,
+        "tokens_per_second": 89031.34026540704
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.1942719966173172,
+        "median_ms": 0.08267199993133545,
+        "minimum_ms": 0.020031999796628952,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12095.993816897691
+      },
+      "kv_cache_bytes": 524288,
+      "selected_token_occurrences": 256,
+      "sequence_length": 256,
+      "theoretical_score_ratio_full_over_bounded": 1.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.42102399468421936,
+        "median_ms": 0.20603200048208237,
+        "minimum_ms": 0.17919999361038208,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4853.614961074774
+      },
+      "address_projection": {
+        "maximum_ms": 0.023903999477624893,
+        "median_ms": 0.014816000126302242,
+        "minimum_ms": 0.011680000461637974,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 67494.59985659292
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.6022400259971619,
+        "median_ms": 0.3552960008382797,
+        "minimum_ms": 0.32921600341796875,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2814.5546182355442
+      },
+      "full_attention": {
+        "maximum_ms": 0.02051199972629547,
+        "median_ms": 0.014047999866306782,
+        "minimum_ms": 0.006399999838322401,
+        "peak_temporary_bytes": 3584,
+        "tokens_per_second": 71184.51092802436
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.20348800718784332,
+        "median_ms": 0.0814560018479824,
+        "minimum_ms": 0.02054399996995926,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12276.566211367139
+      },
+      "kv_cache_bytes": 1048576,
+      "selected_token_occurrences": 512,
+      "sequence_length": 512,
+      "theoretical_score_ratio_full_over_bounded": 1.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.34883201122283936,
+        "median_ms": 0.2011360004544258,
+        "minimum_ms": 0.19776000082492828,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4971.760389690079
+      },
+      "address_projection": {
+        "maximum_ms": 0.01961600035429001,
+        "median_ms": 0.015135999768972397,
+        "minimum_ms": 0.014336000196635723,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 66067.65428537605
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.6297919750213623,
+        "median_ms": 0.35339200496673584,
+        "minimum_ms": 0.3458560109138489,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2829.718799365957
+      },
+      "full_attention": {
+        "maximum_ms": 0.024480000138282776,
+        "median_ms": 0.014495999552309513,
+        "minimum_ms": 0.014336000196635723,
+        "peak_temporary_bytes": 4608,
+        "tokens_per_second": 68984.54959186856
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.20710399746894836,
+        "median_ms": 0.08091199770569801,
+        "minimum_ms": 0.020640000700950623,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12359.106539889295
+      },
+      "kv_cache_bytes": 2097152,
+      "selected_token_occurrences": 512,
+      "sequence_length": 1024,
+      "theoretical_score_ratio_full_over_bounded": 2.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.2906239926815033,
+        "median_ms": 0.2019840031862259,
+        "minimum_ms": 0.18435199558734894,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4950.887120887572
+      },
+      "address_projection": {
+        "maximum_ms": 0.019487999379634857,
+        "median_ms": 0.014879999682307243,
+        "minimum_ms": 0.014688000082969666,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 67204.30251010216
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.5881919860839844,
+        "median_ms": 0.3561599999666214,
+        "minimum_ms": 0.3324800133705139,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2807.7268645937725
+      },
+      "full_attention": {
+        "maximum_ms": 0.023711999878287315,
+        "median_ms": 0.014368000440299511,
+        "minimum_ms": 0.01408000010997057,
+        "peak_temporary_bytes": 6656,
+        "tokens_per_second": 69599.1069985765
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.10579200088977814,
+        "median_ms": 0.0814560018479824,
+        "minimum_ms": 0.020608000457286835,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12276.566211367139
+      },
+      "kv_cache_bytes": 4194304,
+      "selected_token_occurrences": 512,
+      "sequence_length": 2048,
+      "theoretical_score_ratio_full_over_bounded": 4.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.4331519901752472,
+        "median_ms": 0.20164799690246582,
+        "minimum_ms": 0.19465599954128265,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4959.136789658691
+      },
+      "address_projection": {
+        "maximum_ms": 0.0197759997099638,
+        "median_ms": 0.014911999925971031,
+        "minimum_ms": 0.013952000066637993,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 67060.08616982223
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.6841279864311218,
+        "median_ms": 0.3569599986076355,
+        "minimum_ms": 0.3346239924430847,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2801.4343453065267
+      },
+      "full_attention": {
+        "maximum_ms": 0.2955839931964874,
+        "median_ms": 0.018112000077962875,
+        "minimum_ms": 0.016896000131964684,
+        "peak_temporary_bytes": 10752,
+        "tokens_per_second": 55212.013896616205
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.2221119999885559,
+        "median_ms": 0.08115199953317642,
+        "minimum_ms": 0.0226879995316267,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12322.555275932316
+      },
+      "kv_cache_bytes": 8388608,
+      "selected_token_occurrences": 512,
+      "sequence_length": 4096,
+      "theoretical_score_ratio_full_over_bounded": 8.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.47171199321746826,
+        "median_ms": 0.2003360018134117,
+        "minimum_ms": 0.19171200692653656,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4991.6140431482545
+      },
+      "address_projection": {
+        "maximum_ms": 0.020608000457286835,
+        "median_ms": 0.014960000291466713,
+        "minimum_ms": 0.013887999579310417,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 66844.91848375209
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.5887680053710938,
+        "median_ms": 0.35492800176143646,
+        "minimum_ms": 0.32841598987579346,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2817.4728255792743
+      },
+      "full_attention": {
+        "maximum_ms": 0.029503999277949333,
+        "median_ms": 0.020239999517798424,
+        "minimum_ms": 0.020096000283956528,
+        "peak_temporary_bytes": 10752,
+        "tokens_per_second": 49407.11580159037
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.09827200323343277,
+        "median_ms": 0.08153600245714188,
+        "minimum_ms": 0.020864000543951988,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12264.520823493087
+      },
+      "kv_cache_bytes": 16777216,
+      "selected_token_occurrences": 512,
+      "sequence_length": 8192,
+      "theoretical_score_ratio_full_over_bounded": 16.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.3846080005168915,
+        "median_ms": 0.1998559981584549,
+        "minimum_ms": 0.1952960044145584,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 5003.60263997258
+      },
+      "address_projection": {
+        "maximum_ms": 0.02409599907696247,
+        "median_ms": 0.014911999925971031,
+        "minimum_ms": 0.009375999681651592,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 67060.08616982223
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.5056959986686707,
+        "median_ms": 0.3551360070705414,
+        "minimum_ms": 0.3270399868488312,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2815.8226146901743
+      },
+      "full_attention": {
+        "maximum_ms": 0.034272000193595886,
+        "median_ms": 0.026335999369621277,
+        "minimum_ms": 0.019328000023961067,
+        "peak_temporary_bytes": 13824,
+        "tokens_per_second": 37970.839304982124
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.21439999341964722,
+        "median_ms": 0.08108799904584885,
+        "minimum_ms": 0.019328000023961067,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12332.281123802046
+      },
+      "kv_cache_bytes": 33554432,
+      "selected_token_occurrences": 512,
+      "sequence_length": 16384,
+      "theoretical_score_ratio_full_over_bounded": 32.0
+    },
+    {
+      "address_decode_including_projection": {
+        "maximum_ms": 0.35942399501800537,
+        "median_ms": 0.20368000119924545,
+        "minimum_ms": 0.18384000658988953,
+        "peak_temporary_bytes": 28672,
+        "tokens_per_second": 4909.662186332041
+      },
+      "address_projection": {
+        "maximum_ms": 0.019872000440955162,
+        "median_ms": 0.014911999925971031,
+        "minimum_ms": 0.014560000039637089,
+        "peak_temporary_bytes": 1024,
+        "tokens_per_second": 67060.08616982223
+      },
+      "bounded_combined": {
+        "maximum_ms": 0.5465599894523621,
+        "median_ms": 0.35657599568367004,
+        "minimum_ms": 0.336544007062912,
+        "peak_temporary_bytes": 275968,
+        "tokens_per_second": 2804.451258932
+      },
+      "full_attention": {
+        "maximum_ms": 0.04684799909591675,
+        "median_ms": 0.03843199834227562,
+        "minimum_ms": 0.03161599859595299,
+        "peak_temporary_bytes": 12288,
+        "tokens_per_second": 26019.984469555646
+      },
+      "gather_and_attention": {
+        "maximum_ms": 0.09616000205278397,
+        "median_ms": 0.08064000308513641,
+        "minimum_ms": 0.020160000771284103,
+        "peak_temporary_bytes": 270848,
+        "tokens_per_second": 12400.79317636237
+      },
+      "kv_cache_bytes": 67108864,
+      "selected_token_occurrences": 512,
+      "sequence_length": 32768,
+      "theoretical_score_ratio_full_over_bounded": 64.0
+    }
+  ],
+  "environment": {
+    "cuda_available": true,
+    "git_revision": null,
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "pid": 11342,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "notes": {
+    "complexity": "Address decoding builds only L+R candidates and never scores historical K.",
+    "kv_cache": "Theoretical BF16 K+V allocation across all configured layers.",
+    "timing": "CUDA events around eager PyTorch operations; medians are not kernel-isolated."
+  },
+  "prefill": [
+    {
+      "dense": {
+        "maximum_ms": 1.7581440210342407,
+        "median_ms": 1.6524640321731567,
+        "minimum_ms": 1.6100480556488037,
+        "peak_temporary_bytes": 2037248,
+        "tokens_per_second": 77460.08234240784
+      },
+      "qkvs": {
+        "maximum_ms": 3.4081599712371826,
+        "median_ms": 3.393264055252075,
+        "minimum_ms": 3.361952066421509,
+        "peak_temporary_bytes": 55253504,
+        "tokens_per_second": 37721.79173674454
+      },
+      "sequence_length": 128
+    },
+    {
+      "dense": {
+        "maximum_ms": 1.6919360160827637,
+        "median_ms": 1.627568006515503,
+        "minimum_ms": 1.4359999895095825,
+        "peak_temporary_bytes": 2528768,
+        "tokens_per_second": 157289.8944776361
+      },
+      "qkvs": {
+        "maximum_ms": 4.673471927642822,
+        "median_ms": 4.144719839096069,
+        "minimum_ms": 3.8126718997955322,
+        "peak_temporary_bytes": 109190656,
+        "tokens_per_second": 61765.332745827174
+      },
+      "sequence_length": 256
+    },
+    {
+      "dense": {
+        "maximum_ms": 1.7637759447097778,
+        "median_ms": 1.6546720266342163,
+        "minimum_ms": 1.6349760293960571,
+        "peak_temporary_bytes": 3577344,
+        "tokens_per_second": 309426.8784137627
+      },
+      "qkvs": {
+        "maximum_ms": 8.180928230285645,
+        "median_ms": 7.816960096359253,
+        "minimum_ms": 7.646431922912598,
+        "peak_temporary_bytes": 217064960,
+        "tokens_per_second": 65498.60734717884
+      },
+      "sequence_length": 512
+    },
+    {
+      "dense": {
+        "maximum_ms": 1.829856038093567,
+        "median_ms": 1.658735990524292,
+        "minimum_ms": 1.6500799655914307,
+        "peak_temporary_bytes": 5863936,
+        "tokens_per_second": 617337.5424719246
+      },
+      "qkvs": {
+        "maximum_ms": 15.259712219238281,
+        "median_ms": 15.065104007720947,
+        "minimum_ms": 14.865983963012695,
+        "peak_temporary_bytes": 432813568,
+        "tokens_per_second": 67971.65153822997
+      },
+      "sequence_length": 1024
+    },
+    {
+      "dense": {
+        "maximum_ms": 1.808832049369812,
+        "median_ms": 1.6466400027275085,
+        "minimum_ms": 1.4042240381240845,
+        "peak_temporary_bytes": 9868800,
+        "tokens_per_second": 1243744.835912935
+      },
+      "qkvs": {
+        "maximum_ms": 29.23206329345703,
+        "median_ms": 28.746368408203125,
+        "minimum_ms": 28.360864639282227,
+        "peak_temporary_bytes": 864310784,
+        "tokens_per_second": 71243.78185508742
+      },
+      "sequence_length": 2048
+    }
+  ]
+}

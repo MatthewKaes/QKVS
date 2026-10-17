@@ -1,0 +1,293 @@
+[
+  {
+    "elapsed_seconds": 19.881143543000007,
+    "evaluations": {
+      "128": {
+        "native": {
+          "answer_accuracy": 0.0595703125,
+          "answer_loss": 3.427695319056511,
+          "cascade_address_sensitivity": [
+            0.002888479270040989,
+            0.0
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.017578125,
+            0.005859375,
+            0.005859375,
+            0.00390625
+          ],
+          "route_accuracy_mean": 0.00830078125
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.0064133096020668745,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.017578125,
+            0.0185546875,
+            0.021484375,
+            0.01953125
+          ],
+          "route_accuracy_mean": 0.019287109375
+        }
+      },
+      "256": {
+        "native": {
+          "answer_accuracy": 0.037109375,
+          "answer_loss": 3.470289573073387,
+          "cascade_address_sensitivity": [
+            0.003957531880587339,
+            0.0
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.015625,
+            0.00390625,
+            0.0029296875,
+            0.0029296875
+          ],
+          "route_accuracy_mean": 0.00634765625
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.006844574090791866,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.015625,
+            0.0078125,
+            0.0146484375,
+            0.0087890625
+          ],
+          "route_accuracy_mean": 0.01171875
+        }
+      },
+      "64": {
+        "native": {
+          "answer_accuracy": 0.3544921875,
+          "answer_loss": 2.348321184515953,
+          "cascade_address_sensitivity": [
+            0.20243793725967407,
+            0.15191219747066498
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.685546875,
+            0.455078125,
+            0.2373046875,
+            0.1572265625
+          ],
+          "route_accuracy_mean": 0.3837890625
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.007750976306851953,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.685546875,
+            0.625,
+            0.4375,
+            0.328125
+          ],
+          "route_accuracy_mean": 0.51904296875
+        }
+      }
+    },
+    "name": "three_hop_strict_curriculum"
+  },
+  {
+    "elapsed_seconds": 20.440223886000012,
+    "evaluations": {
+      "128": {
+        "native": {
+          "answer_accuracy": 0.044921875,
+          "answer_loss": 4.070334181189537,
+          "cascade_address_sensitivity": [
+            0.0011908914893865585,
+            0.0
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.0302734375,
+            0.0087890625,
+            0.0107421875,
+            0.01171875
+          ],
+          "route_accuracy_mean": 0.015380859375
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.0006053893775970209,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.0302734375,
+            0.0283203125,
+            0.021484375,
+            0.025390625
+          ],
+          "route_accuracy_mean": 0.0263671875
+        }
+      },
+      "256": {
+        "native": {
+          "answer_accuracy": 0.0419921875,
+          "answer_loss": 4.032099783420563,
+          "cascade_address_sensitivity": [
+            0.0009272773750126362,
+            0.0008517960086464882
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.0146484375,
+            0.0009765625,
+            0.0029296875,
+            0.0087890625
+          ],
+          "route_accuracy_mean": 0.0068359375
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.000634890740911942,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.0146484375,
+            0.0107421875,
+            0.0126953125,
+            0.009765625
+          ],
+          "route_accuracy_mean": 0.011962890625
+        }
+      },
+      "64": {
+        "native": {
+          "answer_accuracy": 0.27734375,
+          "answer_loss": 3.1916353702545166,
+          "cascade_address_sensitivity": [
+            0.17437955737113953,
+            0.14044933021068573
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.63671875,
+            0.4013671875,
+            0.2646484375,
+            0.1796875
+          ],
+          "route_accuracy_mean": 0.37060546875
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.000644868898234563,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.63671875,
+            0.7451171875,
+            0.578125,
+            0.4365234375
+          ],
+          "route_accuracy_mean": 0.59912109375
+        }
+      }
+    },
+    "name": "three_hop_strict_teacher"
+  },
+  {
+    "elapsed_seconds": 20.18608244400002,
+    "evaluations": {
+      "128": {
+        "native": {
+          "answer_accuracy": 0.0634765625,
+          "answer_loss": 3.3817524313926697,
+          "cascade_address_sensitivity": [
+            0.010866411030292511,
+            0.0,
+            0.006025621667504311
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.05078125,
+            0.0068359375,
+            0.00390625,
+            0.0068359375
+          ],
+          "route_accuracy_mean": 0.01708984375
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.011281117971520871,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.05078125,
+            0.0361328125,
+            0.02734375,
+            0.017578125
+          ],
+          "route_accuracy_mean": 0.032958984375
+        }
+      },
+      "256": {
+        "native": {
+          "answer_accuracy": 0.0439453125,
+          "answer_loss": 3.435401201248169,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0,
+            0.004618827253580093
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.015625,
+            0.00390625,
+            0.0078125,
+            0.0029296875
+          ],
+          "route_accuracy_mean": 0.007568359375
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.012450113135855645,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.015625,
+            0.0185546875,
+            0.0078125,
+            0.00390625
+          ],
+          "route_accuracy_mean": 0.011474609375
+        }
+      },
+      "64": {
+        "native": {
+          "answer_accuracy": 0.1044921875,
+          "answer_loss": 3.2425223886966705,
+          "cascade_address_sensitivity": [
+            0.21337205171585083,
+            0.08796685189008713,
+            0.048410892486572266
+          ],
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.740234375,
+            0.2841796875,
+            0.12109375,
+            0.041015625
+          ],
+          "route_accuracy_mean": 0.296630859375
+        },
+        "oracle": {
+          "answer_accuracy": 0.9990234375,
+          "answer_loss": 0.02413729322142899,
+          "examples": 1024,
+          "route_accuracy_by_layer": [
+            0.740234375,
+            0.416015625,
+            0.369140625,
+            0.2529296875
+          ],
+          "route_accuracy_mean": 0.444580078125
+        }
+      }
+    },
+    "name": "four_hop_strict_curriculum"
+  }
+]

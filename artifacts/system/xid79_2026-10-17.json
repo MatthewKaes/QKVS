@@ -1,0 +1,29 @@
+{
+  "event_time_local": "2026-10-17T00:29:22-07:00",
+  "kernel_events": [
+    "NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.",
+    "NVRM: Xid (PCI:0000:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (OS Reboot)"
+  ],
+  "observed_workload": {
+    "command": "python -m qkvs.experiment --config configs/multihop_quantized.json --device cuda",
+    "phase": "second 2000-step model, after step 1900 and before its result/checkpoint was committed",
+    "model": "4 layers, width 96, 4 heads, sequence length 64, batch size 64",
+    "process_error": "torch.AcceleratorError: CUDA error: unspecified launch failure"
+  },
+  "interpretation": "Known sporadic host GPU/driver instability. This was a PCIe/GPU-loss event, not a CUDA out-of-memory report and not treated as an architecture result.",
+  "mitigation": [
+    "atomic checkpoints every 100 steps",
+    "one short GPU job per process",
+    "batch size reduced from 64 to 32",
+    "evaluation batch size reduced to 8",
+    "evaluation moved to CPU",
+    "GPU health checked between jobs"
+  ],
+  "post_reboot_state": {
+    "gpu": "NVIDIA GeForce RTX 5070",
+    "driver": "610.57.04",
+    "temperature_c": 31,
+    "memory_used_mib": 1167,
+    "memory_free_mib": 10644
+  }
+}

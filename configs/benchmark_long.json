@@ -1,0 +1,15 @@
+{
+  "name": "rtx5070_long_decode",
+  "seed": 1702,
+  "d_model": 128,
+  "n_heads": 4,
+  "n_layers": 4,
+  "dense_window": 256,
+  "retrieval_budget": 256,
+  "block_size": 16,
+  "decode_lengths": [32768, 65536, 131072, 262144, 524288, 1048576],
+  "prefill_lengths": [],
+  "warmup": 10,
+  "repeats": 30,
+  "prefill_repeats": 3
+}

@@ -1,0 +1,186 @@
+{
+  "elapsed_seconds": 8.603634187000011,
+  "environment": {
+    "cuda_available": true,
+    "git_revision": null,
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "pid": 6904,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "evaluations": {
+    "128": {
+      "native": {
+        "answer_accuracy": 0.078125,
+        "answer_loss": 2.764454886317253,
+        "examples": 128
+      }
+    },
+    "256": {
+      "native": {
+        "answer_accuracy": 0.140625,
+        "answer_loss": 2.7664749771356583,
+        "examples": 128
+      }
+    },
+    "64": {
+      "native": {
+        "answer_accuracy": 0.0625,
+        "answer_loss": 2.7744636088609695,
+        "examples": 128
+      }
+    }
+  },
+  "history": [
+    {
+      "answer_loss": 5.096273899078369,
+      "loss": 5.096273899078369,
+      "route_loss": 0.0,
+      "step": 1,
+      "teacher_probability": 1.0,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7967686653137207,
+      "loss": 2.7967686653137207,
+      "route_loss": 0.0,
+      "step": 100,
+      "teacher_probability": 0.87625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7924644947052,
+      "loss": 2.7924644947052,
+      "route_loss": 0.0,
+      "step": 200,
+      "teacher_probability": 0.75125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.796407461166382,
+      "loss": 2.796407461166382,
+      "route_loss": 0.0,
+      "step": 300,
+      "teacher_probability": 0.62625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.8081860542297363,
+      "loss": 2.8081860542297363,
+      "route_loss": 0.0,
+      "step": 400,
+      "teacher_probability": 0.50125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7650787830352783,
+      "loss": 2.7650787830352783,
+      "route_loss": 0.0,
+      "step": 500,
+      "teacher_probability": 0.37625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.791656494140625,
+      "loss": 2.791656494140625,
+      "route_loss": 0.0,
+      "step": 600,
+      "teacher_probability": 0.25125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7720775604248047,
+      "loss": 2.7720775604248047,
+      "route_loss": 0.0,
+      "step": 700,
+      "teacher_probability": 0.12624999999999997,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7665414810180664,
+      "loss": 2.7665414810180664,
+      "route_loss": 0.0,
+      "step": 800,
+      "teacher_probability": 0.0012499999999999734,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.758803367614746,
+      "loss": 2.758803367614746,
+      "route_loss": 0.0,
+      "step": 900,
+      "teacher_probability": 0.0,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 2.7357254028320312,
+      "loss": 2.7357254028320312,
+      "route_loss": 0.0,
+      "step": 1000,
+      "teacher_probability": 0.0,
+      "training_hops": 1
+    }
+  ],
+  "model": {
+    "attention_kind": "rolling",
+    "block_size": 1,
+    "d_model": 96,
+    "dense_window": 1,
+    "dropout": 0.0,
+    "mlp_ratio": 3,
+    "n_heads": 4,
+    "n_layers": 4,
+    "n_token_types": 3,
+    "retrieval_budget": 1,
+    "router_mode": "learned",
+    "vocab_size": 152
+  },
+  "name": "semantic_random_rolling",
+  "peak_training_cuda_memory_bytes": 57031168,
+  "training": {
+    "answer_vocab_size": 16,
+    "batch_size": 32,
+    "checkpoint_every": 100,
+    "eval_batch_size": 8,
+    "eval_batches": 16,
+    "eval_seq_lens": [
+      64,
+      128,
+      256
+    ],
+    "hop_curriculum": [],
+    "hops": 1,
+    "learning_rate": 0.0006,
+    "log_every": 100,
+    "name": "semantic_random_rolling",
+    "query_only_retrieval": true,
+    "route_loss_space": "blocks",
+    "route_loss_weight": 0.2,
+    "seed": 6704,
+    "semantic_keys": 8,
+    "steps": 1000,
+    "task": "semantic_random",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 0.0,
+    "train_seq_len": 64,
+    "weight_decay": 0.01
+  }
+}

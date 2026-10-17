@@ -1,0 +1,15 @@
+{
+  "name": "rtx5070_reference",
+  "seed": 1701,
+  "d_model": 128,
+  "n_heads": 4,
+  "n_layers": 4,
+  "dense_window": 256,
+  "retrieval_budget": 256,
+  "block_size": 16,
+  "decode_lengths": [256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
+  "prefill_lengths": [128, 256, 512, 1024, 2048],
+  "warmup": 10,
+  "repeats": 50,
+  "prefill_repeats": 8
+}

@@ -1,0 +1,428 @@
+[
+  {
+    "elapsed_seconds": 3.984071968999956,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 0.9765625,
+          "answer_loss": 0.2274794476106763,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.29166667349636555,
+            0.2239583432674408,
+            0.2552083395421505,
+            0.20833333767950535
+          ],
+          "route_accuracy_mean": 0.24479167349636555
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.09065096452832222,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.29166667349636555,
+            0.20312500558793545,
+            0.24218750558793545,
+            0.22916667349636555
+          ],
+          "route_accuracy_mean": 0.2415364645421505
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 0.921875,
+          "answer_loss": 0.4897370971739292,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.11458333721384406,
+            0.10677083651535213,
+            0.1328125037252903,
+            0.09895833535119891
+          ],
+          "route_accuracy_mean": 0.11328125320142135
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.10334457270801067,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.11458333721384406,
+            0.08593750279396772,
+            0.0859375016298145,
+            0.09375000279396772
+          ],
+          "route_accuracy_mean": 0.0950520861078985
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.09016564954072237,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.7552083656191826,
+            0.6458333656191826,
+            0.6562500223517418,
+            0.6354166865348816
+          ],
+          "route_accuracy_mean": 0.6731771100312471
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.08790834154933691,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.7552083656191826,
+            0.6588541865348816,
+            0.6250000298023224,
+            0.5833333544433117
+          ],
+          "route_accuracy_mean": 0.6555989840999246
+        }
+      }
+    },
+    "name": "one_hop_learned"
+  },
+  {
+    "elapsed_seconds": 4.0903319799999736,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.474505454301834,
+          "cascade_address_sensitivity": [
+            0.011530782096087933,
+            0.025273505598306656
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.17187500651925802,
+            0.05729166814126074,
+            0.03645833418704569,
+            0.05468750069849193
+          ],
+          "route_accuracy_mean": 0.0800781273865141
+        },
+        "oracle": {
+          "answer_accuracy": 0.033854166666666664,
+          "answer_loss": 3.4762201011180878,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.17187500651925802,
+            0.10677083674818277,
+            0.0625000016298145,
+            0.07291666883975267
+          ],
+          "route_accuracy_mean": 0.103515628434252
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.475627213716507,
+          "cascade_address_sensitivity": [
+            0.0023422713857144117,
+            0.018900474533438683
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.07552083441987634,
+            0.03385416744276881,
+            0.02083333395421505,
+            0.0494791679084301
+          ],
+          "route_accuracy_mean": 0.044921875931322575
+        },
+        "oracle": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.477132558822632,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.07552083441987634,
+            0.044270834885537624,
+            0.02343750069849193,
+            0.026041667442768812
+          ],
+          "route_accuracy_mean": 0.042317709361668676
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 0.028645833333333332,
+          "answer_loss": 3.481510102748871,
+          "cascade_address_sensitivity": [
+            0.04114924371242523,
+            0.0419163815677166
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.5078125223517418,
+            0.2994791753590107,
+            0.20052083767950535,
+            0.3125000074505806
+          ],
+          "route_accuracy_mean": 0.3300781357102096
+        },
+        "oracle": {
+          "answer_accuracy": 0.028645833333333332,
+          "answer_loss": 3.4800885021686554,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.5078125223517418,
+            0.5104166902601719,
+            0.2239583395421505,
+            0.2447916753590107
+          ],
+          "route_accuracy_mean": 0.3717448068782687
+        }
+      }
+    },
+    "name": "three_hop_learned"
+  },
+  {
+    "elapsed_seconds": 3.9079302469999675,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 0.046875,
+          "answer_loss": 3.471481680870056,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.02083333395421505,
+            0.007812500232830644,
+            0.015625000465661287,
+            0.015625000465661287
+          ],
+          "route_accuracy_mean": 0.014973958779592067
+        },
+        "oracle": {
+          "answer_accuracy": 0.046875,
+          "answer_loss": 3.47147199511528,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.02083333395421505,
+            0.007812500232830644,
+            0.015625000465661287,
+            0.015625000465661287
+          ],
+          "route_accuracy_mean": 0.014973958779592067
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 0.03125,
+          "answer_loss": 3.4730882048606873,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.010416666977107525,
+            0.0,
+            0.0052083334885537624,
+            0.0052083334885537624
+          ],
+          "route_accuracy_mean": 0.0052083334885537624
+        },
+        "oracle": {
+          "answer_accuracy": 0.03125,
+          "answer_loss": 3.4730611741542816,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.010416666977107525,
+            0.0,
+            0.0052083334885537624,
+            0.0052083334885537624
+          ],
+          "route_accuracy_mean": 0.0052083334885537624
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.4723388850688934,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.026041667442768812,
+            0.028645833721384406,
+            0.01822916720993817,
+            0.01822916720993817
+          ],
+          "route_accuracy_mean": 0.02278645889600739
+        },
+        "oracle": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.4723785519599915,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.026041667442768812,
+            0.028645833721384406,
+            0.01822916720993817,
+            0.01822916720993817
+          ],
+          "route_accuracy_mean": 0.02278645889600739
+        }
+      }
+    },
+    "name": "three_hop_unconditioned"
+  },
+  {
+    "elapsed_seconds": 4.061818041000038,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.465647369623184,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.05729166837409139,
+            0.04427083465270698,
+            0.0494791679084301,
+            0.05729166720993817
+          ],
+          "route_accuracy_mean": 0.05208333453629166
+        },
+        "oracle": {
+          "answer_accuracy": 0.0390625,
+          "answer_loss": 3.465699404478073,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.05729166837409139,
+            0.04427083465270698,
+            0.0494791679084301,
+            0.05729166720993817
+          ],
+          "route_accuracy_mean": 0.05208333453629166
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 0.033854166666666664,
+          "answer_loss": 3.473883092403412,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.015625000465661287,
+            0.02604166720993817,
+            0.02343750069849193,
+            0.01822916720993817
+          ],
+          "route_accuracy_mean": 0.02083333389600739
+        },
+        "oracle": {
+          "answer_accuracy": 0.033854166666666664,
+          "answer_loss": 3.4739294946193695,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.015625000465661287,
+            0.02604166720993817,
+            0.02343750069849193,
+            0.01822916720993817
+          ],
+          "route_accuracy_mean": 0.02083333389600739
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 0.036458333333333336,
+          "answer_loss": 3.4723609387874603,
+          "cascade_address_sensitivity": [
+            0.0,
+            0.0
+          ],
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.09635416977107525,
+            0.09895833674818277,
+            0.11979166930541396,
+            0.14583333674818277
+          ],
+          "route_accuracy_mean": 0.11523437814321369
+        },
+        "oracle": {
+          "answer_accuracy": 0.036458333333333336,
+          "answer_loss": 3.4723491072654724,
+          "examples": 384,
+          "route_accuracy_by_layer": [
+            0.09635416977107525,
+            0.09895833674818277,
+            0.11979166930541396,
+            0.14583333674818277
+          ],
+          "route_accuracy_mean": 0.11523437814321369
+        }
+      }
+    },
+    "name": "three_hop_random"
+  },
+  {
+    "elapsed_seconds": 3.1910716749999892,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 0.026041666666666668,
+          "answer_loss": 3.4834282398223877,
+          "examples": 384
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 0.041666666666666664,
+          "answer_loss": 3.4802984297275543,
+          "examples": 384
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 0.041666666666666664,
+          "answer_loss": 3.4711620807647705,
+          "examples": 384
+        }
+      }
+    },
+    "name": "three_hop_rolling"
+  },
+  {
+    "elapsed_seconds": 2.4662882390000505,
+    "evaluations": {
+      "192": {
+        "native": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.03755893977358937,
+          "examples": 384
+        }
+      },
+      "384": {
+        "native": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.04321904852986336,
+          "examples": 384
+        }
+      },
+      "96": {
+        "native": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.0375034362077713,
+          "examples": 384
+        }
+      }
+    },
+    "name": "three_hop_dense"
+  }
+]

@@ -1,0 +1,51 @@
+# QKVS: learned direct-address sparse attention
+
+This repository is an independent research prototype for a decoder-only transformer with an
+independent `S` projection at every layer. `S` predicts normalized addresses of old KV-cache
+windows directly; inference does not scan or score the historical cache to choose them.
+
+The implementation deliberately separates four questions:
+
+1. Is fixed-budget direct-address attention mathematically correct?
+2. Can a supervised router learn explicit addresses and extrapolate to longer contexts?
+3. Can independently conditioned layer routers follow multi-hop pointer chains?
+4. Does bounded attention translate to useful wall-clock behavior on an RTX 5070?
+
+The first prototype uses hard, block-aligned gathers for the forward pass and an auxiliary
+routing loss (optionally with teacher-routed warm-up) to train the otherwise nondifferentiable
+address choice. Duplicate windows remain duplicated in the attention sequence, preserving their
+softmax multiplicity semantics.
+
+## Setup
+
+The pinned CUDA 13.0 PyTorch wheel supports the RTX 5070's `sm_120` architecture. The project is
+local and does not modify the system CUDA installation.
+
+```bash
+uv sync
+uv run pytest
+uv run python -m qkvs.environment
+```
+
+Run bounded experiments and benchmarks with:
+
+```bash
+uv run python -m qkvs.experiment --config configs/smoke.json
+uv run python -m qkvs.benchmark --config configs/benchmark.json
+```
+
+Every command writes a JSON artifact containing its configuration, seed, environment, and raw
+measurements under `artifacts/`. See [docs/architecture.md](docs/architecture.md) for the precise
+selection rule and unresolved research decisions. The evidence and conclusions from the initial
+study are in [docs/research_report.md](docs/research_report.md).
+
+Additional recorded ablations can be reproduced with:
+
+```bash
+uv run python -m qkvs.persistence --config configs/persistence.json --device cpu
+uv run python -m qkvs.overlap --config configs/overlap.json --device cpu
+```
+
+The local NVIDIA driver has a known history of sporadic `Xid 79` bus-loss events. Training runs are
+therefore individually selectable with `--run`, atomically checkpoint every 100 steps, support
+`--resume`, and can move evaluation to CPU with `--eval-device cpu`.

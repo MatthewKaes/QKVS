@@ -1,0 +1,254 @@
+{
+  "elapsed_seconds": 10.627077682999982,
+  "environment": {
+    "cuda_available": true,
+    "git_revision": null,
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "pid": 6336,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "evaluations": {
+    "128": {
+      "native": {
+        "answer_accuracy": 0.7421875,
+        "answer_loss": 1.0087307301582769,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          0.703125,
+          0.5234375,
+          0.359375,
+          0.265625
+        ],
+        "route_accuracy_mean": 0.462890625
+      },
+      "oracle": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.0033035966771421954,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          0.703125,
+          0.4375,
+          0.3984375,
+          0.34375
+        ],
+        "route_accuracy_mean": 0.470703125
+      }
+    },
+    "256": {
+      "native": {
+        "answer_accuracy": 0.3828125,
+        "answer_loss": 2.473136380314827,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          0.140625,
+          0.359375,
+          0.0546875,
+          0.046875
+        ],
+        "route_accuracy_mean": 0.150390625
+      },
+      "oracle": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.0032061041856650263,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          0.140625,
+          0.109375,
+          0.046875,
+          0.125
+        ],
+        "route_accuracy_mean": 0.10546875
+      }
+    },
+    "64": {
+      "native": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.004139633194427006,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          1.0,
+          0.8359375,
+          0.703125,
+          0.734375
+        ],
+        "route_accuracy_mean": 0.818359375
+      },
+      "oracle": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.0031813734531169757,
+        "examples": 128,
+        "route_accuracy_by_layer": [
+          1.0,
+          0.8359375,
+          0.6796875,
+          0.71875
+        ],
+        "route_accuracy_mean": 0.80859375
+      }
+    }
+  },
+  "history": [
+    {
+      "answer_loss": 5.1051177978515625,
+      "loss": 8.554826736450195,
+      "route_accuracy_mean": 0.015625,
+      "route_loss": 17.24854278564453,
+      "step": 1,
+      "teacher_probability": 1.0,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 1.9919934272766113,
+      "loss": 2.0742249488830566,
+      "route_accuracy_mean": 0.6171875,
+      "route_loss": 0.4111577868461609,
+      "step": 100,
+      "teacher_probability": 0.87625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.38600265979766846,
+      "loss": 0.5189144015312195,
+      "route_accuracy_mean": 0.546875,
+      "route_loss": 0.6645586490631104,
+      "step": 200,
+      "teacher_probability": 0.75125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.077898770570755,
+      "loss": 0.130202054977417,
+      "route_accuracy_mean": 0.75,
+      "route_loss": 0.2615164518356323,
+      "step": 300,
+      "teacher_probability": 0.62625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.04632813483476639,
+      "loss": 0.1213952898979187,
+      "route_accuracy_mean": 0.6484375,
+      "route_loss": 0.37533578276634216,
+      "step": 400,
+      "teacher_probability": 0.50125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.022352783009409904,
+      "loss": 0.08069349825382233,
+      "route_accuracy_mean": 0.7265625,
+      "route_loss": 0.29170358180999756,
+      "step": 500,
+      "teacher_probability": 0.37625,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.015073453076183796,
+      "loss": 0.09410571306943893,
+      "route_accuracy_mean": 0.671875,
+      "route_loss": 0.3951612710952759,
+      "step": 600,
+      "teacher_probability": 0.25125,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.00720516312867403,
+      "loss": 0.04328199103474617,
+      "route_accuracy_mean": 0.7734375,
+      "route_loss": 0.18038414418697357,
+      "step": 700,
+      "teacher_probability": 0.12624999999999997,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.012869074940681458,
+      "loss": 0.07014806568622589,
+      "route_accuracy_mean": 0.734375,
+      "route_loss": 0.2863949239253998,
+      "step": 800,
+      "teacher_probability": 0.0012499999999999734,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 1.006772518157959,
+      "loss": 1.0691345930099487,
+      "route_accuracy_mean": 0.6640625,
+      "route_loss": 0.3118104338645935,
+      "step": 900,
+      "teacher_probability": 0.0,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.00350289442576468,
+      "loss": 0.02883402816951275,
+      "route_accuracy_mean": 0.8671875,
+      "route_loss": 0.1266556680202484,
+      "step": 1000,
+      "teacher_probability": 0.0,
+      "training_hops": 1
+    }
+  ],
+  "model": {
+    "attention_kind": "qkvs",
+    "block_size": 1,
+    "d_model": 96,
+    "dense_window": 1,
+    "dropout": 0.0,
+    "mlp_ratio": 3,
+    "n_heads": 4,
+    "n_layers": 4,
+    "n_token_types": 3,
+    "retrieval_budget": 1,
+    "router_mode": "learned",
+    "vocab_size": 152
+  },
+  "name": "semantic_fixed_qkvs",
+  "peak_training_cuda_memory_bytes": 63709696,
+  "training": {
+    "answer_vocab_size": 16,
+    "batch_size": 32,
+    "checkpoint_every": 100,
+    "eval_batch_size": 8,
+    "eval_batches": 16,
+    "eval_seq_lens": [
+      64,
+      128,
+      256
+    ],
+    "hop_curriculum": [],
+    "hops": 1,
+    "learning_rate": 0.0006,
+    "log_every": 100,
+    "name": "semantic_fixed_qkvs",
+    "query_only_retrieval": true,
+    "route_loss_space": "blocks",
+    "route_loss_weight": 0.2,
+    "seed": 6701,
+    "semantic_keys": 8,
+    "steps": 1000,
+    "task": "semantic_fixed",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 0.0,
+    "train_seq_len": 64,
+    "weight_decay": 0.01
+  }
+}

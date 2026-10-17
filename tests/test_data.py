@@ -1,0 +1,100 @@
+import torch
+
+from qkvs.data import (
+    QUERY,
+    RECORD,
+    make_pointer_batch,
+    make_semantic_batch,
+    semantic_vocabulary_size,
+)
+
+
+def test_pointer_chain_targets_match_embedded_pointers() -> None:
+    batch = make_pointer_batch(
+        batch_size=4,
+        seq_len=24,
+        vocab_size=16,
+        dense_window=6,
+        block_size=1,
+        n_layers=4,
+        hops=3,
+        generator=torch.Generator().manual_seed(9),
+    )
+    assert torch.all(batch.token_types[:, -1] == QUERY)
+    for item in range(4):
+        positions = batch.route_positions[:, item]
+        assert torch.all(batch.token_types[item, positions[:3]] == RECORD)
+        torch.testing.assert_close(batch.pointers[item, -1], batch.route_addresses[0, item])
+        torch.testing.assert_close(
+            batch.pointers[item, positions[0]], batch.route_addresses[1, item]
+        )
+        torch.testing.assert_close(
+            batch.pointers[item, positions[1]], batch.route_addresses[2, item]
+        )
+        assert batch.answers[item] == batch.values[item, positions[2]]
+
+
+def test_semantic_batch_hides_addresses_but_encodes_matching_records() -> None:
+    n_keys = 4
+    answer_vocab = 8
+    batch = make_semantic_batch(
+        batch_size=3,
+        seq_len=24,
+        dense_window=4,
+        block_size=1,
+        n_layers=3,
+        n_keys=n_keys,
+        answer_vocab_size=answer_vocab,
+        fixed_layout=False,
+        generator=torch.Generator().manual_seed(31),
+    )
+    query_base = answer_vocab + n_keys * answer_vocab
+    for item in range(3):
+        query_key = batch.values[item, -1] - query_base
+        position = batch.route_positions[0, item]
+        record_token = batch.values[item, position]
+        encoded_key = (record_token - answer_vocab) // answer_vocab
+        encoded_answer = (record_token - answer_vocab) % answer_vocab
+        assert encoded_key == query_key
+        assert encoded_answer == batch.answers[item]
+        assert batch.pointers[item, -1] == -1
+        assert batch.token_types[item, position] == RECORD
+    assert batch.values.max() < semantic_vocabulary_size(n_keys, answer_vocab)
+
+
+def test_fixed_semantic_layout_preserves_normalized_key_address_across_lengths() -> None:
+    short = make_semantic_batch(
+        batch_size=1,
+        seq_len=32,
+        dense_window=1,
+        block_size=1,
+        n_layers=2,
+        n_keys=4,
+        answer_vocab_size=8,
+        fixed_layout=True,
+        generator=torch.Generator().manual_seed(2),
+    )
+    long = make_semantic_batch(
+        batch_size=1,
+        seq_len=128,
+        dense_window=1,
+        block_size=1,
+        n_layers=2,
+        n_keys=4,
+        answer_vocab_size=8,
+        fixed_layout=True,
+        generator=torch.Generator().manual_seed(2),
+    )
+
+    def key_addresses(batch, history_end: int) -> torch.Tensor:
+        positions = torch.nonzero(batch.token_types[0] == RECORD).flatten()
+        tokens = batch.values[0, positions]
+        keys = (tokens - 8) // 8
+        addresses = (positions.float() + 0.5) / history_end
+        result = torch.empty(4)
+        result[keys] = addresses
+        return result
+
+    torch.testing.assert_close(
+        key_addresses(short, 31), key_addresses(long, 127), atol=0.01, rtol=0.0
+    )

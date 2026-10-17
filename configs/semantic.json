@@ -1,0 +1,55 @@
+{
+  "name": "semantic_retrieval_study",
+  "seed": 6701,
+  "model": {
+    "vocab_size": 152,
+    "d_model": 96,
+    "n_heads": 4,
+    "n_layers": 4,
+    "mlp_ratio": 3,
+    "dense_window": 1,
+    "retrieval_budget": 1,
+    "block_size": 1,
+    "dropout": 0.0,
+    "attention_kind": "qkvs",
+    "router_mode": "learned"
+  },
+  "training": {
+    "task": "semantic_fixed",
+    "hops": 1,
+    "semantic_keys": 8,
+    "answer_vocab_size": 16,
+    "train_seq_len": 64,
+    "eval_seq_lens": [64, 128, 256],
+    "batch_size": 32,
+    "eval_batch_size": 8,
+    "steps": 1000,
+    "eval_batches": 16,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.01,
+    "route_loss_weight": 0.2,
+    "route_loss_space": "blocks",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 0.0,
+    "query_only_retrieval": true,
+    "checkpoint_every": 100,
+    "log_every": 100
+  },
+  "runs": [
+    {"name": "semantic_fixed_qkvs"},
+    {
+      "name": "semantic_random_qkvs",
+      "training": {"task": "semantic_random", "teacher_floor": 1.0}
+    },
+    {
+      "name": "semantic_random_dense",
+      "model": {"attention_kind": "dense"},
+      "training": {"task": "semantic_random"}
+    },
+    {
+      "name": "semantic_random_rolling",
+      "model": {"attention_kind": "rolling"},
+      "training": {"task": "semantic_random"}
+    }
+  ]
+}

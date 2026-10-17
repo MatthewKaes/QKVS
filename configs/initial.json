@@ -1,0 +1,53 @@
+{
+  "name": "initial_pointer_study",
+  "seed": 1701,
+  "model": {
+    "vocab_size": 32,
+    "d_model": 96,
+    "n_heads": 4,
+    "n_layers": 4,
+    "mlp_ratio": 3,
+    "dense_window": 24,
+    "retrieval_budget": 8,
+    "block_size": 2,
+    "dropout": 0.0,
+    "attention_kind": "qkvs",
+    "router_mode": "learned"
+  },
+  "training": {
+    "train_seq_len": 96,
+    "eval_seq_lens": [96, 192, 384],
+    "batch_size": 48,
+    "steps": 300,
+    "eval_batches": 8,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.01,
+    "route_loss_weight": 6.0,
+    "teacher_decay_fraction": 0.8,
+    "log_every": 50
+  },
+  "runs": [
+    {"name": "one_hop_learned", "hops": 1},
+    {"name": "three_hop_learned", "hops": 3},
+    {
+      "name": "three_hop_unconditioned",
+      "hops": 3,
+      "model": {"router_mode": "unconditioned"}
+    },
+    {
+      "name": "three_hop_random",
+      "hops": 3,
+      "model": {"router_mode": "random"}
+    },
+    {
+      "name": "three_hop_rolling",
+      "hops": 3,
+      "model": {"attention_kind": "rolling"}
+    },
+    {
+      "name": "three_hop_dense",
+      "hops": 3,
+      "model": {"attention_kind": "dense"}
+    }
+  ]
+}

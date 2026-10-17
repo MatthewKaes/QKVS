@@ -1,0 +1,464 @@
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+
+from qkvs.config import ModelConfig
+from qkvs.data import (
+    PointerBatch,
+    make_address_overrides,
+    make_pointer_batch,
+    make_semantic_batch,
+)
+from qkvs.model import DecoderOutput, QKVSDecoder
+from qkvs.runtime import environment, seed_everything, write_json
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    name: str
+    seed: int = 1
+    task: str = "pointer"
+    hops: int = 1
+    semantic_keys: int = 8
+    answer_vocab_size: int = 16
+    train_seq_len: int = 64
+    eval_seq_lens: tuple[int, ...] = (64, 128)
+    batch_size: int = 64
+    steps: int = 300
+    eval_batches: int = 8
+    eval_batch_size: int | None = None
+    learning_rate: float = 3e-4
+    weight_decay: float = 0.01
+    route_loss_weight: float = 4.0
+    route_loss_space: str = "normalized"
+    teacher_decay_fraction: float = 0.8
+    teacher_floor: float = 0.0
+    hop_curriculum: tuple[int, ...] = ()
+    query_only_retrieval: bool = False
+    checkpoint_every: int = 100
+    log_every: int = 50
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> TrainConfig:
+        copied = dict(value)
+        copied["eval_seq_lens"] = tuple(copied.get("eval_seq_lens", (64, 128)))
+        copied["hop_curriculum"] = tuple(copied.get("hop_curriculum", ()))
+        return cls(**copied)
+
+
+def _batch(
+    model_config: ModelConfig,
+    train_config: TrainConfig,
+    seq_len: int,
+    generator: torch.Generator,
+    hops: int | None = None,
+    batch_size: int | None = None,
+) -> PointerBatch:
+    if train_config.task in {"semantic_fixed", "semantic_random"}:
+        return make_semantic_batch(
+            batch_size=(train_config.batch_size if batch_size is None else batch_size),
+            seq_len=seq_len,
+            dense_window=model_config.dense_window,
+            block_size=model_config.block_size,
+            n_layers=model_config.n_layers,
+            n_keys=train_config.semantic_keys,
+            answer_vocab_size=train_config.answer_vocab_size,
+            fixed_layout=train_config.task == "semantic_fixed",
+            generator=generator,
+        )
+    if train_config.task != "pointer":
+        raise ValueError(f"unknown task: {train_config.task}")
+    return make_pointer_batch(
+        batch_size=train_config.batch_size if batch_size is None else batch_size,
+        seq_len=seq_len,
+        vocab_size=model_config.vocab_size,
+        dense_window=model_config.dense_window,
+        block_size=model_config.block_size,
+        n_layers=model_config.n_layers,
+        hops=train_config.hops if hops is None else hops,
+        generator=generator,
+    )
+
+
+def _teacher_overrides(
+    batch: PointerBatch,
+    model_config: ModelConfig,
+    probability: float,
+    generator: torch.Generator,
+    device: torch.device,
+) -> Tensor | None:
+    if model_config.attention_kind != "qkvs" or probability <= 0.0:
+        return None
+    overrides = make_address_overrides(
+        batch,
+        seq_len=batch.values.shape[1],
+        n_windows=model_config.attention().n_windows,
+        device=device,
+    )
+    teacher_mask = torch.rand(batch.values.shape[0], generator=generator) < probability
+    overrides[:, ~teacher_mask.to(device), :, :] = torch.nan
+    return overrides
+
+
+def _route_loss(
+    output: DecoderOutput,
+    batch: PointerBatch,
+    model_config: ModelConfig,
+    train_config: TrainConfig,
+) -> Tensor:
+    if output.addresses is None or model_config.router_mode != "learned":
+        return output.logits.new_zeros(())
+    predicted = output.addresses[:, :, -1, 0].float()
+    if model_config.block_size <= 0:
+        raise ValueError("block size must be positive")
+    if train_config.route_loss_space == "normalized":
+        return F.smooth_l1_loss(predicted, batch.route_addresses.float(), beta=0.02)
+    if train_config.route_loss_space == "blocks":
+        history_end = batch.values.shape[1] - model_config.dense_window
+        n_blocks = math.ceil(history_end / model_config.block_size)
+        target_centers = (
+            torch.div(
+                batch.route_positions,
+                model_config.block_size,
+                rounding_mode="floor",
+            ).float()
+            + 0.5
+        )
+        return F.smooth_l1_loss(predicted * n_blocks, target_centers, beta=0.25)
+    raise ValueError(f"unknown route loss space: {train_config.route_loss_space}")
+
+
+def _retrieval_mask(batch: PointerBatch, train_config: TrainConfig) -> Tensor | None:
+    if not train_config.query_only_retrieval:
+        return None
+    mask = torch.zeros_like(batch.values, dtype=torch.bool)
+    mask[:, -1] = True
+    return mask
+
+
+def _route_accuracies(
+    addresses: Tensor | None,
+    batch: PointerBatch,
+    model_config: ModelConfig,
+) -> list[float] | None:
+    if addresses is None:
+        return None
+    history_end = batch.values.shape[1] - model_config.dense_window
+    n_blocks = math.ceil(history_end / model_config.block_size)
+    predicted = addresses[:, :, -1].float().clamp(0.0, 1.0 - torch.finfo(torch.float32).eps)
+    predicted_blocks = torch.floor(predicted * n_blocks).to(torch.long)
+    target_blocks = torch.div(
+        batch.route_positions,
+        model_config.block_size,
+        rounding_mode="floor",
+    )
+    correct = (predicted_blocks == target_blocks.unsqueeze(-1)).any(dim=-1)
+    return [value.item() for value in correct.float().mean(dim=1)]
+
+
+def _cascade_sensitivity(
+    model: QKVSDecoder,
+    batch: PointerBatch,
+    model_config: ModelConfig,
+    train_config: TrainConfig,
+) -> list[float] | None:
+    if model_config.attention_kind != "qkvs" or batch.hops <= 1:
+        return None
+    with torch.no_grad():
+        retrieval_mask = _retrieval_mask(batch, train_config)
+        original = model(
+            batch.values,
+            batch.pointers,
+            batch.token_types,
+            retrieval_mask=retrieval_mask,
+        ).addresses
+        if original is None:
+            return None
+        sensitivities: list[float] = []
+        for layer_index in range(1, min(batch.hops, model_config.n_layers)):
+            ablated_pointers = batch.pointers.clone()
+            batch_indices = torch.arange(batch.values.shape[0], device=batch.values.device)
+            source_positions = batch.route_positions[layer_index - 1]
+            ablated_pointers[batch_indices, source_positions] = -1.0
+            ablated = model(
+                batch.values,
+                ablated_pointers,
+                batch.token_types,
+                retrieval_mask=retrieval_mask,
+            ).addresses
+            assert ablated is not None
+            change = (
+                original[layer_index, :, -1].float() - ablated[layer_index, :, -1].float()
+            ).abs()
+            sensitivities.append(change.mean().item())
+    return sensitivities
+
+
+def evaluate(
+    model: QKVSDecoder,
+    model_config: ModelConfig,
+    train_config: TrainConfig,
+    seq_len: int,
+    *,
+    oracle: bool,
+    seed: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    model.eval()
+    generator = torch.Generator().manual_seed(seed)
+    total = 0
+    correct = 0
+    losses: list[float] = []
+    route_sums: list[float] | None = None
+    sensitivity_sums: list[float] | None = None
+
+    for batch_index in range(train_config.eval_batches):
+        batch = _batch(
+            model_config,
+            train_config,
+            seq_len,
+            generator,
+            batch_size=train_config.eval_batch_size,
+        ).to(device)
+        overrides = None
+        if oracle and model_config.attention_kind == "qkvs":
+            overrides = make_address_overrides(
+                batch,
+                seq_len=seq_len,
+                n_windows=model_config.attention().n_windows,
+                device=device,
+            )
+        with (
+            torch.no_grad(),
+            torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda",
+            ),
+        ):
+            output = model(
+                batch.values,
+                batch.pointers,
+                batch.token_types,
+                overrides,
+                _retrieval_mask(batch, train_config),
+            )
+            logits = output.logits[:, -1].float()
+        losses.append(F.cross_entropy(logits, batch.answers).item())
+        correct += (logits.argmax(dim=-1) == batch.answers).sum().item()
+        total += batch.answers.numel()
+        accuracies = _route_accuracies(output.addresses, batch, model_config)
+        if accuracies is not None:
+            route_sums = (
+                accuracies
+                if route_sums is None
+                else [left + right for left, right in zip(route_sums, accuracies, strict=True)]
+            )
+        if batch_index == 0 and not oracle:
+            sensitivity_sums = _cascade_sensitivity(model, batch, model_config, train_config)
+
+    result: dict[str, Any] = {
+        "answer_accuracy": correct / total,
+        "answer_loss": sum(losses) / len(losses),
+        "examples": total,
+    }
+    if route_sums is not None:
+        result["route_accuracy_by_layer"] = [
+            value / train_config.eval_batches for value in route_sums
+        ]
+        result["route_accuracy_mean"] = sum(result["route_accuracy_by_layer"]) / len(route_sums)
+    if sensitivity_sums is not None:
+        result["cascade_address_sensitivity"] = sensitivity_sums
+    return result
+
+
+def train_run(
+    model_config: ModelConfig,
+    train_config: TrainConfig,
+    *,
+    output_directory: Path,
+    device: torch.device,
+    evaluation_device: torch.device | None = None,
+    resume: bool = False,
+) -> dict[str, Any]:
+    seed_everything(train_config.seed)
+    model = QKVSDecoder(model_config).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=train_config.learning_rate,
+        weight_decay=train_config.weight_decay,
+        fused=device.type == "cuda",
+    )
+    generator = torch.Generator().manual_seed(train_config.seed + 101)
+    history: list[dict[str, float | int]] = []
+    started = time.perf_counter()
+    start_step = 1
+    checkpoint_directory = output_directory.parent / "checkpoints"
+    checkpoint_directory.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_directory / f"{train_config.name}.pt"
+
+    if resume and checkpoint_path.exists():
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        if "optimizer" not in checkpoint or "step" not in checkpoint:
+            raise ValueError(f"checkpoint cannot resume training: {checkpoint_path}")
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        generator.set_state(checkpoint["data_generator_state"].cpu())
+        torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
+        if device.type == "cuda" and checkpoint.get("cuda_rng_state") is not None:
+            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+        history = checkpoint.get("history", [])
+        start_step = int(checkpoint["step"]) + 1
+
+    def save_checkpoint(step: int) -> None:
+        temporary = checkpoint_path.with_suffix(".pt.tmp")
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": step,
+                "model_config": model_config.as_dict(),
+                "training_config": train_config.__dict__,
+                "history": history,
+                "data_generator_state": generator.get_state(),
+                "torch_rng_state": torch.get_rng_state(),
+                "cuda_rng_state": (
+                    torch.cuda.get_rng_state_all() if device.type == "cuda" else None
+                ),
+            },
+            temporary,
+        )
+        temporary.replace(checkpoint_path)
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+    for step in range(start_step, train_config.steps + 1):
+        model.train()
+        training_hops = train_config.hops
+        if train_config.hop_curriculum:
+            phase = min(
+                len(train_config.hop_curriculum) - 1,
+                (step - 1) * len(train_config.hop_curriculum) // train_config.steps,
+            )
+            training_hops = train_config.hop_curriculum[phase]
+        batch = _batch(
+            model_config,
+            train_config,
+            train_config.train_seq_len,
+            generator,
+            hops=training_hops,
+        ).to(device)
+        decay_steps = max(1, int(train_config.steps * train_config.teacher_decay_fraction))
+        teacher_probability = train_config.teacher_floor + (1.0 - train_config.teacher_floor) * max(
+            0.0, 1.0 - (step - 1) / decay_steps
+        )
+        overrides = _teacher_overrides(
+            batch,
+            model_config,
+            teacher_probability,
+            generator,
+            device,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=device.type == "cuda",
+        ):
+            output = model(
+                batch.values,
+                batch.pointers,
+                batch.token_types,
+                overrides,
+                _retrieval_mask(batch, train_config),
+            )
+            answer_loss = F.cross_entropy(output.logits[:, -1].float(), batch.answers)
+            route_loss = _route_loss(output, batch, model_config, train_config)
+            loss = answer_loss + train_config.route_loss_weight * route_loss
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+
+        if step == 1 or step % train_config.log_every == 0 or step == train_config.steps:
+            accuracies = _route_accuracies(output.addresses, batch, model_config)
+            entry: dict[str, float | int] = {
+                "step": step,
+                "loss": loss.item(),
+                "answer_loss": answer_loss.item(),
+                "route_loss": route_loss.item(),
+                "teacher_probability": teacher_probability,
+                "training_hops": training_hops,
+            }
+            if accuracies is not None:
+                entry["route_accuracy_mean"] = sum(accuracies) / len(accuracies)
+            history.append(entry)
+            print(
+                f"{train_config.name}: step={step}/{train_config.steps} "
+                f"answer={answer_loss.item():.4f} route={route_loss.item():.4f} "
+                f"teacher={teacher_probability:.2f}",
+                flush=True,
+            )
+        if step % train_config.checkpoint_every == 0 or step == train_config.steps:
+            save_checkpoint(step)
+
+    if start_step > train_config.steps:
+        save_checkpoint(train_config.steps)
+
+    peak_cuda_memory = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+    evaluation_device = device if evaluation_device is None else evaluation_device
+    if evaluation_device != device:
+        model = model.to(evaluation_device)
+        del optimizer
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    evaluations: dict[str, Any] = {}
+    for seq_len in train_config.eval_seq_lens:
+        evaluations[str(seq_len)] = {
+            "native": evaluate(
+                model,
+                model_config,
+                train_config,
+                seq_len,
+                oracle=False,
+                seed=train_config.seed + 10_000 + seq_len,
+                device=evaluation_device,
+            )
+        }
+        if model_config.attention_kind == "qkvs":
+            evaluations[str(seq_len)]["oracle"] = evaluate(
+                model,
+                model_config,
+                train_config,
+                seq_len,
+                oracle=True,
+                seed=train_config.seed + 10_000 + seq_len,
+                device=evaluation_device,
+            )
+
+    elapsed = time.perf_counter() - started
+    result = {
+        "name": train_config.name,
+        "model": model_config.as_dict(),
+        "training": {
+            **train_config.__dict__,
+            "eval_seq_lens": list(train_config.eval_seq_lens),
+        },
+        "history": history,
+        "evaluations": evaluations,
+        "elapsed_seconds": elapsed,
+        "peak_training_cuda_memory_bytes": peak_cuda_memory,
+        "environment": environment(),
+    }
+    output_directory.mkdir(parents=True, exist_ok=True)
+    write_json(output_directory / f"{train_config.name}.json", result)
+    return result
