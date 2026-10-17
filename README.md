@@ -96,21 +96,20 @@ uv run python -m qkvs.training_benchmark \
   --config configs/training_benchmark_multiselect.json
 uv run python -m qkvs.experiment \
   --config configs/multiselect_geometry.json \
-  --run v3_regions1_dense_batch32 \
-  --max-steps-this-run 25
-uv run python -m qkvs.experiment \
-  --config configs/multiselect_geometry.json \
-  --run v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k \
-  --max-steps-this-run 25
+  --run v5_regions8_pointer_identity_mixed \
+  --max-steps-this-run 100
 uv run python -m qkvs.multiselect_diagnostic \
   --config configs/multiselect_geometry.json \
-  --run v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k \
+  --run v5_regions8_pointer_identity_mixed \
   --checkpoint \
-    artifacts/checkpoints/v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k.pt \
+    artifacts/checkpoints/v5_regions8_pointer_identity_mixed.pt \
   --output \
-    artifacts/results/v3_regions8_windows8_width32_stride16_detached_oracle_fixed4k_diagnostic.json
+    artifacts/results/v5_regions8_pointer_identity_mixed_diagnostic.json
 ```
 
 The `chunked` sparse backend is the current training default for this study. It gathers only one
 bounded query chunk and uses SDPA, trading more temporary memory for far fewer launches than the
 online-softmax reference.
+
+On the affected Linux host, run CUDA commands from the user's terminal rather than through the
+Codex tool executor. Ordinary CPU tests and diagnostics remain safe to run through Codex.

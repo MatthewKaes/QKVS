@@ -46,21 +46,28 @@ trained. `S` executes in FP32 even when Q/K/V use BF16 autocast so scalar precis
 the immediate address bottleneck. This is not claimed as semantic retrieval: it isolates whether
 direct address prediction and layer-conditioned pointer following are learnable.
 
-The current route target covers only retrieval slot zero. With multiple `S` outputs, hard indexing
-also prevents answer gradients from reaching the other slots, so those outputs are unsupervised.
-Controlled memory experiments therefore use `R = W = 16`, giving `S` exactly one output. Returning
-to multiple windows requires a separate set-valued objective.
-
 The multi-selection control supplies several required regions and trains their addresses as a set.
 Every candidate record carries its normalized self-address, while only the query carries the set
 that marks candidates as requested. This gives dense attention a content key for a fair
 address-matching control without leaking requested status through record tags or values.
-For each target, a coverage term is zero for any decoded window start that contains it. A second
-one-dimensional order-statistic term sorts both predicted addresses and target intervals before
-matching them, making supervision invariant to output-slot permutations while giving every active
-output a gradient. Repetition remains possible when there are more outputs than required regions.
-The router head can reserve a fixed maximum output capacity so geometries with different active
-window counts have identical parameters.
+Hierarchical S emits independent coarse and fine categorical distributions. For each target, its
+loss sums probability over every discrete start whose window contains the target. The assignment-
+free form minimizes the negative log probability that at least one output covers each target. It
+gives every output a gradient, credits one window for multiple targets, allows duplicates, and gives
+duplicates diminishing returns. A legacy sorted-assignment regularizer remains optional. The router
+head can reserve a fixed maximum output capacity so geometries with different active window counts
+have identical parameters.
+
+S may receive three distinct inputs: the layer hidden state, an explicit Fourier coordinate for
+the current position/address-space size, and a router-only pointer representation. Q/K can also add
+a learned unrotated pointer-matching subspace while their ordinary dimensions retain RoPE. This
+separates numerical address equality from content and rotary position matching.
+
+Hard coarse/fine decoding still selects inference windows directly. An optional training-only local
+offset retrieves the categorical cell and its next neighbor and adds log mixture weights to their
+attention logits. Answer loss differentiates those weights and reaches the offset head; inference
+quantizes the offset and returns to one window per output. Training therefore uses at most `L+2R`
+candidates without scanning history, while inference remains `L+R`.
 
 The detached 4K capacity diagnostic isolates the auxiliary router optimizer: the explicit pointer
 set is encoded canonically, S reads a detached hidden state, and router/base gradients use separate
@@ -91,7 +98,8 @@ only in the marker's final classifier state.
 ## Initial decisions
 
 - Addresses are absolute fractions of the eligible historical-start range.
-- One scalar is predicted per retrieved block, shared by all attention heads.
+- One address is predicted per retrieved block, shared by all attention heads; scalar and
+  hierarchical coarse/fine representations are both implemented.
 - Rotary position encoding is applied to Q/K; routing uses hidden state directly.
 - Duplicate occurrences are retained rather than converted to a log-count bias.
 - Synthetic records expose a normalized pointer feature through a small learned encoder.
@@ -105,10 +113,10 @@ only in the marker's final classifier state.
   or mixed absolute/relative coordinates. Mixed-length Fourier training improves first-hop
   extrapolation but has not solved later-hop composition; a fixed raw-scalar embedding performed
   worse.
-- A categorical or hierarchical address representation that avoids high-precision simultaneous
-  scalar regression. Set supervision now covers all outputs, but the first eight-address 4K pilot
-  was undertrained and its downstream task was confounded; corrected scalar controls come first.
-- Straight-through, soft-window, or policy-gradient training without address labels.
+- Whether hierarchical routing plus a differentiable local offset is sufficient for autonomous
+  answer-guided learning after the direct address-identity gate passes.
+- Straight-through or policy-gradient alternatives if bounded neighboring-window mixtures are
+  insufficient.
 - Whether each attention head should own addresses.
 - Whether explicit previous-address forwarding helps after controlling for parameter count.
 - Kernel layout: checkpointed chunked SDPA is substantially faster than the Python tiled loop, but

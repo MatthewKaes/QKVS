@@ -12,6 +12,7 @@ from qkvs.data import (
     make_address_overrides,
     make_multi_region_counterfactual_pair,
     make_oracle_window_masks,
+    make_query_pointer_overrides,
 )
 from qkvs.model import QKVSDecoder
 from qkvs.runtime import environment, load_json, write_json
@@ -24,19 +25,29 @@ def _counterfactual_predictions(
     model_config: ModelConfig,
     train_config: TrainConfig,
     *,
-    oracle: bool,
+    oracle_source: str | None,
     device: torch.device,
 ) -> torch.Tensor:
     batch = batch.to(device)
     overrides = None
     window_masks = None
-    if oracle and model_config.attention_kind == "qkvs":
-        overrides = make_address_overrides(
-            batch,
-            seq_len=batch.values.shape[1],
-            n_windows=model_config.attention().n_windows,
-            device=device,
-        )
+    if oracle_source is not None and model_config.attention_kind == "qkvs":
+        if oracle_source == "coverage_oracle":
+            overrides = make_address_overrides(
+                batch,
+                seq_len=batch.values.shape[1],
+                n_windows=model_config.attention().n_windows,
+                device=device,
+            )
+        elif oracle_source == "query_pointers":
+            overrides = make_query_pointer_overrides(
+                batch,
+                seq_len=batch.values.shape[1],
+                n_windows=model_config.attention().n_windows,
+                device=device,
+            )
+        else:
+            raise ValueError(f"unknown counterfactual oracle source: {oracle_source}")
         window_masks = make_oracle_window_masks(
             batch,
             seq_len=batch.values.shape[1],
@@ -68,7 +79,7 @@ def evaluate_counterfactual(
     train_config: TrainConfig,
     seq_len: int,
     *,
-    oracle: bool,
+    oracle_source: str | None,
     seed: int,
     device: torch.device,
 ) -> dict[str, float | int]:
@@ -98,7 +109,7 @@ def evaluate_counterfactual(
             first,
             model_config,
             train_config,
-            oracle=oracle,
+            oracle_source=oracle_source,
             device=device,
         )
         second_predictions = _counterfactual_predictions(
@@ -106,7 +117,7 @@ def evaluate_counterfactual(
             second,
             model_config,
             train_config,
-            oracle=oracle,
+            oracle_source=oracle_source,
             device=device,
         )
         first_correct = first_predictions == first.answers
@@ -172,7 +183,7 @@ def main() -> None:
                 model_config,
                 train_config,
                 seq_len,
-                oracle=False,
+                oracle_source=None,
                 seed=seed + 10_000,
                 device=device,
             ),
@@ -192,9 +203,30 @@ def main() -> None:
                 model_config,
                 train_config,
                 seq_len,
-                oracle=True,
+                oracle_source="coverage_oracle",
                 seed=seed + 10_000,
                 device=device,
+            )
+            results[str(seq_len)]["pointer_identity"] = evaluate(
+                model,
+                model_config,
+                train_config,
+                seq_len,
+                oracle=True,
+                oracle_source="query_pointers",
+                seed=seed,
+                device=device,
+            )
+            results[str(seq_len)]["paired_counterfactual_pointer_identity"] = (
+                evaluate_counterfactual(
+                    model,
+                    model_config,
+                    train_config,
+                    seq_len,
+                    oracle_source="query_pointers",
+                    seed=seed + 10_000,
+                    device=device,
+                )
             )
     result = {
         "checkpoint_step": checkpoint.get("step"),

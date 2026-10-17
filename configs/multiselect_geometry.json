@@ -1,5 +1,5 @@
 {
-  "name": "multiselect_geometry_v3",
+  "name": "multiselect_geometry_v5",
   "seed": 18701,
   "model": {
     "vocab_size": 9,
@@ -85,6 +85,66 @@
       "seed": 18701,
       "model": {"router_detach_input": false},
       "training": {"train_seq_lengths": [], "teacher_floor": 0.0}
+    },
+    {
+      "name": "v4_regions8_windows8_width32_stride16_hierarchical_detached_oracle_fixed4k",
+      "seed": 18701,
+      "model": {
+        "router_output_encoding": "hierarchical",
+        "router_radix": 64,
+        "router_position_encoding": "absolute_fourier"
+      },
+      "training": {"train_seq_lengths": []}
+    },
+    {
+      "name": "v4_regions8_windows8_width32_stride16_hierarchical_joint_oracle_fixed4k",
+      "seed": 18701,
+      "model": {
+        "router_detach_input": false,
+        "router_output_encoding": "hierarchical",
+        "router_radix": 64,
+        "router_position_encoding": "absolute_fourier"
+      },
+      "training": {"train_seq_lengths": []}
+    },
+    {
+      "name": "v5_regions8_pointer_identity_mixed",
+      "seed": 18701,
+      "model": {
+        "router_output_encoding": "hierarchical",
+        "router_radix": 64,
+        "router_position_encoding": "absolute_fourier",
+        "router_pointer_input": true,
+        "unrotated_address_matching": true
+      },
+      "training": {
+        "train_seq_lengths": [3072, 4096, 6144],
+        "steps": 2400,
+        "route_assignment_weight": 0.0,
+        "teacher_route_source": "query_pointers"
+      }
+    },
+    {
+      "name": "v5_regions8_hierarchical_direct_pointer_soft_joint_mixed",
+      "seed": 18701,
+      "model": {
+        "router_detach_input": false,
+        "router_output_encoding": "hierarchical",
+        "router_radix": 64,
+        "router_position_encoding": "absolute_fourier",
+        "router_pointer_input": true,
+        "unrotated_address_matching": true,
+        "router_local_offset": true,
+        "soft_neighbor_training": true
+      },
+      "training": {
+        "train_seq_lengths": [3072, 4096, 6144],
+        "steps": 2400,
+        "route_assignment_weight": 0.0,
+        "teacher_decay_fraction": 0.5,
+        "teacher_floor": 0.0,
+        "teacher_route_source": "query_pointers"
+      }
     },
     {
       "name": "v3_regions8_windows8_width32_stride8",

@@ -39,16 +39,15 @@ present in actual cached marker K/V. At an unseen length of 1,024, strict-oracle
 is address extrapolation, not local memory writing or cached-content reading.
 
 The subsequent multi-selection implementation reaches the intended initial geometry (`L=R=256`,
-eight width-32 windows, stride 16, context 4K) and trains every active S output with a
-permutation-invariant set loss. Its first learning comparison is invalid as evidence for
-address-dependent aggregation: only requested records were tagged and nonzero, so the answer was
-also the sum of all input values. The recorded 10.3% native target coverage after 200 steps remains
-a preliminary optimization observation, not a converged failure or evidence against continuous
-scalar routing. A corrected task and counterfactual now make the pointer set the only selection
-signal. Two 1,200-step, batch-four dense controls remained pointer-insensitive; the higher-exposure
-task-validity gate and fresh multi-address results are pending. Separately, a chunked-SDPA backend
-improves the 8K training step from 5,011 ms to 367 ms at the same 512-token selection budget, a
-13.6x speedup, though dense SDPA remains much faster.
+eight width-32 windows, stride 16, context 4K) and trains every active S output. After correcting a
+shortcut-bearing dataset, standalone hierarchical routing reaches 100% strict eight-address
+accuracy from 4K through 64K, while scalar variants lose precision with scale. Integrated detached
+hierarchical routing improves to roughly 29–31% target coverage at 4K after 1,200 steps, but falls
+to 5–6% at an unseen 6K. Oracle answer accuracy is only 28–36%, so downstream address matching is
+also unresolved. This isolates the next work to direct router pointer input, unrotated address
+matching, flexible interval coverage, and differentiable local selection rather than larger model
+width. Separately, a chunked-SDPA backend improves the 8K training step from 5,011 ms to 367 ms at
+the same 512-token selection budget, a 13.6x speedup, though dense SDPA remains much faster.
 
 The eager PyTorch implementation demonstrates bounded work but no wall-clock speedup. Its
 materialized gather and many small address-decoding kernels cost about 0.355 ms per one-layer decode
@@ -110,7 +109,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 35 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 48 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -690,7 +689,7 @@ evidence. Permanent teacher forcing and detached router inputs further isolate r
 the end-to-end learning problem. Fresh corrected controls therefore start from new checkpoint names
 and distinguish three questions: oracle downstream capacity, detached supervised routing, and
 joint representation learning with teacher decay. Categorical or hierarchical addresses remain a
-later ablation, not the conclusion of this pilot.
+later control motivated by this pilot, not a conclusion retroactively supported by it.
 
 ### Corrected task-validity result
 
@@ -729,3 +728,49 @@ and the paired check in
 The self-address follow-up is in
 [v3_regions1_dense.json](../artifacts/results/v3_regions1_dense.json) and
 [v3_regions1_dense_diagnostic.json](../artifacts/results/v3_regions1_dense_diagnostic.json).
+
+### Hierarchical routing boundary
+
+An S-only gate removes transformer attention and trains an eight-output router to copy randomized
+pointer sets. It compares cell-space scalar regression, normalized scalar regression, and two-digit
+radix-64 classification over contexts from 4K through 64K.
+
+| Output representation | 4K exact cell | 64K exact cell | 64K all-eight coverage |
+|---|---:|---:|---:|
+| Scalar, cell-space loss | 43.8% | 3.6% | 0.0% |
+| Scalar, normalized loss | 77.5% | 4.1% | 0.0% |
+| Hierarchical radix 64 | 100.0% | 100.0% | 100.0% |
+
+The cell-space scalar gradient remained heavily clipped, while normalized scalar training avoided
+clipping but still lost address-cell precision with length. Sigmoid saturation stayed low. This is
+positive evidence for coarse/fine output representation, but only when the router receives pointer
+coordinates and address scale directly. Results are in
+[standalone_router_gate.json](../artifacts/results/standalone_router_gate.json).
+
+The matched integrated V4 run uses four detached hierarchical routers, explicit position/scale
+features, permanent coverage-oracle answer routing, and fixed 4K training. Route loss fell from
+15.20 to a final-window mean of 4.99. Two independent 64-example evaluations bound its result:
+
+| Metric | 4K | Unseen 6K |
+|---|---:|---:|
+| Mean target coverage | 28.2–30.9% | 5.3–5.8% |
+| Native answer accuracy | 14.1–17.2% | 10.9–15.6% |
+| Coverage-oracle answer accuracy | 28.1–35.9% | 18.8–26.6% |
+
+At 4K, native paired predictions change when only the query pointer set changes in 65.6% of pairs,
+but both answers are correct in only 3.1%. The corresponding coverage-oracle rates are 81.3% and
+6.3%. The router therefore responds causally to pointers without routing accurately enough. Layer
+zero is strongest; later detached layers lose pointer fidelity. The 6K collapse shows that the
+position/scale channel alone does not extrapolate categorical cell decisions learned only at 4K.
+See
+[v4_regions8_windows8_width32_stride16_hierarchical_detached_oracle_fixed4k.json](../artifacts/results/v4_regions8_windows8_width32_stride16_hierarchical_detached_oracle_fixed4k.json)
+and
+[v4_regions8_hierarchical_detached_step1200_diagnostic.json](../artifacts/results/v4_regions8_hierarchical_detached_step1200_diagnostic.json).
+
+Separate backward passes establish the optimization boundary: native and oracle answer losses give
+S exactly zero gradient; route loss gives detached S a norm of 23.76 and the shared representation
+zero, while joint routing gives S 20.50 and the base representation 1.56. The V5 gate consequently
+adds a router-only pointer branch, unrotated pointer matching in Q/K, probability-of-union interval
+coverage, and a training-only two-neighbor mixture whose local offset receives answer gradients.
+It trains across 3K, 4K, and 6K. Address identity is evaluated first with S bypassed by the supplied
+query pointers; joint soft routing remains gated on that result.

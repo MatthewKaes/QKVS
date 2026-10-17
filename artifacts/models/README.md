@@ -46,5 +46,8 @@ Included checkpoints:
 - `v3_regions1_dense_step1200.pt`: single-region dense control with candidate self-address labels,
   still using batch four; it also remained at chance and pointer-insensitive; SHA-256
   `20373b4454d203101d89962f41804aa3aad2fa30007f856493e3b056ce73c27d`.
+- `v4_regions8_hierarchical_detached_step1200.pt`: corrected fixed-4K hierarchical detached-router
+  baseline; SHA-256
+  `faaf56f5a10edc5af3248a7ad9b22923676d6cd424c6f670f51ca5df04ebfaf3`.
 
 They can be regenerated from local training checkpoints with `python -m qkvs.export_checkpoint`.

@@ -673,6 +673,29 @@ def make_address_overrides(
     return overrides
 
 
+def make_query_pointer_overrides(
+    batch: PointerBatch,
+    *,
+    seq_len: int,
+    n_windows: int,
+    device: torch.device,
+) -> Tensor:
+    """Bypass S by routing the final query from its supplied pointer set."""
+    if batch.pointers.ndim != batch.values.ndim + 1:
+        raise ValueError("query-pointer routing requires a pointer set")
+    query_pointers = batch.pointers[:, -1]
+    if query_pointers.shape[-1] != n_windows:
+        raise ValueError("query pointer count must match active windows")
+    layers = batch.route_addresses.shape[0]
+    overrides = torch.full(
+        (layers, batch.values.shape[0], seq_len, n_windows),
+        torch.nan,
+        device=device,
+    )
+    overrides[:, :, -1] = query_pointers.to(device)
+    return overrides
+
+
 def make_oracle_window_masks(
     batch: PointerBatch,
     *,

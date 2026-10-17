@@ -13,6 +13,8 @@ from qkvs.config import ModelConfig
 class DecoderOutput:
     logits: Tensor
     addresses: Tensor | None  # [layers, batch, time, windows]
+    router_logits: Tensor | None = None
+    router_offsets: Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -88,12 +90,14 @@ class DecoderBlock(nn.Module):
         address_override: Tensor | None = None,
         retrieval_mask: Tensor | None = None,
         historical_window_mask: Tensor | None = None,
+        router_context: Tensor | None = None,
     ) -> tuple[Tensor, AttentionOutput]:
         attention = self.attention(
             self.attention_norm(hidden),
             address_override,
             retrieval_mask,
             historical_window_mask,
+            router_context,
         )
         hidden = hidden + attention.hidden
         hidden = hidden + self.mlp(self.mlp_norm(hidden))
@@ -105,9 +109,14 @@ class DecoderBlock(nn.Module):
         cache: KVCache | None,
         cache_capacity: int,
         address_override: Tensor | None = None,
+        router_context: Tensor | None = None,
     ) -> tuple[Tensor, AttentionOutput, KVCache]:
         attention, updated_cache = self.attention.step(
-            self.attention_norm(hidden), cache, cache_capacity, address_override
+            self.attention_norm(hidden),
+            cache,
+            cache_capacity,
+            address_override,
+            router_context,
         )
         hidden = hidden + attention.hidden
         hidden = hidden + self.mlp(self.mlp_norm(hidden))
@@ -145,7 +154,7 @@ class QKVSDecoder(nn.Module):
         pointers: Tensor,
         token_types: Tensor,
         semantic_ids: Tensor | None = None,
-    ) -> Tensor:
+    ) -> tuple[Tensor, Tensor]:
         hidden = self.value_embedding(values) + self.type_embedding(token_types)
         if pointers.ndim == values.ndim + 1:
             if self.config.pointer_set_encoding in {"sorted_raw", "sorted_fourier"}:
@@ -196,7 +205,7 @@ class QKVSDecoder(nn.Module):
             hidden = hidden + self.semantic_embedding(semantic_ids.clamp_min(0)) * valid.unsqueeze(
                 -1
             )
-        return self.dropout(hidden)
+        return self.dropout(hidden), pointer_hidden
 
     def forward(
         self,
@@ -210,19 +219,39 @@ class QKVSDecoder(nn.Module):
     ) -> DecoderOutput:
         if address_overrides is not None and address_overrides.shape[0] != len(self.layers):
             raise ValueError("address overrides need one leading entry per layer")
-        hidden = self._embed(values, pointers, token_types, semantic_ids)
+        hidden, pointer_hidden = self._embed(values, pointers, token_types, semantic_ids)
+        router_context = pointer_hidden if self.config.router_pointer_input else None
         layer_addresses: list[Tensor] = []
+        layer_router_logits: list[Tensor] = []
+        layer_router_offsets: list[Tensor] = []
         for index, layer in enumerate(self.layers):
             override = None if address_overrides is None else address_overrides[index]
             window_mask = (
                 None if historical_window_masks is None else historical_window_masks[index]
             )
-            hidden, attention = layer(hidden, override, retrieval_mask, window_mask)
+            hidden, attention = layer(
+                hidden,
+                override,
+                retrieval_mask,
+                window_mask,
+                router_context,
+            )
             if attention.addresses is not None:
                 layer_addresses.append(attention.addresses)
+            if attention.router_logits is not None:
+                layer_router_logits.append(attention.router_logits)
+            if attention.router_offsets is not None:
+                layer_router_offsets.append(attention.router_offsets)
         logits = self.output(self.final_norm(hidden))
         addresses = torch.stack(layer_addresses) if layer_addresses else None
-        return DecoderOutput(logits=logits, addresses=addresses)
+        router_logits = torch.stack(layer_router_logits) if layer_router_logits else None
+        router_offsets = torch.stack(layer_router_offsets) if layer_router_offsets else None
+        return DecoderOutput(
+            logits=logits,
+            addresses=addresses,
+            router_logits=router_logits,
+            router_offsets=router_offsets,
+        )
 
     def empty_cache(self, max_length: int) -> DecoderCache:
         if max_length <= 0:
@@ -240,24 +269,39 @@ class QKVSDecoder(nn.Module):
     ) -> tuple[DecoderOutput, DecoderCache]:
         if values.ndim != 1:
             raise ValueError("incremental inputs must have shape [batch]")
-        hidden = self._embed(
+        hidden, pointer_hidden = self._embed(
             values.unsqueeze(1),
             pointers.unsqueeze(1),
             token_types.unsqueeze(1),
             None if semantic_ids is None else semantic_ids.unsqueeze(1),
         )
+        router_context = pointer_hidden if self.config.router_pointer_input else None
         layer_addresses: list[Tensor] = []
+        layer_router_logits: list[Tensor] = []
+        layer_router_offsets: list[Tensor] = []
         updated_caches: list[KVCache] = []
         for index, (layer, layer_cache) in enumerate(zip(self.layers, cache.layers, strict=True)):
             override = None
             if address_overrides is not None:
                 override = address_overrides[index].unsqueeze(1)
-            hidden, attention, updated = layer.step(hidden, layer_cache, cache.max_length, override)
+            hidden, attention, updated = layer.step(
+                hidden,
+                layer_cache,
+                cache.max_length,
+                override,
+                router_context,
+            )
             updated_caches.append(updated)
             if attention.addresses is not None:
                 layer_addresses.append(attention.addresses)
+            if attention.router_logits is not None:
+                layer_router_logits.append(attention.router_logits)
+            if attention.router_offsets is not None:
+                layer_router_offsets.append(attention.router_offsets)
         logits = self.output(self.final_norm(hidden))
         addresses = torch.stack(layer_addresses) if layer_addresses else None
-        return DecoderOutput(logits, addresses), DecoderCache(
+        router_logits = torch.stack(layer_router_logits) if layer_router_logits else None
+        router_offsets = torch.stack(layer_router_offsets) if layer_router_offsets else None
+        return DecoderOutput(logits, addresses, router_logits, router_offsets), DecoderCache(
             tuple(updated_caches), cache.max_length
         )

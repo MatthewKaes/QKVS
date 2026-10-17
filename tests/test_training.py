@@ -3,7 +3,7 @@ import torch
 from qkvs.config import ModelConfig
 from qkvs.data import PointerBatch, make_address_overrides, make_multi_region_batch
 from qkvs.model import DecoderOutput, QKVSDecoder
-from qkvs.training import TrainConfig, _route_loss
+from qkvs.training import TrainConfig, _route_loss, _router_parameters
 
 
 def _set_routing_fixture() -> tuple[ModelConfig, TrainConfig, PointerBatch]:
@@ -71,6 +71,61 @@ def test_set_route_loss_reaches_every_active_s_output() -> None:
         gradients = projection.weight.grad.norm(dim=1)
         assert gradients.shape == (8,)
         assert torch.all(gradients > 0)
+
+
+def test_hierarchical_set_route_loss_reaches_every_digit_output() -> None:
+    model_config, train_config, batch = _set_routing_fixture()
+    values = model_config.as_dict()
+    values["router_output_encoding"] = "hierarchical"
+    values["router_radix"] = 16
+    hierarchical_config = ModelConfig(**values)
+    train_config = TrainConfig(
+        **{
+            **train_config.__dict__,
+            "route_assignment_weight": 0.0,
+        }
+    )
+    model = QKVSDecoder(hierarchical_config)
+    output = model(
+        batch.values,
+        batch.pointers,
+        batch.token_types,
+        semantic_ids=batch.semantic_ids,
+    )
+    loss = _route_loss(output, batch, hierarchical_config, train_config)
+    assert torch.isfinite(loss)
+    loss.backward()
+    for layer in model.layers:
+        projection = layer.attention.router_output_projection()
+        assert projection is not None and projection.weight.grad is not None
+        gradients = projection.weight.grad.view(8, 2, 16, -1).norm(dim=-1)
+        assert torch.all(gradients > 0)
+
+
+def test_router_parameter_group_owns_coordinate_pointer_and_offset_projections() -> None:
+    config = ModelConfig(
+        vocab_size=9,
+        d_model=32,
+        n_heads=4,
+        n_layers=2,
+        dense_window=8,
+        retrieval_budget=8,
+        block_size=2,
+        router_position_encoding="absolute_fourier",
+        router_pointer_input=True,
+        router_local_offset=True,
+    )
+    model = QKVSDecoder(config)
+    grouped = {id(parameter) for parameter in _router_parameters(model)}
+    for layer in model.layers:
+        for module in (
+            layer.attention.s_proj,
+            layer.attention.s_offset_proj,
+            layer.attention.router_position_projection,
+            layer.attention.router_pointer_projection,
+        ):
+            assert module is not None
+            assert all(id(parameter) in grouped for parameter in module.parameters())
 
 
 def test_multi_region_oracle_assigns_every_window_to_a_required_target() -> None:

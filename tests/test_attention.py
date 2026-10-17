@@ -2,10 +2,13 @@ import torch
 
 from qkvs.attention import (
     CausalSelfAttention,
+    Selection,
     build_selection,
+    build_soft_neighbor_selection,
     chunked_selected_attention,
     duplicate_attention_reference,
     log_multiplicity_reference,
+    router_coordinate_features,
     selected_attention,
     streaming_selected_attention,
 )
@@ -150,6 +153,51 @@ def test_chunked_sdpa_matches_materialized_forward_and_backward() -> None:
         torch.testing.assert_close(actual_input.grad, expected_input.grad, rtol=2e-5, atol=2e-6)
 
 
+def test_selected_attention_bias_is_differentiable_across_backends() -> None:
+    generator = torch.Generator().manual_seed(103)
+    addresses = torch.rand(2, 13, 2, generator=generator)
+    base = build_selection(addresses, dense_window=4, retrieval_budget=4, block_size=2)
+    first_bias = torch.randn(base.indices.shape, generator=generator, requires_grad=True)
+    biases = [first_bias, first_bias.detach().clone().requires_grad_()]
+    inputs = [torch.randn(2, 2, 13, 4, generator=generator) for _ in range(3)]
+    expected = selected_attention(*inputs, Selection(base.indices, base.valid, biases[0]))
+    actual = chunked_selected_attention(
+        *inputs,
+        Selection(base.indices, base.valid, biases[1]),
+        query_chunk_size=3,
+        checkpoint_chunks=True,
+    )
+    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    assert biases[0].grad is not None and biases[1].grad is not None
+    torch.testing.assert_close(biases[1].grad, biases[0].grad, rtol=2e-5, atol=2e-6)
+
+
+def test_soft_neighbor_selection_has_bounded_adjacent_windows_and_offset_gradient() -> None:
+    addresses = torch.full((1, 10, 1), 0.5)
+    offsets = torch.full((1, 10, 1), 0.25, requires_grad=True)
+    selection = build_soft_neighbor_selection(
+        addresses,
+        offsets,
+        dense_window=4,
+        retrieval_budget=2,
+        block_size=2,
+        address_stride=2,
+    )
+    assert selection.indices.shape == (1, 10, 8)
+    assert selection.logit_bias is not None
+    torch.testing.assert_close(
+        selection.logit_bias[0, -1, :4].exp(),
+        torch.tensor([0.75, 0.75, 0.25, 0.25]),
+    )
+    q = torch.randn(1, 2, 10, 4)
+    k = torch.randn(1, 2, 10, 4)
+    v = torch.randn(1, 2, 10, 4)
+    selected_attention(q, k, v, selection).square().sum().backward()
+    assert offsets.grad is not None and offsets.grad.abs().sum() > 0
+
+
 def test_router_receives_auxiliary_gradient() -> None:
     torch.manual_seed(3)
     attention = CausalSelfAttention(
@@ -191,6 +239,65 @@ def test_detached_router_trains_s_without_changing_its_input() -> None:
     assert attention.s_proj is not None
     assert attention.s_proj.weight.grad is not None
     assert attention.s_proj.weight.grad.abs().sum() > 0
+
+
+def test_router_coordinate_features_expose_position_and_address_scale() -> None:
+    positions = torch.tensor([255, 511, 1023])
+    features = router_coordinate_features(
+        positions,
+        dense_window=128,
+        address_stride=16,
+    )
+    assert features.shape == (3, 20)
+    assert torch.unique(features, dim=0).shape[0] == 3
+
+
+def test_router_position_channel_trains_while_hidden_input_is_detached() -> None:
+    torch.manual_seed(5)
+    attention = CausalSelfAttention(
+        AttentionConfig(
+            d_model=16,
+            n_heads=4,
+            dense_window=4,
+            retrieval_budget=2,
+            block_size=1,
+            router_detach_input=True,
+            router_position_encoding="absolute_fourier",
+        )
+    )
+    hidden = torch.randn(2, 10, 16, requires_grad=True)
+    addresses = attention._addresses(hidden)
+    assert addresses is not None
+    addresses.square().sum().backward()
+    assert hidden.grad is None
+    assert attention.router_position_projection is not None
+    gradients = [parameter.grad for parameter in attention.router_position_projection.parameters()]
+    assert all(gradient is not None and gradient.abs().sum() > 0 for gradient in gradients)
+
+
+def test_hierarchical_router_decodes_coarse_and_fine_address_digits() -> None:
+    attention = CausalSelfAttention(
+        AttentionConfig(
+            d_model=16,
+            n_heads=4,
+            dense_window=4,
+            retrieval_budget=1,
+            block_size=1,
+            router_output_encoding="hierarchical",
+            router_radix=4,
+        )
+    )
+    projection = attention.router_output_projection()
+    assert projection is not None
+    with torch.no_grad():
+        projection.weight.zero_()
+        projection.bias.zero_()
+        projection.bias[1] = 10.0
+        projection.bias[4 + 2] = 10.0
+    hidden = torch.zeros(1, 16, 16)
+    addresses = attention._addresses(hidden)
+    assert addresses is not None
+    torch.testing.assert_close(addresses[0, -1, 0], torch.tensor(6.5 / 12.0))
 
 
 def test_retrieval_mask_disables_only_sparse_historical_slots() -> None:

@@ -19,6 +19,7 @@ from qkvs.data import (
     make_multi_region_batch,
     make_oracle_window_masks,
     make_pointer_batch,
+    make_query_pointer_overrides,
     make_semantic_batch,
     make_span_batch,
 )
@@ -59,6 +60,7 @@ class TrainConfig:
     teacher_decay_fraction: float = 0.8
     teacher_floor: float = 0.0
     teacher_only_oracle_window: bool = False
+    teacher_route_source: str = "coverage_oracle"
     hop_curriculum: tuple[int, ...] = ()
     query_only_retrieval: bool = False
     checkpoint_every: int = 100
@@ -165,15 +167,26 @@ def _teacher_controls(
     generator: torch.Generator,
     device: torch.device,
     only_oracle_window: bool,
+    route_source: str,
 ) -> tuple[Tensor | None, Tensor | None]:
     if model_config.attention_kind != "qkvs" or probability <= 0.0:
         return None, None
-    overrides = make_address_overrides(
-        batch,
-        seq_len=batch.values.shape[1],
-        n_windows=model_config.attention().n_windows,
-        device=device,
-    )
+    if route_source == "coverage_oracle":
+        overrides = make_address_overrides(
+            batch,
+            seq_len=batch.values.shape[1],
+            n_windows=model_config.attention().n_windows,
+            device=device,
+        )
+    elif route_source == "query_pointers":
+        overrides = make_query_pointer_overrides(
+            batch,
+            seq_len=batch.values.shape[1],
+            n_windows=model_config.attention().n_windows,
+            device=device,
+        )
+    else:
+        raise ValueError(f"unknown teacher route source: {route_source}")
     teacher_mask = torch.rand(batch.values.shape[0], generator=generator) < probability
     overrides[:, ~teacher_mask.to(device), :, :] = torch.nan
     if not only_oracle_window:
@@ -228,6 +241,56 @@ def _route_loss(
             block_size=model_config.block_size,
             stride=stride,
         )
+        if model_config.router_output_encoding == "hierarchical":
+            if output.router_logits is None:
+                raise ValueError("hierarchical routing requires categorical logits")
+            logits = output.router_logits[:, :, -1].float()
+            radix = model_config.router_radix
+            maximum_cells = radix * radix
+            if n_addresses > maximum_cells:
+                raise ValueError("hierarchical router radix cannot represent this address space")
+            coarse_log_probabilities = logits[..., 0, :].log_softmax(dim=-1)
+            fine_log_probabilities = logits[..., 1, :].log_softmax(dim=-1)
+            joint_log_probabilities = (
+                coarse_log_probabilities.unsqueeze(-1) + fine_log_probabilities.unsqueeze(-2)
+            ).flatten(-2)
+            cells = torch.arange(maximum_cells, device=logits.device)
+            valid_cells = (target_lower.unsqueeze(-1) <= cells) & (
+                cells < target_upper.unsqueeze(-1)
+            )
+            pair_log_mass = torch.logsumexp(
+                joint_log_probabilities.unsqueeze(-2).masked_fill(
+                    ~valid_cells.unsqueeze(-3),
+                    -torch.inf,
+                ),
+                dim=-1,
+            )
+            pair_cost = -pair_log_mass
+            pair_mass = pair_log_mass.exp().clamp(0.0, 1.0 - 1e-7)
+            covered_probability = 1.0 - (1.0 - pair_mass).prod(dim=-2)
+            coverage = -covered_probability.clamp_min(1e-12).log().mean()
+            if train_config.route_assignment_weight == 0.0:
+                return coverage
+
+            predicted_cells = logits[..., 0, :].argmax(dim=-1) * radix + logits[..., 1, :].argmax(
+                dim=-1
+            )
+            output_order = predicted_cells.argsort(dim=-1)
+            ordered_cost = pair_cost.gather(
+                -2,
+                output_order.unsqueeze(-1).expand_as(pair_cost),
+            )
+            target_order = ((target_lower + target_upper) / 2.0).argsort(dim=-1)
+            output_count = logits.shape[-3]
+            target_count = target_lower.shape[-1]
+            quantiles = torch.div(
+                (torch.arange(output_count, device=logits.device) * 2 + 1) * target_count,
+                2 * output_count,
+                rounding_mode="floor",
+            ).clamp_max(target_count - 1)
+            matched_targets = target_order[..., quantiles]
+            assignment = ordered_cost.gather(-1, matched_targets.unsqueeze(-1)).mean()
+            return coverage + train_config.route_assignment_weight * assignment
         scaled = predicted.unsqueeze(-1) * n_addresses
         distance = (target_lower.unsqueeze(-2) - scaled).clamp_min(0)
         distance += (scaled - target_upper.unsqueeze(-2)).clamp_min(0)
@@ -289,6 +352,26 @@ def _retrieval_mask(batch: PointerBatch, train_config: TrainConfig) -> Tensor | 
     mask = torch.zeros_like(batch.values, dtype=torch.bool)
     mask[:, -1] = True
     return mask
+
+
+def _router_parameters(model: QKVSDecoder) -> list[Tensor]:
+    return [
+        parameter
+        for layer in model.layers
+        for module in (
+            layer.attention.s_proj,
+            layer.attention.s_offset_proj,
+            layer.attention.router_position_projection,
+            layer.attention.router_pointer_projection,
+        )
+        if module is not None
+        for parameter in module.parameters()
+    ]
+
+
+def _parameter_gradient_norm(parameters: list[Tensor]) -> float:
+    gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
+    return 0.0 if not gradients else float(torch.nn.utils.get_total_norm(gradients))
 
 
 def _route_accuracies(
@@ -366,6 +449,7 @@ def evaluate(
     oracle: bool,
     seed: int,
     device: torch.device,
+    oracle_source: str = "coverage_oracle",
 ) -> dict[str, Any]:
     model.eval()
     generator = torch.Generator().manual_seed(seed)
@@ -386,12 +470,22 @@ def evaluate(
         overrides = None
         window_masks = None
         if oracle and model_config.attention_kind == "qkvs":
-            overrides = make_address_overrides(
-                batch,
-                seq_len=seq_len,
-                n_windows=model_config.attention().n_windows,
-                device=device,
-            )
+            if oracle_source == "coverage_oracle":
+                overrides = make_address_overrides(
+                    batch,
+                    seq_len=seq_len,
+                    n_windows=model_config.attention().n_windows,
+                    device=device,
+                )
+            elif oracle_source == "query_pointers":
+                overrides = make_query_pointer_overrides(
+                    batch,
+                    seq_len=seq_len,
+                    n_windows=model_config.attention().n_windows,
+                    device=device,
+                )
+            else:
+                raise ValueError(f"unknown oracle source: {oracle_source}")
             window_masks = make_oracle_window_masks(
                 batch,
                 seq_len=seq_len,
@@ -456,23 +550,18 @@ def train_run(
 ) -> dict[str, Any]:
     seed_everything(train_config.seed)
     model = QKVSDecoder(model_config).to(device)
-    if (
-        train_config.router_learning_rate is None
-        or model_config.attention_kind != "qkvs"
-        or model_config.router_mode != "learned"
-    ):
+    router_parameters = (
+        _router_parameters(model)
+        if model_config.attention_kind == "qkvs" and model_config.router_mode == "learned"
+        else []
+    )
+    router_ids = {id(parameter) for parameter in router_parameters}
+    base_parameters = [
+        parameter for parameter in model.parameters() if id(parameter) not in router_ids
+    ]
+    if train_config.router_learning_rate is None or not router_parameters:
         parameter_groups: Any = model.parameters()
     else:
-        router_parameters = [
-            parameter
-            for layer in model.layers
-            if layer.attention.s_proj is not None
-            for parameter in layer.attention.s_proj.parameters()
-        ]
-        router_ids = {id(parameter) for parameter in router_parameters}
-        base_parameters = [
-            parameter for parameter in model.parameters() if id(parameter) not in router_ids
-        ]
         parameter_groups = [
             {"params": base_parameters, "lr": train_config.learning_rate},
             {"params": router_parameters, "lr": train_config.router_learning_rate},
@@ -578,6 +667,7 @@ def train_run(
             generator,
             device,
             train_config.teacher_only_oracle_window,
+            train_config.teacher_route_source,
         )
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
@@ -605,34 +695,68 @@ def train_run(
         should_log = step == 1 or step % train_config.log_every == 0 or step == train_config.steps
         loss.backward()
         router_gradient_norms: list[list[float]] | None = None
+        router_digit_gradient_norms: list[list[list[float]]] | None = None
+        router_offset_gradient_norms: list[float] | None = None
+        router_pointer_gradient_norms: list[float] | None = None
         if should_log and model_config.attention_kind == "qkvs":
             router_gradient_norms = []
+            router_digit_gradient_norms = []
+            router_offset_gradient_norms = []
+            router_pointer_gradient_norms = []
             for layer in model.layers:
                 projection = layer.attention.router_output_projection()
                 if projection is None or projection.weight.grad is None:
                     router_gradient_norms.append([])
+                    router_digit_gradient_norms.append([])
+                elif model_config.router_output_encoding == "hierarchical":
+                    capacity = model_config.router_capacity or model_config.attention().n_windows
+                    gradients = projection.weight.grad.view(
+                        capacity,
+                        2,
+                        model_config.router_radix,
+                        -1,
+                    )[: model_config.attention().n_windows]
+                    router_gradient_norms.append(
+                        gradients.square().sum(dim=(1, 2, 3)).sqrt().tolist()
+                    )
+                    router_digit_gradient_norms.append(
+                        gradients.square().sum(dim=(2, 3)).sqrt().tolist()
+                    )
                 else:
                     router_gradient_norms.append(
                         projection.weight.grad.norm(dim=1)[
                             : model_config.attention().n_windows
                         ].tolist()
                     )
-        if model_config.router_detach_input:
-            router_parameters = [
-                parameter
-                for layer in model.layers
-                if layer.attention.s_proj is not None
-                for parameter in layer.attention.s_proj.parameters()
-            ]
-            router_ids = {id(parameter) for parameter in router_parameters}
-            base_parameters = [
-                parameter for parameter in model.parameters() if id(parameter) not in router_ids
-            ]
-            torch.nn.utils.clip_grad_norm_(base_parameters, 1.0)
-            torch.nn.utils.clip_grad_norm_(router_parameters, 1.0)
+                    router_digit_gradient_norms.append([])
+                offset = layer.attention.s_offset_proj
+                pointer = layer.attention.router_pointer_projection
+                router_offset_gradient_norms.append(
+                    0.0 if offset is None else _parameter_gradient_norm(list(offset.parameters()))
+                )
+                router_pointer_gradient_norms.append(
+                    0.0 if pointer is None else _parameter_gradient_norm(list(pointer.parameters()))
+                )
+        before_router = (
+            [parameter.detach().clone() for parameter in router_parameters] if should_log else []
+        )
+        if router_parameters and train_config.router_learning_rate is not None:
+            raw_base_gradient_norm = float(torch.nn.utils.clip_grad_norm_(base_parameters, 1.0))
+            raw_router_gradient_norm = float(torch.nn.utils.clip_grad_norm_(router_parameters, 1.0))
         else:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            raw_base_gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
+            raw_router_gradient_norm = 0.0
         optimizer.step()
+        router_update_norm = (
+            math.sqrt(
+                sum(
+                    (parameter.detach() - before).square().sum().item()
+                    for parameter, before in zip(router_parameters, before_router, strict=True)
+                )
+            )
+            if should_log
+            else 0.0
+        )
 
         if should_log:
             accuracies = _route_accuracies(output.addresses, batch, model_config)
@@ -645,11 +769,22 @@ def train_run(
                 "teacher_probability": teacher_probability,
                 "training_hops": training_hops,
                 "train_seq_len": train_seq_len,
+                "raw_base_gradient_norm": raw_base_gradient_norm,
+                "raw_router_gradient_norm": raw_router_gradient_norm,
+                "base_gradient_clip_ratio": min(1.0, 1.0 / max(raw_base_gradient_norm, 1e-12)),
+                "router_gradient_clip_ratio": min(1.0, 1.0 / max(raw_router_gradient_norm, 1e-12)),
+                "router_parameter_update_norm": router_update_norm,
             }
             if accuracies is not None:
                 entry["route_accuracy_mean"] = sum(accuracies) / len(accuracies)
             if router_gradient_norms is not None:
                 entry["router_gradient_norms_by_layer"] = router_gradient_norms
+            if router_digit_gradient_norms is not None:
+                entry["router_digit_gradient_norms_by_layer"] = router_digit_gradient_norms
+            if router_offset_gradient_norms is not None:
+                entry["router_offset_gradient_norms_by_layer"] = router_offset_gradient_norms
+            if router_pointer_gradient_norms is not None:
+                entry["router_pointer_gradient_norms_by_layer"] = router_pointer_gradient_norms
             history.append(entry)
             print(
                 f"{train_config.name}: step={step}/{train_config.steps} "

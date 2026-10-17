@@ -7,6 +7,8 @@ RouterMode = Literal["learned", "unconditioned", "random"]
 AttentionKind = Literal["qkvs", "dense", "rolling"]
 PointerEncoding = Literal["fourier", "raw"]
 PointerSetEncoding = Literal["sum", "sorted_raw", "sorted_fourier"]
+RouterPositionEncoding = Literal["none", "absolute_fourier"]
+RouterOutputEncoding = Literal["scalar", "hierarchical"]
 SparseBackend = Literal["materialized", "streaming", "chunked"]
 
 
@@ -24,6 +26,13 @@ class AttentionConfig:
     router_capacity: int | None = None
     router_detach_input: bool = False
     router_mlp_ratio: int = 0
+    router_position_encoding: RouterPositionEncoding = "none"
+    router_pointer_input: bool = False
+    unrotated_address_matching: bool = False
+    router_output_encoding: RouterOutputEncoding = "scalar"
+    router_radix: int = 64
+    router_local_offset: bool = False
+    soft_neighbor_training: bool = False
     sparse_backend: SparseBackend = "streaming"
     query_chunk_size: int = 32
     candidate_tile_size: int = 32
@@ -51,6 +60,16 @@ class AttentionConfig:
                 raise ValueError("router capacity cannot be smaller than the active window count")
             if self.router_mlp_ratio < 0:
                 raise ValueError("router MLP ratio cannot be negative")
+            if self.router_position_encoding not in {"none", "absolute_fourier"}:
+                raise ValueError("unknown router position encoding")
+            if self.router_output_encoding not in {"scalar", "hierarchical"}:
+                raise ValueError("unknown router output encoding")
+            if self.router_radix <= 1:
+                raise ValueError("router radix must be greater than one")
+            if self.soft_neighbor_training and not self.router_local_offset:
+                raise ValueError("soft neighbor training requires a local router offset")
+            if self.unrotated_address_matching and not self.router_pointer_input:
+                raise ValueError("unrotated address matching requires direct pointer input")
         if self.query_chunk_size <= 0 or self.candidate_tile_size <= 0:
             raise ValueError("sparse attention tile sizes must be positive")
 
@@ -92,6 +111,13 @@ class ModelConfig:
     router_capacity: int | None = None
     router_detach_input: bool = False
     router_mlp_ratio: int = 0
+    router_position_encoding: RouterPositionEncoding = "none"
+    router_pointer_input: bool = False
+    unrotated_address_matching: bool = False
+    router_output_encoding: RouterOutputEncoding = "scalar"
+    router_radix: int = 64
+    router_local_offset: bool = False
+    soft_neighbor_training: bool = False
     n_token_types: int = 3
     pointer_encoding: PointerEncoding = "fourier"
     pointer_set_encoding: PointerSetEncoding = "sum"
@@ -119,6 +145,13 @@ class ModelConfig:
             router_capacity=self.router_capacity,
             router_detach_input=self.router_detach_input,
             router_mlp_ratio=self.router_mlp_ratio,
+            router_position_encoding=self.router_position_encoding,
+            router_pointer_input=self.router_pointer_input,
+            unrotated_address_matching=self.unrotated_address_matching,
+            router_output_encoding=self.router_output_encoding,
+            router_radix=self.router_radix,
+            router_local_offset=self.router_local_offset,
+            soft_neighbor_training=self.soft_neighbor_training,
             sparse_backend=self.sparse_backend,
             query_chunk_size=self.query_chunk_size,
             candidate_tile_size=self.candidate_tile_size,

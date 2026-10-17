@@ -9,6 +9,7 @@ from qkvs.data import (
     make_multi_region_batch,
     make_multi_region_counterfactual_pair,
     make_pointer_batch,
+    make_query_pointer_overrides,
     make_semantic_batch,
     make_span_batch,
     semantic_vocabulary_size,
@@ -276,6 +277,31 @@ def test_multi_region_counterfactual_changes_only_the_requested_pointer_set() ->
         assert batch.route_target_positions is not None
         selected = batch.route_target_positions[0]
         torch.testing.assert_close(batch.values.gather(1, selected).sum(dim=1), batch.answers)
+
+
+def test_query_pointer_override_bypasses_s_with_the_supplied_address_set() -> None:
+    batch = make_multi_region_batch(
+        batch_size=4,
+        seq_len=512,
+        dense_window=32,
+        block_size=32,
+        address_stride=8,
+        n_windows=8,
+        n_layers=4,
+        n_records=24,
+        required_regions=8,
+        generator=torch.Generator().manual_seed(97),
+    )
+    overrides = make_query_pointer_overrides(
+        batch,
+        seq_len=512,
+        n_windows=8,
+        device=torch.device("cpu"),
+    )
+    torch.testing.assert_close(
+        overrides[:, :, -1], batch.pointers[:, -1].unsqueeze(0).expand(4, -1, -1)
+    )
+    assert torch.isnan(overrides[:, :, :-1]).all()
 
 
 def test_multi_region_rejects_ambiguous_candidate_addresses() -> None:

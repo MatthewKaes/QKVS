@@ -60,6 +60,41 @@ def test_incremental_decode_matches_batched_reference() -> None:
     torch.testing.assert_close(batched, incremental, rtol=2e-5, atol=2e-5)
 
 
+def test_unrotated_address_matching_incremental_decode_matches_batched() -> None:
+    torch.manual_seed(13)
+    model = QKVSDecoder(
+        ModelConfig(
+            vocab_size=16,
+            d_model=32,
+            n_heads=4,
+            n_layers=2,
+            dense_window=4,
+            retrieval_budget=2,
+            block_size=1,
+            router_pointer_input=True,
+            unrotated_address_matching=True,
+            sparse_backend="chunked",
+            checkpoint_sparse=False,
+            dropout=0.0,
+        )
+    ).eval()
+    values, pointers, token_types = _inputs(11)
+    with torch.no_grad():
+        batched = model(values, pointers, token_types).logits
+        cache = model.empty_cache(max_length=values.shape[1])
+        steps = []
+        for position in range(values.shape[1]):
+            output, cache = model.step(
+                values[:, position],
+                pointers[:, position],
+                token_types[:, position],
+                cache,
+            )
+            steps.append(output.logits)
+        incremental = torch.cat(steps, dim=1)
+    torch.testing.assert_close(batched, incremental, rtol=2e-5, atol=2e-5)
+
+
 def test_layers_change_router_decisions_through_hidden_state() -> None:
     torch.manual_seed(23)
     model = QKVSDecoder(
@@ -193,3 +228,62 @@ def test_pointer_set_embedding_is_permutation_invariant() -> None:
         actual = model(values, permuted, token_types)
     torch.testing.assert_close(actual.logits, expected.logits)
     torch.testing.assert_close(actual.addresses, expected.addresses)
+
+
+def test_direct_router_pointer_input_changes_s_without_changing_hidden_input() -> None:
+    attention = (
+        QKVSDecoder(
+            ModelConfig(
+                vocab_size=9,
+                d_model=32,
+                n_heads=4,
+                n_layers=1,
+                dense_window=4,
+                retrieval_budget=2,
+                block_size=1,
+                router_pointer_input=True,
+            )
+        )
+        .layers[0]
+        .attention
+    )
+    hidden = torch.zeros(1, 8, 32)
+    first_context = torch.zeros_like(hidden)
+    second_context = first_context.clone()
+    second_context[:, -1, 0] = 1.0
+    with torch.no_grad():
+        first = attention._addresses(hidden, router_context=first_context)
+        second = attention._addresses(hidden, router_context=second_context)
+    assert first is not None and second is not None
+    assert not torch.equal(first[:, -1], second[:, -1])
+
+
+def test_soft_neighbor_answer_loss_reaches_local_offset_head() -> None:
+    torch.manual_seed(41)
+    model = QKVSDecoder(
+        ModelConfig(
+            vocab_size=16,
+            d_model=32,
+            n_heads=4,
+            n_layers=1,
+            dense_window=4,
+            retrieval_budget=4,
+            block_size=2,
+            router_output_encoding="hierarchical",
+            router_radix=8,
+            router_local_offset=True,
+            soft_neighbor_training=True,
+            sparse_backend="materialized",
+        )
+    ).train()
+    values, pointers, token_types = _inputs(12)
+    output = model(values, pointers, token_types)
+    torch.nn.functional.cross_entropy(
+        output.logits[:, -1],
+        torch.tensor([1, 2]),
+    ).backward()
+    offset = model.layers[0].attention.s_offset_proj
+    assert isinstance(offset, torch.nn.Linear)
+    assert offset.weight.grad is not None and offset.weight.grad.abs().sum() > 0
+    router = model.layers[0].attention.router_output_projection()
+    assert router is not None and router.weight.grad is None
