@@ -6,6 +6,7 @@ from qkvs.attention import (
     duplicate_attention_reference,
     log_multiplicity_reference,
     selected_attention,
+    streaming_selected_attention,
 )
 from qkvs.config import AttentionConfig
 
@@ -101,6 +102,29 @@ def test_duplicate_occurrences_equal_log_multiplicity_bias() -> None:
     duplicated = duplicate_attention_reference(q, k, v, indices)
     deduplicated = log_multiplicity_reference(q, k, v, indices)
     torch.testing.assert_close(duplicated, deduplicated, rtol=1e-6, atol=1e-6)
+
+
+def test_streaming_attention_matches_materialized_forward_and_backward() -> None:
+    generator = torch.Generator().manual_seed(101)
+    addresses = torch.rand(2, 13, 2, generator=generator)
+    selection = build_selection(addresses, dense_window=4, retrieval_budget=4, block_size=2)
+    materialized_inputs = [
+        torch.randn(2, 2, 13, 4, generator=generator, requires_grad=True) for _ in range(3)
+    ]
+    streaming_inputs = [value.detach().clone().requires_grad_() for value in materialized_inputs]
+    expected = selected_attention(*materialized_inputs, selection)
+    actual = streaming_selected_attention(
+        *streaming_inputs,
+        selection,
+        query_chunk_size=3,
+        candidate_tile_size=2,
+        checkpoint_chunks=True,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    for expected_input, actual_input in zip(materialized_inputs, streaming_inputs, strict=True):
+        torch.testing.assert_close(actual_input.grad, expected_input.grad, rtol=2e-5, atol=2e-6)
 
 
 def test_router_receives_auxiliary_gradient() -> None:

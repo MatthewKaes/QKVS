@@ -6,6 +6,7 @@ from typing import Any, Literal
 RouterMode = Literal["learned", "unconditioned", "random"]
 AttentionKind = Literal["qkvs", "dense", "rolling"]
 PointerEncoding = Literal["fourier", "raw"]
+SparseBackend = Literal["materialized", "streaming"]
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,10 @@ class AttentionConfig:
     dropout: float = 0.0
     kind: AttentionKind = "qkvs"
     router_mode: RouterMode = "learned"
+    sparse_backend: SparseBackend = "streaming"
+    query_chunk_size: int = 32
+    candidate_tile_size: int = 32
+    checkpoint_sparse: bool = True
 
     def __post_init__(self) -> None:
         if self.d_model % self.n_heads:
@@ -38,6 +43,8 @@ class AttentionConfig:
                 raise ValueError("QKVS requires a positive retrieval budget")
             if self.retrieval_budget % self.block_size:
                 raise ValueError("retrieval_budget must be divisible by block_size")
+        if self.query_chunk_size <= 0 or self.candidate_tile_size <= 0:
+            raise ValueError("sparse attention tile sizes must be positive")
 
     @property
     def head_dim(self) -> int:
@@ -76,6 +83,15 @@ class ModelConfig:
     router_mode: RouterMode = "learned"
     n_token_types: int = 3
     pointer_encoding: PointerEncoding = "fourier"
+    semantic_vocab_size: int = 0
+    sparse_backend: SparseBackend = "streaming"
+    query_chunk_size: int = 32
+    candidate_tile_size: int = 32
+    checkpoint_sparse: bool = True
+
+    def __post_init__(self) -> None:
+        if self.semantic_vocab_size < 0:
+            raise ValueError("semantic_vocab_size cannot be negative")
 
     def attention(self) -> AttentionConfig:
         return AttentionConfig(
@@ -88,6 +104,10 @@ class ModelConfig:
             dropout=self.dropout,
             kind=self.attention_kind,
             router_mode=self.router_mode,
+            sparse_backend=self.sparse_backend,
+            query_chunk_size=self.query_chunk_size,
+            candidate_tile_size=self.candidate_tile_size,
+            checkpoint_sparse=self.checkpoint_sparse,
         )
 
     def as_dict(self) -> dict[str, Any]:

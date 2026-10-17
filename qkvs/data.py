@@ -22,6 +22,8 @@ class PointerBatch:
     route_addresses: Tensor  # [layers, batch]
     route_positions: Tensor  # [layers, batch]
     hops: int
+    semantic_ids: Tensor | None = None
+    memory_targets: Tensor | None = None
 
     def to(self, device: torch.device | str) -> PointerBatch:
         return PointerBatch(
@@ -32,6 +34,10 @@ class PointerBatch:
             route_addresses=self.route_addresses.to(device),
             route_positions=self.route_positions.to(device),
             hops=self.hops,
+            semantic_ids=(None if self.semantic_ids is None else self.semantic_ids.to(device)),
+            memory_targets=(
+                None if self.memory_targets is None else self.memory_targets.to(device)
+            ),
         )
 
 
@@ -172,6 +178,81 @@ def make_memory_anchor_batch(
 def semantic_vocabulary_size(n_keys: int, answer_vocab_size: int) -> int:
     """Vocabulary containing answers/fillers, key-answer records, and key queries."""
     return answer_vocab_size + n_keys * answer_vocab_size + n_keys
+
+
+def memory_bank_vocabulary_size(n_keys: int, answer_vocab_size: int) -> int:
+    """Answers/fillers, key-value records, key markers, and key queries."""
+    return answer_vocab_size + n_keys * answer_vocab_size + 2 * n_keys
+
+
+def make_memory_bank_batch(
+    *,
+    batch_size: int,
+    seq_len: int,
+    dense_window: int,
+    address_stride: int,
+    n_layers: int,
+    n_keys: int,
+    answer_vocab_size: int,
+    distractors_per_marker: int,
+    source_offset: int,
+    generator: torch.Generator,
+) -> PointerBatch:
+    """Build several pointer-free memory sinks with competing local records."""
+    history_end = seq_len - dense_window
+    values = torch.randint(answer_vocab_size, (batch_size, seq_len), generator=generator)
+    pointers = torch.full((batch_size, seq_len), -1.0)
+    token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
+    answers = torch.empty(batch_size, dtype=torch.long)
+    route_positions = torch.empty((n_layers, batch_size), dtype=torch.long)
+    semantic_ids = torch.full((batch_size, seq_len), -1, dtype=torch.long)
+    memory_targets = torch.full((batch_size, seq_len), -100, dtype=torch.long)
+    fractions = torch.linspace(0.30, 0.45, n_keys)
+    marker_positions = torch.floor(fractions * history_end).to(torch.long)
+    minimum_spacing = int(torch.diff(marker_positions).min().item())
+    if minimum_spacing <= distractors_per_marker + 2:
+        raise ValueError("memory markers are too close for their distractor regions")
+    if source_offset <= distractors_per_marker + 1:
+        raise ValueError("source offset must leave room for distractors")
+
+    for item in range(batch_size):
+        record_answers = torch.randint(answer_vocab_size, (n_keys,), generator=generator)
+        for key, marker in enumerate(marker_positions):
+            source = marker - source_offset
+            values[item, source] = record_answers[key]
+            token_types[item, source] = RECORD
+            semantic_ids[item, source] = key
+            for distractor in range(distractors_per_marker):
+                position = source - 1 - distractor
+                distractor_key = (key + distractor + 1) % n_keys
+                distractor_answer = torch.randint(answer_vocab_size, (), generator=generator)
+                values[item, position] = distractor_answer
+                token_types[item, position] = RECORD
+                semantic_ids[item, position] = distractor_key
+            values[item, marker] = 0
+            token_types[item, marker] = MEMORY
+            semantic_ids[item, marker] = key
+            memory_targets[item, marker] = record_answers[key]
+
+        query_key = torch.randint(n_keys, (), generator=generator)
+        values[item, -1] = 0
+        token_types[item, -1] = QUERY
+        semantic_ids[item, -1] = query_key
+        answers[item] = record_answers[query_key]
+        route_positions[:, item] = marker_positions[query_key]
+
+    route_addresses = normalized_window_addresses(route_positions, history_end, address_stride)
+    return PointerBatch(
+        values,
+        pointers,
+        token_types,
+        answers,
+        route_addresses,
+        route_positions,
+        1,
+        semantic_ids,
+        memory_targets,
+    )
 
 
 def make_semantic_batch(

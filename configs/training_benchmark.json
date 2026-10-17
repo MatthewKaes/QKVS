@@ -1,0 +1,28 @@
+{
+  "name": "rtx5070_training_memory",
+  "vocab_size": 32,
+  "d_model": 128,
+  "n_heads": 4,
+  "n_layers": 2,
+  "mlp_ratio": 2,
+  "dense_window": 128,
+  "retrieval_budget": 128,
+  "block_size": 16,
+  "address_stride": 16,
+  "query_chunk_size": 128,
+  "candidate_tile_size": 64,
+  "sequence_lengths": [512, 1024, 2048, 4096],
+  "warmup": 1,
+  "repeats": 3,
+  "backends": {
+    "dense_sdpa": {"attention_kind": "dense"},
+    "qkvs_materialized": {
+      "attention_kind": "qkvs",
+      "sparse_backend": "materialized"
+    },
+    "qkvs_streaming": {
+      "attention_kind": "qkvs",
+      "sparse_backend": "streaming"
+    }
+  }
+}

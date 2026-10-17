@@ -23,10 +23,14 @@ windows without changing the retrieved-token budget.
 
 Selection construction and attention touch at most `L + R` entries per query after the dense
 threshold. Historical KV storage remains linear in sequence length. The current batched training
-implementation constructs candidates for all queries at once, so whole-sequence training remains
-linear in sequence length times the fixed selection budget; incremental decoding is the production
-complexity reference. Incremental inference uses a caller-sized preallocated cache and appends into
-fresh slots, avoiding an otherwise hidden `torch.cat` copy of the full history on every token.
+implementation constructs candidate indices for all queries, but the streaming backend processes
+bounded query chunks and candidate tiles with online softmax. Activation checkpointing recomputes
+those tiles during backward instead of retaining sequence-wide selected K/V tensors. Whole-sequence
+training remains linear in sequence length times the fixed selection budget while peak gathered
+K/V memory is bounded by the configured tile sizes. Queries through the `L + R` threshold use
+optimized causal SDPA directly. The original materialized backend remains available as a numerical
+reference. Incremental inference uses a caller-sized preallocated cache and appends into fresh
+slots, avoiding an otherwise hidden `torch.cat` copy of the full history on every token.
 
 ## Router training
 
@@ -60,5 +64,7 @@ direct address prediction and layer-conditioned pointer following are learnable.
 - Whether each attention head should own addresses.
 - Whether explicit previous-address forwarding helps after controlling for parameter count.
 - Kernel layout: gathered attention is first kept in PyTorch; Triton/CUDA work is justified only
-  after correctness and learning evidence.
+  after correctness and learning evidence. The checkpointed streaming implementation solves peak
+  training memory but is substantially slower; fusing online softmax, gather, and backward remains
+  necessary for throughput.
 - Semantic retrieval and practical language modeling are separate later-stage claims.

@@ -90,7 +90,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 19 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 21 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -368,3 +368,94 @@ content generalizes; native failure is again the address predictor. See
 
 Model-only checkpoints for the strict baseline and the principal second-iteration controls are
 listed in [artifacts/models/README.md](../artifacts/models/README.md).
+
+## Infrastructure and scaling iteration
+
+The third iteration addresses the prototype-memory blocker before attempting larger learning
+claims.
+
+### Gradient-compatible streaming sparse attention
+
+The original reference gathered tensors shaped approximately `[B, H, N, L+R, d_head]` for both K
+and V. The new streaming backend:
+
+- uses optimized causal SDPA for queries through the full-attention threshold;
+- processes only a bounded query chunk and candidate tile at a time;
+- accumulates exact softmax normalization online across candidate tiles;
+- preserves duplicate occurrences and masks;
+- activation-checkpoints query chunks, recomputing bounded tiles during backward;
+- retains the materialized implementation as a forward/backward equivalence oracle.
+
+Forward outputs and Q/K/V gradients match the materialized reference in the test suite.
+
+The whole-step benchmark uses a two-layer, width-128 model, `L=128`, `R=128`, BF16 autocast,
+next-token cross entropy, backward, and fused AdamW:
+
+| Context | Dense SDPA peak / step | Materialized QKVS peak / step | Streaming QKVS peak / step |
+|---:|---:|---:|---:|
+| 512 | 26.6 MiB / 3.54 ms | 127.2 MiB / 4.99 ms | 56.4 MiB / 25.41 ms |
+| 1,024 | 32.1 MiB / 3.09 ms | 334.4 MiB / 7.67 ms | 63.4 MiB / 66.43 ms |
+| 2,048 | 43.0 MiB / 2.92 ms | 745.3 MiB / 14.47 ms | 77.4 MiB / 149.83 ms |
+| 4,096 | 64.8 MiB / 3.10 ms | 1,569.9 MiB / 28.96 ms | 105.4 MiB / 323.01 ms |
+
+At 4K, streaming reduces measured peak allocation by 14.9x relative to materialized QKVS. Its
+~10x step-time penalty makes this an enabling reference, not a production kernel. The raw artifact
+is [rtx5070_training_memory.json](../artifacts/benchmarks/rtx5070_training_memory.json).
+
+### Million-token decode curve
+
+The isolated width-128, four-layer theoretical-cache benchmark was extended through 1,048,576
+tokens with a fixed 512-token selection budget:
+
+| Context | Dense one-query SDPA | Bounded eager QKVS | Dense / QKVS | Theoretical 4-layer KV |
+|---:|---:|---:|---:|---:|
+| 32,768 | 0.0386 ms | 0.3624 ms | 0.11x | 0.0625 GiB |
+| 131,072 | 0.1262 ms | 0.3588 ms | 0.35x | 0.25 GiB |
+| 262,144 | 0.2307 ms | 0.3584 ms | 0.64x | 0.50 GiB |
+| 524,288 | 0.4438 ms | 0.3574 ms | 1.24x | 1.00 GiB |
+| 1,048,576 | 0.8740 ms | 0.3580 ms | 2.44x | 2.00 GiB |
+
+The eager crossover lies between 262K and 524K for this small 512-token budget. This does not
+predict the crossover for a 32K production selection, but it is direct wall-clock evidence that
+bounded decode eventually overtakes dense attention. See
+[rtx5070_long_decode.json](../artifacts/benchmarks/rtx5070_long_decode.json).
+
+### First 1K-2K competing-memory experiment
+
+A four-layer, width-128 streaming model was trained with contexts cycling over 1,024, 1,536, and
+2,048, `L=128`, `R=128`, width-16/stride-4 windows, four memory sinks, three competing records per
+sink, shared categorical keys, and no input pointers. Sources were 32 tokens before their sinks:
+inside the dense working window but outside the retrieved 16-token sink window. Every sink and the
+final query were beyond both the sparse threshold and the final query's 509-token rolling receptive
+field. Half of training examples consumed native routes after teacher-probability decay.
+
+The streaming implementation made this inexpensive in memory: batch-two, four-layer training
+through 2K peaked at 195 MiB. Training was deliberately stopped at step 400 because neither the
+main task nor an explicit sink-content auxiliary objective learned reliably:
+
+| Evaluation | Marker content | Native final answer | Oracle final answer |
+|---:|---:|---:|---:|
+| 1,024 | 3.1% | 9.4% | 9.4% |
+| 2,048 | 6.25% | 9.4% | 9.4% |
+
+Chance is 6.25%; each metric used 128 marker examples or 32 final-query examples. Because oracle
+query-to-sink routing did not improve answers, this is a memory-formation failure, not evidence of
+router failure. The task went through two discarded diagnostic versions—one with a direct source
+leak inside the retrieved window and one with needlessly composite token IDs—before this controlled
+form. Those versions are not used as evidence.
+
+This negative result is bounded: 400 batch-two steps are far less data than the successful tiny
+controls, and the Python streaming backend discourages brute-force training. It does show that
+scaling `L`, `R`, and context does not automatically produce multi-record memory organization, even
+with shared keys and supervised sink targets. See
+[scaled_memory_diagnostic.json](../artifacts/results/scaled_memory_diagnostic.json).
+
+### Updated engineering boundary
+
+- Long-context training is now **memory-feasible** on the 12 GB card at the first proposed scale.
+- It is not yet **throughput-efficient**; a fused online-softmax gather with backward is the next
+  kernel task.
+- Bounded eager decode becomes faster than dense attention only at very long contexts for the
+  measured 512-token budget.
+- The first realistic competing-memory task is negative on memory formation, so larger contexts or
+  parameter counts are not justified until the storage objective/model is improved on this task.

@@ -50,8 +50,14 @@ Additional recorded ablations can be reproduced with:
 uv run python -m qkvs.persistence --config configs/persistence.json --device cpu
 uv run python -m qkvs.overlap --config configs/overlap.json --device cpu
 uv run python -m qkvs.interventions --config configs/interventions.json --device cpu
+uv run python -m qkvs.training_benchmark --config configs/training_benchmark.json
 ```
 
 The local NVIDIA driver has a known history of sporadic `Xid 79` bus-loss events. Training runs are
 therefore individually selectable with `--run`, atomically checkpoint every 100 steps, support
 `--resume`, and can move evaluation to CPU with `--eval-device cpu`.
+
+Longer runs can be split into independent driver sessions with `--max-steps-this-run N` and resumed
+from atomic model/optimizer/RNG checkpoints. The streaming sparse backend uses online softmax,
+bounded query/candidate tiles, and activation checkpointing to avoid sequence-wide selected-K/V
+materialization during training.

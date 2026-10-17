@@ -114,6 +114,11 @@ class QKVSDecoder(nn.Module):
         self.config = config
         self.value_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.type_embedding = nn.Embedding(config.n_token_types, config.d_model)
+        self.semantic_embedding = (
+            nn.Embedding(config.semantic_vocab_size, config.d_model)
+            if config.semantic_vocab_size > 0
+            else None
+        )
         self.pointer_encoder = PointerEncoder(config.d_model, mode=config.pointer_encoding)
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList(DecoderBlock(config) for _ in range(config.n_layers))
@@ -128,12 +133,26 @@ class QKVSDecoder(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def _embed(self, values: Tensor, pointers: Tensor, token_types: Tensor) -> Tensor:
-        return self.dropout(
+    def _embed(
+        self,
+        values: Tensor,
+        pointers: Tensor,
+        token_types: Tensor,
+        semantic_ids: Tensor | None = None,
+    ) -> Tensor:
+        hidden = (
             self.value_embedding(values)
             + self.type_embedding(token_types)
             + self.pointer_encoder(pointers)
         )
+        if self.semantic_embedding is not None:
+            if semantic_ids is None:
+                raise ValueError("semantic IDs are required by this model configuration")
+            valid = semantic_ids >= 0
+            hidden = hidden + self.semantic_embedding(semantic_ids.clamp_min(0)) * valid.unsqueeze(
+                -1
+            )
+        return self.dropout(hidden)
 
     def forward(
         self,
@@ -142,10 +161,11 @@ class QKVSDecoder(nn.Module):
         token_types: Tensor,
         address_overrides: Tensor | None = None,
         retrieval_mask: Tensor | None = None,
+        semantic_ids: Tensor | None = None,
     ) -> DecoderOutput:
         if address_overrides is not None and address_overrides.shape[0] != len(self.layers):
             raise ValueError("address overrides need one leading entry per layer")
-        hidden = self._embed(values, pointers, token_types)
+        hidden = self._embed(values, pointers, token_types, semantic_ids)
         layer_addresses: list[Tensor] = []
         for index, layer in enumerate(self.layers):
             override = None if address_overrides is None else address_overrides[index]
@@ -168,10 +188,16 @@ class QKVSDecoder(nn.Module):
         token_types: Tensor,
         cache: DecoderCache,
         address_overrides: Tensor | None = None,
+        semantic_ids: Tensor | None = None,
     ) -> tuple[DecoderOutput, DecoderCache]:
         if values.ndim != 1:
             raise ValueError("incremental inputs must have shape [batch]")
-        hidden = self._embed(values.unsqueeze(1), pointers.unsqueeze(1), token_types.unsqueeze(1))
+        hidden = self._embed(
+            values.unsqueeze(1),
+            pointers.unsqueeze(1),
+            token_types.unsqueeze(1),
+            None if semantic_ids is None else semantic_ids.unsqueeze(1),
+        )
         layer_addresses: list[Tensor] = []
         updated_caches: list[KVCache] = []
         for index, (layer, layer_cache) in enumerate(zip(self.layers, cache.layers, strict=True)):

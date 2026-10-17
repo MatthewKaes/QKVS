@@ -5,6 +5,7 @@ from qkvs.data import (
     QUERY,
     RECORD,
     make_memory_anchor_batch,
+    make_memory_bank_batch,
     make_pointer_batch,
     make_semantic_batch,
     make_span_batch,
@@ -140,3 +141,36 @@ def test_memory_anchor_has_no_pointer_and_source_is_in_configured_window() -> No
         source = sources.item()
         assert marker - 8 < source < marker
         assert batch.answers[item] == batch.values[item, source]
+
+
+def test_scaled_memory_bank_is_beyond_rolling_receptive_field() -> None:
+    batch = make_memory_bank_batch(
+        batch_size=2,
+        seq_len=1024,
+        dense_window=128,
+        address_stride=4,
+        n_layers=4,
+        n_keys=4,
+        answer_vocab_size=16,
+        distractors_per_marker=3,
+        source_offset=32,
+        generator=torch.Generator().manual_seed(91),
+    )
+    effective_receptive_field = 1 + 4 * (128 - 1)
+    for item in range(2):
+        assert batch.semantic_ids is not None
+        assert batch.memory_targets is not None
+        markers = torch.nonzero(batch.token_types[item] == MEMORY).flatten()
+        assert markers.numel() == 4
+        assert 1023 - markers.max().item() > effective_receptive_field
+        assert torch.all(batch.pointers[item] == -1)
+        assert batch.token_types[item, -1] == QUERY
+        assert batch.route_positions[0, item] in markers
+        assert batch.values[item].max() < 16
+        assert torch.all(batch.semantic_ids[item, markers] >= 0)
+        assert torch.all(batch.memory_targets[item, markers] >= 0)
+        assert torch.all(batch.memory_targets[item, batch.token_types[item] != MEMORY] == -100)
+        for marker in markers:
+            source = marker - 32
+            assert batch.token_types[item, source] == RECORD
+            assert source < marker - 16

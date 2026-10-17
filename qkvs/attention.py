@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from qkvs.config import AttentionConfig
 
@@ -180,6 +181,109 @@ def selected_attention(q: Tensor, k: Tensor, v: Tensor, selection: Selection) ->
     return torch.einsum("bhqm,bhqmd->bhqd", weights, selected_v)
 
 
+def _streaming_attention_chunk(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    indices: Tensor,
+    valid: Tensor,
+    candidate_tile_size: int,
+) -> Tensor:
+    """Online softmax over candidate tiles without a full selected-K/V tensor."""
+    batch, heads, queries, head_dim = q.shape
+    running_max = torch.full(
+        (batch, heads, queries),
+        -torch.inf,
+        device=q.device,
+        dtype=torch.float32,
+    )
+    running_sum = torch.zeros_like(running_max)
+    accumulator = torch.zeros(
+        (batch, heads, queries, head_dim),
+        device=q.device,
+        dtype=torch.float32,
+    )
+    scale = 1.0 / math.sqrt(head_dim)
+
+    for start in range(0, indices.shape[-1], candidate_tile_size):
+        end = min(indices.shape[-1], start + candidate_tile_size)
+        tile_indices = indices[..., start:end]
+        tile_valid = valid[..., start:end]
+        selected_k = _gather_cache(k, tile_indices)
+        selected_v = _gather_cache(v, tile_indices)
+        logits = torch.einsum("bhqd,bhqmd->bhqm", q, selected_k).float() * scale
+        logits = logits.masked_fill(~tile_valid.unsqueeze(1), -torch.inf)
+        tile_max = logits.amax(dim=-1)
+        updated_max = torch.maximum(running_max, tile_max)
+        safe_max = torch.where(torch.isfinite(updated_max), updated_max, 0.0)
+        previous_scale = torch.where(
+            torch.isfinite(running_max), torch.exp(running_max - safe_max), 0.0
+        )
+        weights = torch.where(
+            tile_valid.unsqueeze(1),
+            torch.exp(logits - safe_max.unsqueeze(-1)),
+            0.0,
+        )
+        running_sum = running_sum * previous_scale + weights.sum(dim=-1)
+        accumulator = accumulator * previous_scale.unsqueeze(-1) + torch.einsum(
+            "bhqm,bhqmd->bhqd", weights, selected_v.float()
+        )
+        running_max = updated_max
+
+    return (accumulator / running_sum.unsqueeze(-1)).to(q.dtype)
+
+
+def streaming_selected_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    selection: Selection,
+    *,
+    query_chunk_size: int,
+    candidate_tile_size: int,
+    checkpoint_chunks: bool,
+) -> Tensor:
+    """Bound peak selected-K/V memory in both forward and backward."""
+    outputs: list[Tensor] = []
+    for start in range(0, q.shape[2], query_chunk_size):
+        end = min(q.shape[2], start + query_chunk_size)
+        arguments = (
+            q[:, :, start:end],
+            k,
+            v,
+            selection.indices[:, start:end],
+            selection.valid[:, start:end],
+        )
+
+        def attend_chunk(
+            chunk_q: Tensor,
+            all_k: Tensor,
+            all_v: Tensor,
+            chunk_indices: Tensor,
+            chunk_valid: Tensor,
+        ) -> Tensor:
+            return _streaming_attention_chunk(
+                chunk_q,
+                all_k,
+                all_v,
+                chunk_indices,
+                chunk_valid,
+                candidate_tile_size,
+            )
+
+        if checkpoint_chunks and torch.is_grad_enabled():
+            output = checkpoint(
+                attend_chunk,
+                *arguments,
+                use_reentrant=False,
+                preserve_rng_state=False,
+            )
+        else:
+            output = attend_chunk(*arguments)
+        outputs.append(output)
+    return torch.cat(outputs, dim=2)
+
+
 def duplicate_attention_reference(q: Tensor, k: Tensor, v: Tensor, indices: Tensor) -> Tensor:
     """Small single-query reference that intentionally preserves repeated occurrences."""
     selected_k = k[indices]
@@ -266,6 +370,19 @@ class CausalSelfAttention(nn.Module):
         assert self.fixed_addresses is not None
         return self.fixed_addresses.view(1, 1, -1).expand(hidden.shape[0], hidden.shape[1], -1)
 
+    def _selected(self, q: Tensor, k: Tensor, v: Tensor, selection: Selection) -> Tensor:
+        if self.config.sparse_backend == "materialized":
+            return selected_attention(q, k, v, selection)
+        return streaming_selected_attention(
+            q,
+            k,
+            v,
+            selection,
+            query_chunk_size=self.config.query_chunk_size,
+            candidate_tile_size=self.config.candidate_tile_size,
+            checkpoint_chunks=self.config.checkpoint_sparse and self.training,
+        )
+
     @staticmethod
     def _apply_override(addresses: Tensor, override: Tensor | None) -> Tensor:
         if override is None:
@@ -300,7 +417,7 @@ class CausalSelfAttention(nn.Module):
             selection = build_rolling_selection(
                 batch, time, self.config.dense_window, hidden.device
             )
-            attended = selected_attention(q, k, v, selection)
+            attended = self._selected(q, k, v, selection)
         else:
             assert addresses is not None
             routed_addresses = self._apply_override(addresses, address_override)
@@ -322,7 +439,22 @@ class CausalSelfAttention(nn.Module):
                 valid = selection.valid.clone()
                 valid[..., : self.config.retrieval_budget] &= retrieval_enabled.unsqueeze(-1)
                 selection = Selection(selection.indices, valid)
-            attended = selected_attention(q, k, v, selection)
+            threshold = min(time, self.config.dense_window + self.config.retrieval_budget)
+            dense_prefix = F.scaled_dot_product_attention(
+                q[:, :, :threshold],
+                k[:, :, :threshold],
+                v[:, :, :threshold],
+                is_causal=True,
+                dropout_p=self.config.dropout if self.training else 0.0,
+            )
+            if threshold == time:
+                attended = dense_prefix
+            else:
+                sparse_selection = Selection(
+                    selection.indices[:, threshold:], selection.valid[:, threshold:]
+                )
+                sparse_suffix = self._selected(q[:, :, threshold:], k, v, sparse_selection)
+                attended = torch.cat((dense_prefix, sparse_suffix), dim=2)
 
         output = self.o_proj(self._merge_heads(attended))
         return AttentionOutput(hidden=output, addresses=addresses, selection=selection)

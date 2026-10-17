@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--eval-device")
     parser.add_argument("--run", action="append", dest="runs")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--max-steps-this-run", type=int)
     arguments = parser.parse_args()
     specification = load_json(arguments.config)
     output_directory = Path(arguments.output)
@@ -48,6 +49,7 @@ def main() -> None:
             device=device,
             evaluation_device=evaluation_device,
             resume=arguments.resume,
+            max_steps_this_run=arguments.max_steps_this_run,
         )
         summaries.append(
             {
