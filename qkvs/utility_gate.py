@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 import time
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -15,7 +16,7 @@ import requests
 import torch
 import transformers
 from torch import Tensor
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from qkvs.runtime import environment, load_json, write_json
 
@@ -52,6 +53,8 @@ class UtilityExample:
     squad_id: str
     question: str
     options: tuple[str, ...]
+    sampling_version: str
+    multilayer_receptive_tokens: int | None
 
 
 SQUAD_URL = "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
@@ -64,6 +67,61 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _source_identity(config_path: str | Path) -> dict[str, Any]:
+    root = Path(__file__).resolve().parent.parent
+    config = Path(config_path).resolve()
+    files = [
+        root / "qkvs" / "utility_gate.py",
+        root / "qkvs" / "runtime.py",
+        root / "pyproject.toml",
+        root / "uv.lock",
+        config,
+    ]
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    relative_files = [str(path.relative_to(root)) for path in files]
+    tracked_clean = all(
+        subprocess.run(
+            ["git", "diff", "--quiet", mode, "--", *relative_files],
+            cwd=root,
+            check=False,
+        ).returncode
+        == 0
+        for mode in ("HEAD", "--cached")
+    )
+    return {
+        "git_revision": revision,
+        "tracked_files_clean": tracked_clean,
+        "files": {str(path.relative_to(root)): _sha256(path) for path in files},
+    }
+
+
+def _validate_resume(result: dict[str, Any], expected: dict[str, Any]) -> None:
+    missing = [key for key in expected if key not in result]
+    if missing:
+        raise ValueError(f"existing output lacks resume identity fields: {missing}")
+    actual = {key: result[key] for key in expected}
+    if actual != expected:
+        raise ValueError("existing output does not match configuration, device, or source identity")
+
+
+def _balanced_shuffled_schedule(cardinality: int, count: int, seed: int) -> list[int]:
+    if count % cardinality:
+        raise ValueError("balanced schedule count must be divisible by its cardinality")
+    schedule = list(range(cardinality)) * (count // cardinality)
+    random.Random(seed).shuffle(schedule)
+    return schedule
+
+
+def _rolling_receptive_tokens(layers: int, window: int) -> int:
+    return 1 + layers * (window - 1)
 
 
 def _download(url: str, destination: Path, expected_sha256: str) -> None:
@@ -290,6 +348,114 @@ def build_examples(
                 squad_id=target.identifier,
                 question=target.question,
                 options=options,
+                sampling_version="v1_correlated",
+                multilayer_receptive_tokens=None,
+            )
+        )
+    return examples
+
+
+def build_decisive_examples(
+    tokenizer: Tokenizer,
+    squad_payload: dict[str, Any],
+    *,
+    count: int,
+    seed: int,
+    n_history_blocks: int,
+    candidate_history_blocks: int,
+    block_tokens: int,
+    rolling_tokens: int,
+    rolling_layers: int,
+    target_seed: int,
+    label_seed: int,
+    baseline_seed: int,
+) -> list[UtilityExample]:
+    if count % candidate_history_blocks or count % 4:
+        raise ValueError("example count must balance every target position and answer label")
+    if candidate_history_blocks >= n_history_blocks:
+        raise ValueError("candidate history must leave more recent distractor blocks")
+    label_token_ids = _label_token_ids(tokenizer)
+    pool = _usable_records(tokenizer, _squad_records(squad_payload), block_tokens)
+    if len(pool) < count * n_history_blocks:
+        raise ValueError("not enough usable SQuAD records for the decisive protocol")
+
+    dataset_rng = random.Random(seed)
+    dataset_rng.shuffle(pool)
+    target_schedule = _balanced_shuffled_schedule(candidate_history_blocks, count, target_seed)
+    label_schedule = _balanced_shuffled_schedule(4, count, label_seed)
+    baseline_rng = random.Random(baseline_seed)
+    system_ids = tokenizer.encode(
+        "<|im_start|>system\nAnswer the user's multiple-choice reading question using the "
+        "documents. Reply with only A, B, C, or D.<|im_end|>\n<|im_start|>user\n",
+        add_special_tokens=False,
+    )
+    global_prefix_end = len(system_ids)
+    multilayer_receptive_tokens = _rolling_receptive_tokens(rolling_layers, rolling_tokens)
+
+    examples: list[UtilityExample] = []
+    pool_cursor = 0
+    for index, (target_block, gold_label) in enumerate(
+        zip(target_schedule, label_schedule, strict=True)
+    ):
+        if pool_cursor >= len(pool):
+            raise ValueError("SQuAD record pool exhausted while constructing decisive examples")
+        target, target_ids = pool[pool_cursor]
+        pool_cursor += 1
+        distractors, consumed = _nonleaking_distractors(
+            target,
+            pool,
+            start=pool_cursor,
+            count=n_history_blocks - 1,
+        )
+        pool_cursor += consumed
+
+        option_records = [target, *(record for record, _ in distractors[:3])]
+        correct = option_records.pop(0)
+        option_records.insert(gold_label, correct)
+        options = tuple(record.answer for record in option_records)
+        query = (
+            "\n\nUse the documents above to answer the question.\n"
+            f"Question: {target.question}\n"
+            + "\n".join(f"{label}. {answer}" for label, answer in zip("ABCD", options, strict=True))
+            + "\nAnswer:<|im_end|>\n<|im_start|>assistant\n"
+        )
+        query_ids = tokenizer.encode(query, add_special_tokens=False)
+
+        blocks = list(distractors)
+        blocks.insert(target_block, (target, target_ids))
+        block_ranges: list[tuple[int, int]] = []
+        input_ids = list(system_ids)
+        for _, block in blocks:
+            start = len(input_ids)
+            input_ids.extend(block)
+            block_ranges.append((start, len(input_ids)))
+        query_start = len(input_ids)
+        input_ids.extend(query_ids)
+
+        eligible_blocks = tuple(range(candidate_history_blocks))
+        earliest_reachable = len(input_ids) - multilayer_receptive_tokens
+        if any(block_ranges[block][1] > earliest_reachable for block in eligible_blocks):
+            raise ValueError("candidate history overlaps the multilayer rolling receptive field")
+        random_block = baseline_rng.choice(eligible_blocks)
+        recency_block = eligible_blocks[-1]
+        examples.append(
+            UtilityExample(
+                index=index,
+                input_ids=tuple(input_ids),
+                global_prefix_end=global_prefix_end,
+                query_start=query_start,
+                block_ranges=tuple(block_ranges),
+                eligible_blocks=eligible_blocks,
+                target_block=target_block,
+                random_block=random_block,
+                recency_block=recency_block,
+                label_token_ids=label_token_ids,
+                gold_label=gold_label,
+                squad_id=target.identifier,
+                question=target.question,
+                options=options,
+                sampling_version="v3_independent",
+                multilayer_receptive_tokens=multilayer_receptive_tokens,
             )
         )
     return examples
@@ -469,6 +635,11 @@ def evaluate_example(
         "recency_block": example.recency_block,
         "eligible_blocks": list(example.eligible_blocks),
         "global_prefix_tokens": example.global_prefix_end,
+        "sampling_version": example.sampling_version,
+        "multilayer_receptive_tokens": example.multilayer_receptive_tokens,
+        "target_distance_from_final_token": (
+            len(example.input_ids) - example.block_ranges[example.target_block][1]
+        ),
         "query_start": example.query_start,
         "sequence_tokens": len(example.input_ids),
         "input_token_sha256": token_digest,
@@ -577,6 +748,14 @@ def summarize(
         example["modes"]["utility_oracle"]["selected_block"] == example["target_block"]
         for example in raw_examples
     ]
+    target_position_counts = {
+        str(position): sum(example["target_block"] == position for example in raw_examples)
+        for position in sorted({example["target_block"] for example in raw_examples})
+    }
+    gold_label_counts = {
+        str(label): sum(example["gold_label"] == label for example in raw_examples)
+        for label in range(4)
+    }
     return {
         "complete": complete,
         "completed_examples": len(raw_examples),
@@ -586,6 +765,28 @@ def summarize(
         "utility_oracle_target_match_rate": (
             _mean([float(value) for value in utility_oracle_match])
             if utility_oracle_match
+            else None
+        ),
+        "target_position_counts": target_position_counts,
+        "gold_label_counts": gold_label_counts,
+        "random_target_hit_rate": (
+            _mean(
+                [
+                    float(example["random_block"] == example["target_block"])
+                    for example in raw_examples
+                ]
+            )
+            if raw_examples
+            else None
+        ),
+        "recency_target_hit_rate": (
+            _mean(
+                [
+                    float(example["recency_block"] == example["target_block"])
+                    for example in raw_examples
+                ]
+            )
+            if raw_examples
             else None
         ),
         "gate": {
@@ -644,18 +845,44 @@ def main() -> None:
     cache_path = Path(dataset_specification["cache_path"])
     _download(dataset_specification["url"], cache_path, dataset_specification["sha256"])
     tokenizer = _load_tokenizer(specification)
+    pretrained_config = AutoConfig.from_pretrained(
+        specification["model"]["id"],
+        revision=specification["model"]["revision"],
+        trust_remote_code=False,
+    )
+    if "rolling_layers" in specification and (
+        specification["rolling_layers"] != pretrained_config.num_hidden_layers
+    ):
+        raise ValueError("rolling_layers must match the frozen checkpoint depth")
     with cache_path.open() as source:
         squad_payload = json.load(source)
-    examples = build_examples(
-        tokenizer,
-        squad_payload,
-        count=specification["examples"],
-        seed=specification["seed"],
-        n_history_blocks=specification["n_history_blocks"],
-        block_tokens=specification["block_tokens"],
-        rolling_tokens=specification["rolling_tokens"],
-        target_position_count=specification["target_position_count"],
-    )
+    if specification.get("sampling_version", "v1_correlated") == "v3_independent":
+        randomization = specification["randomization"]
+        examples = build_decisive_examples(
+            tokenizer,
+            squad_payload,
+            count=specification["examples"],
+            seed=specification["seed"],
+            n_history_blocks=specification["n_history_blocks"],
+            candidate_history_blocks=specification["candidate_history_blocks"],
+            block_tokens=specification["block_tokens"],
+            rolling_tokens=specification["rolling_tokens"],
+            rolling_layers=specification["rolling_layers"],
+            target_seed=randomization["target_position_seed"],
+            label_seed=randomization["answer_label_seed"],
+            baseline_seed=randomization["random_baseline_seed"],
+        )
+    else:
+        examples = build_examples(
+            tokenizer,
+            squad_payload,
+            count=specification["examples"],
+            seed=specification["seed"],
+            n_history_blocks=specification["n_history_blocks"],
+            block_tokens=specification["block_tokens"],
+            rolling_tokens=specification["rolling_tokens"],
+            target_position_count=specification["target_position_count"],
+        )
     if args.prepare_only:
         print(
             json.dumps(
@@ -667,6 +894,30 @@ def main() -> None:
                     ],
                     "model": specification["model"],
                     "dataset_sha256": _sha256(cache_path),
+                    "sampling_version": examples[0].sampling_version,
+                    "target_position_counts": {
+                        str(position): sum(example.target_block == position for example in examples)
+                        for position in sorted({example.target_block for example in examples})
+                    },
+                    "gold_label_counts": {
+                        str(label): sum(example.gold_label == label for example in examples)
+                        for label in range(4)
+                    },
+                    "minimum_target_distance_from_final_token": min(
+                        len(example.input_ids) - example.block_ranges[example.target_block][1]
+                        for example in examples
+                    ),
+                    "multilayer_receptive_tokens": examples[0].multilayer_receptive_tokens,
+                    "assignment_schedule": [
+                        {
+                            "index": example.index,
+                            "target_block": example.target_block,
+                            "gold_label": example.gold_label,
+                            "random_block": example.random_block,
+                            "recency_block": example.recency_block,
+                        }
+                        for example in examples
+                    ],
                 },
                 indent=2,
                 sort_keys=True,
@@ -674,20 +925,21 @@ def main() -> None:
         )
         return
 
-    model, model_dtype = _load_model(specification, torch.device(args.device))
-
     output_path = Path(args.output or specification["output"])
+    source_identity = _source_identity(args.config)
+    if not source_identity["tracked_files_clean"]:
+        raise ValueError("experiment source files must be committed before measurement")
     if output_path.exists():
         result = load_json(output_path)
         expected = {
             "config": specification,
             "dataset_sha256": _sha256(cache_path),
             "device": args.device,
+            "source_identity": source_identity,
         }
-        actual = {key: result[key] for key in expected}
-        if actual != expected:
-            raise ValueError("existing output does not match this experiment configuration")
+        _validate_resume(result, expected)
     else:
+        model, model_dtype = _load_model(specification, torch.device(args.device))
         result = {
             "schema_version": 1,
             "stage": "A",
@@ -695,6 +947,7 @@ def main() -> None:
             "config": specification,
             "dataset_sha256": _sha256(cache_path),
             "device": args.device,
+            "source_identity": source_identity,
             "environment": environment(),
             "software": {
                 "requests": requests.__version__,
@@ -702,6 +955,9 @@ def main() -> None:
             },
             "examples": [],
         }
+
+    if output_path.exists():
+        model, model_dtype = _load_model(specification, torch.device(args.device))
 
     completed = {int(example["index"]) for example in result["examples"]}
     remaining = [example for example in examples if example.index not in completed]

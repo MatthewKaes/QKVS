@@ -124,20 +124,27 @@ online-softmax reference.
 On the affected Linux host, run CUDA commands from the user's terminal rather than through the
 Codex tool executor. Ordinary CPU tests and diagnostics remain safe to run through Codex.
 
-The checkpointed Stage A utility gate is run separately from the legacy synthetic experiments:
+The checkpointed Stage A utility gate is separate from the legacy synthetic experiments. V1 is
+invalidated and V2 is nondecisive; V3 is preregistered but must not run until its amendment is
+reviewed:
 
 ```bash
 HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
   .venv/bin/python -m qkvs.utility_gate \
-  --config configs/retrieval_utility_stage_a_v2.json \
+  --config configs/retrieval_utility_stage_a_v3.json \
   --device cuda \
-  --max-examples-this-run 4
+  --max-examples-this-run 1
 ```
 
-Repeat the command until the artifact reports 24 completed examples. It evaluates only a frozen
-0.5B model; it performs no optimization or backward pass.
+After review, use one example as a memory/time smoke test, then run checkpointed slices. It evaluates
+only a frozen 0.5B model; it performs no optimization or backward pass.
 
 The first five-example Stage A pilot is retained but invalidated: its full-attention condition could
 see the fixed task prompt while its sparse conditions could not. The V2 configuration makes that
 32-token prefix globally visible in every condition without changing the one-block historical
 budget.
+
+The V3 amendment independently shuffles balanced target positions and labels, samples fair
+baselines from the same candidate set, places all candidate evidence beyond the 24-layer rolling
+receptive field, verifies masks on the actual checkpoint, and rejects resumes from a different
+source revision.

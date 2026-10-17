@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from transformers import Qwen2Config, Qwen2ForCausalLM
 
-from qkvs.utility_gate import _squad_records, build_attention_mask, summarize
+from qkvs.utility_gate import (
+    _balanced_shuffled_schedule,
+    _rolling_receptive_tokens,
+    _squad_records,
+    _validate_resume,
+    build_attention_mask,
+    summarize,
+)
 
 
 def _allowed(mask: torch.Tensor) -> torch.Tensor:
@@ -52,6 +60,33 @@ def test_global_prefix_is_visible_to_every_later_position() -> None:
     assert allowed[9, 1]
     assert not allowed[0, 1]
     assert not allowed[9, 2]
+
+
+def test_decisive_schedules_are_balanced_and_separately_shuffled() -> None:
+    targets = _balanced_shuffled_schedule(8, 24, 20262018)
+    labels = _balanced_shuffled_schedule(4, 24, 20263018)
+    assert [targets.count(position) for position in range(8)] == [3] * 8
+    assert [labels.count(label) for label in range(4)] == [6] * 4
+    assert targets != [index % 8 for index in range(24)]
+    assert labels != [index % 4 for index in range(24)]
+
+
+def test_multilayer_receptive_field_uses_layerwise_window_overlap() -> None:
+    assert _rolling_receptive_tokens(24, 256) == 6121
+
+
+def test_resume_rejects_a_different_source_revision() -> None:
+    expected = {
+        "config": {"stage": "A"},
+        "dataset_sha256": "dataset",
+        "device": "cuda",
+        "source_identity": {"git_revision": "new", "files": {"gate.py": "hash"}},
+    }
+    result = dict(expected)
+    _validate_resume(result, expected)
+    result["source_identity"] = {"git_revision": "old", "files": {"gate.py": "hash"}}
+    with pytest.raises(ValueError, match="source identity"):
+        _validate_resume(result, expected)
 
 
 def test_squad_records_use_the_majority_answer_annotation() -> None:
@@ -110,6 +145,9 @@ def test_explicit_dense_mask_matches_builtin_causal_mask() -> None:
 def test_incomplete_summary_never_passes_gate() -> None:
     example = {
         "target_block": 1,
+        "random_block": 2,
+        "recency_block": 3,
+        "gold_label": 0,
         "modes": {
             name: {
                 "loss": loss,
@@ -141,6 +179,9 @@ def test_incomplete_summary_never_passes_gate() -> None:
 def test_complete_summary_applies_predeclared_gate() -> None:
     example = {
         "target_block": 1,
+        "random_block": 2,
+        "recency_block": 3,
+        "gold_label": 0,
         "modes": {
             name: {
                 "loss": loss,

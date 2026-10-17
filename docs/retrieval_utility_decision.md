@@ -6,12 +6,11 @@ The v1-v5 pointer-recall progression is stopped. Those experiments remain useful
 negative evidence, but they do not establish that exact address reconstruction is the right
 objective for learned sparse attention. No v6 router is planned.
 
-The only active experiment is the corrected Stage A gate below. It asks whether one selected old
-block can improve a frozen pretrained model's prediction at all. Training `S` is not justified
-until that opportunity is demonstrated. The original preregistered mask had a task-prompt
-visibility confound discovered after five examples; those results are invalidated and preserved.
-The corrected protocol changes only visibility of the fixed prompt and has its own configuration
-and result artifact.
+The only active investigation is the Stage A gate below. It asks whether one selected old block can
+improve a frozen pretrained model's prediction at all. Training `S` is not justified until that
+opportunity is demonstrated. V1 is invalidated, V2 is complete but nondecisive, and V3 is an
+unexecuted preregistration amendment awaiting review. Every protocol and raw result remains
+separate.
 
 ## What the previous experiments established
 
@@ -112,64 +111,9 @@ different coordinate loss cannot repair missing information. A viable system wou
 location-bearing state, predictable document structure, or some bounded historical index. Which of
 those belongs in QKVS is deliberately left open until Stage A passes.
 
-## Stage A: smallest falsifying experiment
+## Stage A protocol lineage
 
-### Hypothesis
-
-At a fixed one-block historical budget, a causally relevant natural-language block reduces frozen
-model answer loss relative to rolling-only, random-block, and recency-block attention.
-
-### Frozen model and data
-
-The model is `Qwen/Qwen2.5-0.5B-Instruct` at immutable revision
-`7ae557604adf67be50417f59c2c2f167def9a775`. It has 0.49B parameters and a 32,768-token native
-context according to its [model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) and fits
-comfortably on the 12 GB device. No model parameter is trained.
-
-The experiment deterministically constructs 24 four-choice questions from the official SQuAD 1.1
-development set. SQuAD questions were written against Wikipedia passages and their answers are
-passage spans ([Rajpurkar et al.](https://arxiv.org/abs/1606.05250)). Each example contains twelve
-128-token natural-document blocks. Three wrong answer options also occur in distractor blocks,
-creating competing evidence. Correct labels and target block positions are balanced. The target is
-always outside the 256-token rolling window, and no example is selected or rejected based on model
-performance.
-
-Every token is computed with rolling-local attention for sparse conditions. The fixed 32-token
-system and user-role prefix is globally visible in every condition; it contains task instructions
-but no question, answer option, or document evidence. Only query tokens gain access to the selected
-old block, at its original RoPE position. The constant global prefix prevents instruction
-visibility from varying with the historical-block condition. Sequences contain 1,621-1,644 tokens.
-
-### Compared conditions
-
-- `full`: ordinary full causal attention.
-- `rolling`: the last 256 tokens plus the fixed 32-token task prefix.
-- `random`: rolling plus one uniformly sampled eligible old block.
-- `recency`: rolling plus the most recent fully historical block.
-- `annotated_oracle`: rolling plus the SQuAD supporting block.
-- `utility_oracle`: the lowest-loss one-block intervention after an offline scan of every eligible
-  block.
-
-The primary loss is four-label cross entropy in nats. Accuracy, per-example marginal utility,
-bootstrap intervals, utility-oracle/support agreement, timings, and peak CUDA allocation are also
-recorded. Results are written atomically after every example and the command resumes from the same
-artifact.
-
-### Predeclared gate
-
-Stage A passes only if all checks hold on all 24 examples:
-
-1. full-context accuracy is at least 50%;
-2. the lower bound of the paired 95% bootstrap interval for full-minus-rolling utility is at least
-   0.05 nat;
-3. the same lower bound for annotated-oracle-minus-rolling utility is at least 0.05 nat;
-4. annotated-oracle utility beats both random and recency, with paired lower bounds above zero.
-
-If any check fails, stop before training `S`. A failure means this model/task/protocol does not
-provide the retrieval opportunity needed for the next claim; it does not by itself disprove every
-possible model or task.
-
-## Invalidated five-example pilot
+### V1: invalid prompt visibility
 
 The first mask allowed full attention to see the system instruction while sparse conditions lost it
 after it left the rolling window. After five examples, full attention was 5/5, rolling and the
@@ -179,26 +123,129 @@ instructions were not held constant.
 
 A one-variable CPU counterfactual retained the same inputs, rolling window, annotated block, model,
 and output labels while making only the fixed 32-token prefix globally visible. Annotated-block
-accuracy changed from 2/5 to 5/5 and mean loss from 1.706 to 0.00233. This reverses every previously
-incorrect annotated prediction and demonstrates that prompt visibility, not missing evidence in the
-annotated block, caused the pilot mismatch. The raw pilot and audit are preserved in
+accuracy changed from 2/5 to 5/5 and mean loss from 1.706 to 0.00233. The raw pilot and audit are
+preserved in
 [retrieval_utility_stage_a_invalid_prompt_visibility.json](../artifacts/results/retrieval_utility_stage_a_invalid_prompt_visibility.json)
 and
 [retrieval_utility_stage_a_prompt_visibility_audit.json](../artifacts/results/retrieval_utility_stage_a_prompt_visibility_audit.json).
 
-The audit is a protocol correction, not a Stage A result: it inspected only five examples and did
-not recompute the rolling, random, or recency baselines under the corrected mask.
+### V2: prompt-corrected but nondecisive
 
-## Corrected execution and result
+V2 made the fixed prompt globally visible and completed all 24 examples. Its raw results are
+preserved in
+[retrieval_utility_stage_a_v2.json](../artifacts/results/retrieval_utility_stage_a_v2.json).
 
-The CPU mask tests and an actual-checkpoint CPU integration forward pass both pass. The natural
-dataset and model revisions are cached and checksum-pinned. The CUDA measurement must be run from
-the user's terminal because invoking this host's GPU through Codex has repeatedly destabilized the
-driver.
+| Condition | Accuracy | Mean loss | Mean utility vs rolling |
+|---|---:|---:|---:|
+| Full | 95.8% | 0.137 | 0.139 |
+| Rolling | 87.5% | 0.276 | 0.000 |
+| Random | 87.5% | 0.388 | -0.112 |
+| Recency | 87.5% | 0.293 | -0.017 |
+| Annotated block | 100.0% | 0.00778 | 0.268 |
+| Utility oracle | 100.0% | 0.00778 | 0.268 |
 
-The corrected configuration is `configs/retrieval_utility_stage_a_v2.json`; it writes to a new raw
-artifact and cannot resume from the invalid pilot. At this checkpoint the corrected result is
-**pending**. Further QKVS investment is not yet justified. If the gate passes, Stage B may compare a
-deployment-compatible minimal selector with random and positional priors. If it fails, the correct
-outcome is to stop or change the frozen model/task foundation—not to add another router
-architecture.
+The annotated block beat rolling, random, and recency under the V2 mask. The strict V2 gate still
+failed because the paired full-minus-rolling bootstrap lower bound was 0.0379 nat, below the
+predeclared 0.05 threshold. More importantly, V2 has three design defects that make it unsuitable
+as the decisive Stage A result:
+
+1. the random baseline was sampled only from non-target blocks, biasing it downward;
+2. target position was `index mod 8` and answer label was `index mod 4`, so labels were determined
+   by target position rather than independently randomized;
+3. its 1.6K sequence fit inside the frozen model's multilayer rolling receptive field, so the
+   rolling baseline could receive target information by relay without direct historical access.
+
+V2 is therefore retained as an informative intermediate result, not support for proceeding to
+Stage B.
+
+## V3 preregistration amendment
+
+V3 changes only data geometry, factor randomization, baseline sampling, mask validation, and resume
+integrity. It does not implement `S`, change an `S` loss, or add a routing architecture. Full
+execution is blocked pending review of this amendment.
+
+### Hypothesis
+
+With task-prompt visibility fixed and supporting evidence beyond the multilayer rolling receptive
+field, a causally relevant natural-language block at a one-block historical budget reduces frozen-
+model answer loss relative to rolling-only, random-block, and recency-block attention.
+
+### Frozen model and natural task
+
+The model remains `Qwen/Qwen2.5-0.5B-Instruct` at immutable revision
+`7ae557604adf67be50417f59c2c2f167def9a775`. It has 24 layers and a 32,768-token native context
+according to its [model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct). No parameter is
+trained.
+
+The same checksum-pinned SQuAD 1.1 development set supplies natural Wikipedia passages, questions,
+and annotated answer spans ([Rajpurkar et al.](https://arxiv.org/abs/1606.05250)). Each of 24
+examples contains 56 fixed 128-token document blocks and three competing answer options that also
+occur in distractor blocks. No example is selected using model performance. Total sequence length
+is 7,251-7,274 tokens.
+
+### Independent factors and fair baselines
+
+The candidate set is the first eight document blocks. Target positions are balanced at three uses
+per block and shuffled with seed `20262018`. Answer labels are balanced at six uses per label and
+shuffled separately with seed `20263018`. Dataset order uses seed `20261017`. This removes the V2
+deterministic position-label mapping while preserving balanced marginals.
+
+The random baseline samples uniformly from the same eight-block candidate set with seed `20264018`.
+It is allowed to select the target; the frozen schedule does so on 2/24 examples. Recency always
+selects candidate block seven, and the independently shuffled target schedule places the target
+there on 3/24 examples. Random, recency, annotated, and utility-oracle conditions therefore use the
+same one-block historical budget and candidate domain.
+
+### Multilayer rolling exclusion
+
+With 24 layers and a 256-token inclusive window, the maximum token-to-token relay distance is
+
+\[
+24(256-1)=6120\text{ tokens},
+\]
+
+or 6,121 tokens including the current token. Every candidate block ends at least 6,197 tokens
+before the final prediction, leaving a minimum 77-token margin beyond that maximum dependency path.
+Construction fails rather than emitting an example if this invariant is violated.
+
+Every sparse condition gives all tokens the same fixed 32-token system/user-role prefix. It contains
+no question, answer option, or document evidence. All other computation is rolling-local; only query
+tokens gain access to the selected historical block at its original RoPE position.
+
+### Compared conditions and unchanged gate
+
+- `full`: ordinary full causal attention.
+- `rolling`: the last 256 tokens plus the fixed task prefix.
+- `random`: rolling plus the preregistered uniform candidate.
+- `recency`: rolling plus candidate block seven.
+- `annotated_oracle`: rolling plus the SQuAD support block.
+- `utility_oracle`: the lowest-loss block found by an offline label-dependent scan of all eight
+  candidates.
+
+The primary loss remains four-label cross entropy in nats. The V1 thresholds are unchanged. Stage A
+passes only if all checks hold on all 24 examples:
+
+1. full-context accuracy is at least 50%;
+2. the lower bound of the paired 95% bootstrap interval for full-minus-rolling utility is at least
+   0.05 nat;
+3. the same lower bound for annotated-oracle-minus-rolling utility is at least 0.05 nat;
+4. annotated-oracle utility beats both random and recency, with paired lower bounds above zero.
+
+If any check fails, stop before training `S`.
+
+### Mask and resume integrity
+
+The actual pinned 0.5B checkpoint was run on CPU under both its built-in causal mask and the explicit
+dense 4D mask used by this experiment. All final hidden-state and logit differences were exactly
+zero in FP32 over 128 tokens. The executable test is
+[test_checkpoint_mask.py](../tests/test_checkpoint_mask.py), and the raw audit is
+[retrieval_utility_actual_checkpoint_mask_audit.json](../artifacts/results/retrieval_utility_actual_checkpoint_mask_audit.json).
+
+A new result stores the Git revision and SHA-256 hashes of the experiment module, runtime module,
+configuration, `pyproject.toml`, and `uv.lock`. Initial execution requires those tracked files to be
+committed and clean. Every resume recomputes and exactly compares the revision, hashes,
+configuration, dataset checksum, and device before loading additional measurements.
+
+The amended configuration is `configs/retrieval_utility_stage_a_v3.json`. Its data preparation has
+been executed, but no V3 model measurement has run. Further QKVS investment remains unjustified
+until this protocol is reviewed and the unchanged gate passes.
