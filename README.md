@@ -107,6 +107,11 @@ uv run python -m qkvs.multiselect_diagnostic \
     artifacts/results/v5_regions8_pointer_identity_mixed_diagnostic.json
 ```
 
+The V5 identity gate was stopped at step 500. Exact supplied-pointer routing remained at chance
+answer accuracy despite all audited windows containing their intended records, so the joint V5 run
+is blocked. See the [step-500 report](docs/research_report.md#v5-direct-address-identity-gate-failed-at-step-500)
+and [gate audit](artifacts/results/v5_regions8_pointer_identity_mixed_step500_gate_audit.json).
+
 The `chunked` sparse backend is the current training default for this study. It gathers only one
 bounded query chunk and uses SDPA, trading more temporary memory for far fewer launches than the
 online-softmax reference.

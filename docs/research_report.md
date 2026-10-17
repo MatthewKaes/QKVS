@@ -44,10 +44,14 @@ shortcut-bearing dataset, standalone hierarchical routing reaches 100% strict ei
 accuracy from 4K through 64K, while scalar variants lose precision with scale. Integrated detached
 hierarchical routing improves to roughly 29–31% target coverage at 4K after 1,200 steps, but falls
 to 5–6% at an unseen 6K. Oracle answer accuracy is only 28–36%, so downstream address matching is
-also unresolved. This isolates the next work to direct router pointer input, unrotated address
-matching, flexible interval coverage, and differentiable local selection rather than larger model
-width. Separately, a chunked-SDPA backend improves the 8K training step from 5,011 ms to 367 ms at
-the same 512-token selection budget, a 13.6x speedup, though dense SDPA remains much faster.
+also unresolved. A subsequent V5 identity gate adds direct router pointer input and unrotated
+address matching, but fails by step 500: exact query-pointer routing achieves 10.9% held-out answer
+accuracy at 4K against an 11.1% baseline. All 512 audited target windows contain their intended
+record, so this is a downstream use failure rather than an address-decode or gather failure. Native
+S remains pointer-sensitive but does not learn accurate address copying. The joint soft-routing run
+therefore remains blocked. Separately, a chunked-SDPA backend improves the 8K training step from
+5,011 ms to 367 ms at the same 512-token selection budget, a 13.6x speedup, though dense SDPA
+remains much faster.
 
 The eager PyTorch implementation demonstrates bounded work but no wall-clock speedup. Its
 materialized gather and many small address-decoding kernels cost about 0.355 ms per one-layer decode
@@ -774,3 +778,52 @@ adds a router-only pointer branch, unrotated pointer matching in Q/K, probabilit
 coverage, and a training-only two-neighbor mixture whose local offset receives answer gradients.
 It trains across 3K, 4K, and 6K. Address identity is evaluated first with S bypassed by the supplied
 query pointers; joint soft routing remains gated on that result.
+
+### V5 direct-address identity gate: failed at step 500
+
+The configured 2,400-step identity run was stopped at step 500 because neither its hard routing
+coverage nor its answer loss showed sustained improvement after the initial soft-loss drop. The
+logged measurements are single batches of four, so they are evidence about the trend rather than
+held-out estimates. Grouping like context lengths removes the apparent variation caused by the
+3K/4K/6K schedule:
+
+| Training context | Mean answer loss | First logged route coverage | Last logged route coverage |
+|---:|---:|---:|---:|
+| 3,072 | 2.227 | 19.5% | 20.3% |
+| 4,096 | 2.170 | 15.6% | 14.8% |
+| 6,144 | 2.193 | 11.7% | 14.1% |
+
+The balanced nine-class chance loss is 2.197. A focused held-out evaluation then bypassed S and
+routed from the eight supplied query pointers on 64 fresh 4K examples. It achieved 10.94% answer
+accuracy against an 11.11% balanced baseline, with 2.209 cross entropy. The route accuracies emitted
+by that evaluation describe S's unoverridden predictions; the attention selection itself used the
+query-pointer override.
+
+A separate selection audit decoded those supplied pointers directly. All 512 corresponding windows
+contained their intended target record. The selected history contained 8.09 relevant record
+occurrences and 1.83 distractor record occurrences per example on average. Thus normalization,
+direct address decoding, and the gather boundary are correct for this gate; the transformer failed
+to identify and aggregate the correctly exposed values.
+
+The native router did not merely collapse to one window or ignore its pointer input. Across four
+fresh examples it produced 7.25–8.0 unique windows per layer. Changing only the query pointer set
+changed 87.5% of its emitted address cells across four counterfactual pairs. Those small audits are
+qualitative, but they distinguish sensitivity from correctness: S responds to the pointer set
+without copying it accurately. Probability-of-union supervision can lower a soft coverage loss
+without making the factorized coarse/fine argmaxes specialize into the requested set.
+
+This gate is negative evidence for the integrated V5 training design, not for hierarchical address
+representation in isolation. The standalone hierarchical router remains the positive control. The
+next valid experiments are now smaller and separate:
+
+1. one requested record and one exact pointer-routed window, requiring near-perfect answer use;
+2. one pointer copied by a per-pointer hierarchical router, followed by eight pointers with shared,
+   permutation-equivariant parameters and interval supervision;
+3. integration with local differentiable selection only after both gates pass.
+
+The prepared joint V5 run must not start from this checkpoint. Training history is in
+[v5_regions8_pointer_identity_mixed.json](../artifacts/results/v5_regions8_pointer_identity_mixed.json),
+the focused held-out result is in
+[v5_regions8_pointer_identity_mixed_step500_pointer_identity_4k.json](../artifacts/results/v5_regions8_pointer_identity_mixed_step500_pointer_identity_4k.json),
+and the selection/router checks are summarized in
+[v5_regions8_pointer_identity_mixed_step500_gate_audit.json](../artifacts/results/v5_regions8_pointer_identity_mixed_step500_gate_audit.json).

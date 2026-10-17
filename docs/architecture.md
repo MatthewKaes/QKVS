@@ -113,8 +113,13 @@ only in the marker's final classifier state.
   or mixed absolute/relative coordinates. Mixed-length Fourier training improves first-hop
   extrapolation but has not solved later-hop composition; a fixed raw-scalar embedding performed
   worse.
-- Whether hierarchical routing plus a differentiable local offset is sufficient for autonomous
-  answer-guided learning after the direct address-identity gate passes.
+- The direct address-identity gate failed at step 500 even when supplied pointers selected the
+  correct windows. Downstream record use and integrated address copying must pass separate
+  one-window/one-pointer gates before hierarchical routing plus a differentiable local offset is
+  tested jointly.
+- Whether the probability-of-union objective over factorized coarse/fine distributions is too
+  permissive for multi-address copying. A shared per-pointer hierarchical head with interval
+  supervision is the next controlled alternative.
 - Straight-through or policy-gradient alternatives if bounded neighboring-window mixtures are
   insufficient.
 - Whether each attention head should own addresses.
