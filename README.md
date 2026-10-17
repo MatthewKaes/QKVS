@@ -1,5 +1,10 @@
 # QKVS: learned direct-address sparse attention
 
+> **Research reset:** the v1-v5 exact-pointer progression is frozen. Current work first tests
+> whether a selected historical block has measurable downstream utility for a frozen pretrained
+> model. See [the retrieval-utility decision](docs/retrieval_utility_decision.md). No new router is
+> justified unless the Stage A rolling-versus-oracle gate passes.
+
 This repository is an independent research prototype for a decoder-only transformer with an
 independent `S` projection at every layer. `S` predicts normalized addresses of old KV-cache
 windows directly; inference does not scan or score the historical cache to choose them.
@@ -118,3 +123,16 @@ online-softmax reference.
 
 On the affected Linux host, run CUDA commands from the user's terminal rather than through the
 Codex tool executor. Ordinary CPU tests and diagnostics remain safe to run through Codex.
+
+The checkpointed Stage A utility gate is run separately from the legacy synthetic experiments:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m qkvs.utility_gate \
+  --config configs/retrieval_utility_stage_a.json \
+  --device cuda \
+  --max-examples-this-run 4
+```
+
+Repeat the command until the artifact reports 24 completed examples. It evaluates only a frozen
+0.5B model; it performs no optimization or backward pass.

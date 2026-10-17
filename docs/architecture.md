@@ -1,5 +1,10 @@
 # Architecture specification
 
+> **Historical prototype specification:** the v1-v5 architecture is preserved below, but its
+> exact-pointer research progression is stopped. The active investigation and its stop conditions
+> are defined in [retrieval_utility_decision.md](retrieval_utility_decision.md). This document is not
+> a plan for a v6 router.
+
 ## Invariant
 
 At layer `k`, the same pre-normalized incoming state independently produces `Q`, `K`, `V`, and
