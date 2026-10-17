@@ -1,0 +1,29 @@
+{
+  "name": "rtx5070_multiselect_training",
+  "vocab_size": 9,
+  "d_model": 128,
+  "n_heads": 4,
+  "n_layers": 4,
+  "mlp_ratio": 2,
+  "dense_window": 256,
+  "retrieval_budget": 256,
+  "block_size": 32,
+  "address_stride": 16,
+  "query_chunk_size": 64,
+  "candidate_tile_size": 64,
+  "sequence_lengths": [2048, 4096, 8192],
+  "warmup": 1,
+  "repeats": 2,
+  "backends": {
+    "dense_sdpa": {"attention_kind": "dense"},
+    "qkvs_streaming": {
+      "attention_kind": "qkvs",
+      "sparse_backend": "streaming"
+    },
+    "qkvs_chunked_sdpa": {
+      "attention_kind": "qkvs",
+      "sparse_backend": "chunked",
+      "query_chunk_size": 512
+    }
+  }
+}

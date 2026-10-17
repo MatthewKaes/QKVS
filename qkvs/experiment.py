@@ -39,7 +39,7 @@ def main() -> None:
         model_values = _merged(specification["model"], run.get("model", {}))
         training_values = _merged(specification["training"], run.get("training", {}))
         training_values["name"] = run["name"]
-        training_values["seed"] = specification.get("seed", 1) + index
+        training_values["seed"] = run.get("seed", specification.get("seed", 1) + index)
         if "hops" in run:
             training_values["hops"] = run["hops"]
         result = train_run(

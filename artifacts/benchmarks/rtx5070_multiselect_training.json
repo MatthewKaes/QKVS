@@ -1,0 +1,178 @@
+{
+  "config": {
+    "address_stride": 16,
+    "backends": {
+      "dense_sdpa": {
+        "attention_kind": "dense"
+      },
+      "qkvs_chunked_sdpa": {
+        "attention_kind": "qkvs",
+        "query_chunk_size": 512,
+        "sparse_backend": "chunked"
+      },
+      "qkvs_streaming": {
+        "attention_kind": "qkvs",
+        "sparse_backend": "streaming"
+      }
+    },
+    "block_size": 32,
+    "candidate_tile_size": 64,
+    "d_model": 128,
+    "dense_window": 256,
+    "mlp_ratio": 2,
+    "n_heads": 4,
+    "n_layers": 4,
+    "name": "rtx5070_multiselect_training",
+    "query_chunk_size": 64,
+    "repeats": 2,
+    "retrieval_budget": 256,
+    "sequence_lengths": [
+      2048,
+      4096,
+      8192
+    ],
+    "vocab_size": 9,
+    "warmup": 1
+  },
+  "environment": {
+    "cuda_available": true,
+    "git_revision": "529c24ddd45165b091d186ff724a929e4a8e03c0",
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "nvidia_driver_module": "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  610.57.04  Release Build  (root@)  ",
+    "pid": 148346,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "notes": {
+    "step": "AdamW zero-grad, BF16-autocast forward, next-token CE, backward, optimizer step.",
+    "streaming": "Query chunks use online softmax over candidate tiles and activation checkpointing."
+  },
+  "results": {
+    "2048": {
+      "dense_sdpa": {
+        "allocated_baseline_bytes": 26902528,
+        "final_loss": 2.20025372505188,
+        "maximum_step_ms": 5.681119918823242,
+        "median_step_ms": 5.277407884597778,
+        "minimum_step_ms": 4.8736958503723145,
+        "peak_allocated_bytes": 67026432,
+        "peak_increment_bytes": 40123904,
+        "tokens_per_second": 388069.30310941656
+      },
+      "qkvs_chunked_sdpa": {
+        "allocated_baseline_bytes": 26920960,
+        "bounded_chunk_selected_kv_bytes": 134217728,
+        "final_loss": 2.2030391693115234,
+        "maximum_step_ms": 76.3416976928711,
+        "median_step_ms": 76.21739196777344,
+        "minimum_step_ms": 76.09308624267578,
+        "peak_allocated_bytes": 406742016,
+        "peak_increment_bytes": 379821056,
+        "tokens_per_second": 26870.50746719258
+      },
+      "qkvs_streaming": {
+        "allocated_baseline_bytes": 26920960,
+        "bounded_chunk_selected_kv_bytes": 16777216,
+        "final_loss": 2.2030515670776367,
+        "maximum_step_ms": 1008.8311157226562,
+        "median_step_ms": 986.5121459960938,
+        "minimum_step_ms": 964.1931762695312,
+        "peak_allocated_bytes": 127937024,
+        "peak_increment_bytes": 101016064,
+        "tokens_per_second": 2076.000795643635
+      },
+      "theoretical_full_gather_bytes_per_layer": 536870912,
+      "theoretical_streaming_tile_bytes": 2097152
+    },
+    "4096": {
+      "dense_sdpa": {
+        "allocated_baseline_bytes": 26943488,
+        "final_loss": 2.2056009769439697,
+        "maximum_step_ms": 5.166431903839111,
+        "median_step_ms": 5.10479998588562,
+        "minimum_step_ms": 5.043168067932129,
+        "peak_allocated_bytes": 108285440,
+        "peak_increment_bytes": 81341952,
+        "tokens_per_second": 802382.0739941086
+      },
+      "qkvs_chunked_sdpa": {
+        "allocated_baseline_bytes": 26961920,
+        "bounded_chunk_selected_kv_bytes": 134217728,
+        "final_loss": 2.2051753997802734,
+        "maximum_step_ms": 173.86195373535156,
+        "median_step_ms": 173.57077026367188,
+        "minimum_step_ms": 173.2795867919922,
+        "peak_allocated_bytes": 484029440,
+        "peak_increment_bytes": 457067520,
+        "tokens_per_second": 23598.443411743545
+      },
+      "qkvs_streaming": {
+        "allocated_baseline_bytes": 26961920,
+        "bounded_chunk_selected_kv_bytes": 16777216,
+        "final_loss": 2.2051477432250977,
+        "maximum_step_ms": 2304.339111328125,
+        "median_step_ms": 2285.8680419921875,
+        "minimum_step_ms": 2267.39697265625,
+        "peak_allocated_bytes": 229831168,
+        "peak_increment_bytes": 202869248,
+        "tokens_per_second": 1791.8794631864403
+      },
+      "theoretical_full_gather_bytes_per_layer": 1073741824,
+      "theoretical_streaming_tile_bytes": 2097152
+    },
+    "8192": {
+      "dense_sdpa": {
+        "allocated_baseline_bytes": 27025408,
+        "final_loss": 2.2066872119903564,
+        "maximum_step_ms": 8.498527526855469,
+        "median_step_ms": 8.493295669555664,
+        "minimum_step_ms": 8.48806381225586,
+        "peak_allocated_bytes": 190803456,
+        "peak_increment_bytes": 163778048,
+        "tokens_per_second": 964525.4702911541
+      },
+      "qkvs_chunked_sdpa": {
+        "allocated_baseline_bytes": 27043840,
+        "bounded_chunk_selected_kv_bytes": 134217728,
+        "final_loss": 2.2036545276641846,
+        "maximum_step_ms": 367.8644714355469,
+        "median_step_ms": 367.1975860595703,
+        "minimum_step_ms": 366.53070068359375,
+        "peak_allocated_bytes": 638735360,
+        "peak_increment_bytes": 611691520,
+        "tokens_per_second": 22309.51485250509
+      },
+      "qkvs_streaming": {
+        "allocated_baseline_bytes": 27043840,
+        "bounded_chunk_selected_kv_bytes": 16777216,
+        "final_loss": 2.203665018081665,
+        "maximum_step_ms": 5079.7685546875,
+        "median_step_ms": 5010.730712890625,
+        "minimum_step_ms": 4941.69287109375,
+        "peak_allocated_bytes": 433750528,
+        "peak_increment_bytes": 406706688,
+        "tokens_per_second": 1634.8912901915144
+      },
+      "theoretical_full_gather_bytes_per_layer": 2147483648,
+      "theoretical_streaming_tile_bytes": 2097152
+    }
+  }
+}

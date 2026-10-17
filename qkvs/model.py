@@ -146,11 +146,49 @@ class QKVSDecoder(nn.Module):
         token_types: Tensor,
         semantic_ids: Tensor | None = None,
     ) -> Tensor:
-        hidden = (
-            self.value_embedding(values)
-            + self.type_embedding(token_types)
-            + self.pointer_encoder(pointers)
-        )
+        hidden = self.value_embedding(values) + self.type_embedding(token_types)
+        if pointers.ndim == values.ndim + 1:
+            if self.config.pointer_set_encoding in {"sorted_raw", "sorted_fourier"}:
+                valid = pointers >= 0
+                sort_values = torch.where(valid, pointers, torch.inf)
+                sorted_values, order = sort_values.sort(dim=-1)
+                sorted_valid = valid.gather(-1, order)
+                sorted_values = torch.where(sorted_valid, sorted_values, 0.0)
+                if self.config.pointer_set_encoding == "sorted_fourier":
+                    frequencies = 2.0 ** torch.arange(
+                        4, device=pointers.device, dtype=torch.float32
+                    )
+                    angles = 2.0 * torch.pi * sorted_values.unsqueeze(-1) * frequencies
+                    valid_feature = sorted_valid.unsqueeze(-1).to(torch.float32)
+                    features = torch.cat(
+                        (
+                            sorted_values.unsqueeze(-1),
+                            valid_feature,
+                            torch.sin(angles) * valid_feature,
+                            torch.cos(angles) * valid_feature,
+                        ),
+                        dim=-1,
+                    ).flatten(-2)
+                else:
+                    features = torch.cat((sorted_values, sorted_valid.to(torch.float32)), dim=-1)
+                if features.shape[-1] > self.config.d_model:
+                    raise ValueError("sorted pointer set does not fit in the model width")
+                pointer_hidden = torch.zeros(
+                    *values.shape,
+                    self.config.d_model,
+                    device=values.device,
+                    dtype=torch.float32,
+                )
+                pointer_hidden[..., : features.shape[-1]] = features
+            else:
+                pointer_hidden = self.pointer_encoder(pointers)
+                pointer_count = (pointers >= 0).sum(dim=-1, keepdim=True).clamp_min(1).sqrt()
+                pointer_hidden = pointer_hidden.sum(dim=-2) / pointer_count
+        elif pointers.ndim == values.ndim:
+            pointer_hidden = self.pointer_encoder(pointers)
+        else:
+            raise ValueError("pointers need zero or one set dimension")
+        hidden = hidden + pointer_hidden
         if self.semantic_embedding is not None:
             if semantic_ids is None:
                 raise ValueError("semantic IDs are required by this model configuration")

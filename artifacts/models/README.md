@@ -31,5 +31,12 @@ Included checkpoints:
 - `competing_memory_general_step400.pt`: fresh-example four-key, three-distractor write/read model,
   stopped at step 400 after convergence; SHA-256
   `02eafc4038bf1b42940a400ff5be43e1447ddde446d36635976abf9ed44eec0e`.
+- `regions8_qkvs_fixed4k_step200.pt`: fixed-4K eight-window geometry diagnostic with all router
+  outputs supervised; SHA-256
+  `a1608042913932c1e5cff46991c4018de6f7314eb5747dbd2bbb0f60e32ca382`.
+- `regions8_dense_step400.pt`: matched dense eight-region aggregation control; SHA-256
+  `1ead3eb7f55f79a93d73fce7c60c12adb58490521d5fdadf519009d11c748d72`.
+- `regions1_dense_step200.pt`: matched dense single-region task-validity control; SHA-256
+  `f015e615d6579e77dae45e05d481bb3cba36c66a042412f000fc80ae0266f05c`.
 
 They can be regenerated from local training checkpoints with `python -m qkvs.export_checkpoint`.

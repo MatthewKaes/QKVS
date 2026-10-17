@@ -284,6 +284,64 @@ def streaming_selected_attention(
     return torch.cat(outputs, dim=2)
 
 
+def _chunked_sdpa_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    indices: Tensor,
+    valid: Tensor,
+) -> Tensor:
+    """Materialize one bounded query chunk and dispatch its selections through SDPA."""
+    selected_k = _gather_cache(k, indices)
+    selected_v = _gather_cache(v, indices)
+    batch, heads, queries, head_dim = q.shape
+    candidates = indices.shape[-1]
+    flat_q = q.permute(0, 2, 1, 3).reshape(batch * queries, heads, 1, head_dim)
+    flat_k = selected_k.permute(0, 2, 1, 3, 4).reshape(batch * queries, heads, candidates, head_dim)
+    flat_v = selected_v.permute(0, 2, 1, 3, 4).reshape(batch * queries, heads, candidates, head_dim)
+    mask = valid.reshape(batch * queries, 1, 1, candidates)
+    attended = F.scaled_dot_product_attention(
+        flat_q,
+        flat_k,
+        flat_v,
+        attn_mask=mask,
+    )
+    return attended.reshape(batch, queries, heads, head_dim).permute(0, 2, 1, 3)
+
+
+def chunked_selected_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    selection: Selection,
+    *,
+    query_chunk_size: int,
+    checkpoint_chunks: bool,
+) -> Tensor:
+    """Use fused SDPA over bounded materialized query chunks."""
+    outputs: list[Tensor] = []
+    for start in range(0, q.shape[2], query_chunk_size):
+        end = min(q.shape[2], start + query_chunk_size)
+        arguments = (
+            q[:, :, start:end],
+            k,
+            v,
+            selection.indices[:, start:end],
+            selection.valid[:, start:end],
+        )
+        if checkpoint_chunks and torch.is_grad_enabled():
+            output = checkpoint(
+                _chunked_sdpa_attention,
+                *arguments,
+                use_reentrant=False,
+                preserve_rng_state=False,
+            )
+        else:
+            output = _chunked_sdpa_attention(*arguments)
+        outputs.append(output)
+    return torch.cat(outputs, dim=2)
+
+
 def duplicate_attention_reference(q: Tensor, k: Tensor, v: Tensor, indices: Tensor) -> Tensor:
     """Small single-query reference that intentionally preserves repeated occurrences."""
     selected_k = k[indices]
@@ -329,7 +387,16 @@ class CausalSelfAttention(nn.Module):
         self.o_proj = nn.Linear(config.d_model, config.d_model, bias=False)
 
         if config.kind == "qkvs" and config.router_mode == "learned":
-            self.s_proj: nn.Module | None = nn.Linear(config.d_model, config.n_windows, bias=True)
+            router_outputs = config.router_capacity or config.n_windows
+            if config.router_mlp_ratio:
+                router_hidden = config.d_model * config.router_mlp_ratio
+                self.s_proj: nn.Module | None = nn.Sequential(
+                    nn.Linear(config.d_model, router_hidden),
+                    nn.SiLU(),
+                    nn.Linear(router_hidden, router_outputs),
+                )
+            else:
+                self.s_proj = nn.Linear(config.d_model, router_outputs, bias=True)
         else:
             self.s_proj = None
 
@@ -359,7 +426,10 @@ class CausalSelfAttention(nn.Module):
             # Address precision determines which discrete block is gathered. Keep S in FP32 even
             # when Q/K/V run under autocast; BF16 cannot represent enough bins at long contexts.
             with torch.autocast(device_type=hidden.device.type, enabled=False):
-                return torch.sigmoid(self.s_proj(hidden.float()))
+                router_input = hidden.detach() if self.config.router_detach_input else hidden
+                return torch.sigmoid(self.s_proj(router_input.float()))[
+                    ..., : self.config.n_windows
+                ]
         if self.config.router_mode == "unconditioned":
             assert self.router_logits is not None
             return (
@@ -370,9 +440,27 @@ class CausalSelfAttention(nn.Module):
         assert self.fixed_addresses is not None
         return self.fixed_addresses.view(1, 1, -1).expand(hidden.shape[0], hidden.shape[1], -1)
 
+    def router_output_projection(self) -> nn.Linear | None:
+        if isinstance(self.s_proj, nn.Linear):
+            return self.s_proj
+        if isinstance(self.s_proj, nn.Sequential):
+            projection = self.s_proj[-1]
+            assert isinstance(projection, nn.Linear)
+            return projection
+        return None
+
     def _selected(self, q: Tensor, k: Tensor, v: Tensor, selection: Selection) -> Tensor:
         if self.config.sparse_backend == "materialized":
             return selected_attention(q, k, v, selection)
+        if self.config.sparse_backend == "chunked":
+            return chunked_selected_attention(
+                q,
+                k,
+                v,
+                selection,
+                query_chunk_size=self.config.query_chunk_size,
+                checkpoint_chunks=self.config.checkpoint_sparse and self.training,
+            )
         return streaming_selected_attention(
             q,
             k,

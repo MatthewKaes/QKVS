@@ -29,8 +29,12 @@ those tiles during backward instead of retaining sequence-wide selected K/V tens
 training remains linear in sequence length times the fixed selection budget while peak gathered
 K/V memory is bounded by the configured tile sizes. Queries through the `L + R` threshold use
 optimized causal SDPA directly. The original materialized backend remains available as a numerical
-reference. Incremental inference uses a caller-sized preallocated cache and appends into fresh
-slots, avoiding an otherwise hidden `torch.cat` copy of the full history on every token.
+reference. A faster chunked backend materializes selected K/V for one bounded query chunk, flattens
+query positions into the batch dimension, and dispatches a single SDPA call. Checkpointing
+recomputes each chunk during backward. It uses more bounded temporary memory than the tiled online
+softmax path but removes its inner Python/kernel-launch loop. Incremental inference uses a
+caller-sized preallocated cache and appends into fresh slots, avoiding an otherwise hidden
+`torch.cat` copy of the full history on every token.
 
 ## Router training
 
@@ -45,8 +49,21 @@ direct address prediction and layer-conditioned pointer following are learnable.
 The current route target covers only retrieval slot zero. With multiple `S` outputs, hard indexing
 also prevents answer gradients from reaching the other slots, so those outputs are unsupervised.
 Controlled memory experiments therefore use `R = W = 16`, giving `S` exactly one output. Returning
-to multiple windows requires a set-valued or per-slot objective that gives every output a causal
-target.
+to multiple windows requires a separate set-valued objective.
+
+The multi-selection control supplies several required regions and trains their addresses as a set.
+For each target, a coverage term is zero for any decoded window start that contains it. A second
+one-dimensional order-statistic term sorts both predicted addresses and target intervals before
+matching them, making supervision invariant to output-slot permutations while giving every active
+output a gradient. Repetition remains possible when there are more outputs than required regions.
+The router head can reserve a fixed maximum output capacity so geometries with different active
+window counts have identical parameters.
+
+The 4K capacity diagnostic additionally isolates the auxiliary router optimizer: the explicit
+pointer set is encoded canonically, S reads a detached hidden state, and router/base gradients use
+separate clipping and learning rates. An optional two-layer S MLP tests multi-address decoder
+capacity without enlarging the transformer. These are supervised geometry controls, not a claim
+that semantic address discovery has been solved.
 
 Teacher and oracle controls can mask historical windows independently of their decoded addresses.
 The strict oracle sets slot zero to the correct block and disables every other historical slot for
@@ -84,12 +101,12 @@ only in the marker's final classifier state.
   or mixed absolute/relative coordinates. Mixed-length Fourier training improves first-hop
   extrapolation but has not solved later-hop composition; a fixed raw-scalar embedding performed
   worse.
-- Permutation-invariant supervision when several router slots all carry useful targets.
+- A categorical or hierarchical address representation that avoids high-precision simultaneous
+  scalar regression. Set supervision now covers all outputs, but eight continuous addresses did
+  not train reliably at 4K.
 - Straight-through, soft-window, or policy-gradient training without address labels.
 - Whether each attention head should own addresses.
 - Whether explicit previous-address forwarding helps after controlling for parameter count.
-- Kernel layout: gathered attention is first kept in PyTorch; Triton/CUDA work is justified only
-  after correctness and learning evidence. The checkpointed streaming implementation solves peak
-  training memory but is substantially slower; fusing online softmax, gather, and backward remains
-  necessary for throughput.
+- Kernel layout: checkpointed chunked SDPA is substantially faster than the Python tiled loop, but
+  gather, masking, and backward are still not fused. A custom Triton/CUDA path remains necessary.
 - Semantic retrieval and practical language modeling are separate later-stage claims.

@@ -24,6 +24,8 @@ class PointerBatch:
     hops: int
     semantic_ids: Tensor | None = None
     memory_targets: Tensor | None = None
+    route_target_positions: Tensor | None = None  # [layers, batch, targets]
+    route_target_addresses: Tensor | None = None  # [layers, batch, oracle windows]
 
     def to(self, device: torch.device | str) -> PointerBatch:
         return PointerBatch(
@@ -37,6 +39,16 @@ class PointerBatch:
             semantic_ids=(None if self.semantic_ids is None else self.semantic_ids.to(device)),
             memory_targets=(
                 None if self.memory_targets is None else self.memory_targets.to(device)
+            ),
+            route_target_positions=(
+                None
+                if self.route_target_positions is None
+                else self.route_target_positions.to(device)
+            ),
+            route_target_addresses=(
+                None
+                if self.route_target_addresses is None
+                else self.route_target_addresses.to(device)
             ),
         )
 
@@ -265,6 +277,123 @@ def make_memory_bank_batch(
     )
 
 
+def make_multi_region_batch(
+    *,
+    batch_size: int,
+    seq_len: int,
+    dense_window: int,
+    block_size: int,
+    address_stride: int,
+    n_windows: int,
+    n_layers: int,
+    n_records: int,
+    required_regions: int,
+    generator: torch.Generator,
+) -> PointerBatch:
+    """Expose a pointer set whose balanced count requires every requested historical record."""
+    if not 1 <= required_regions <= n_records:
+        raise ValueError("required regions must fall between one and the record count")
+    rolling_receptive_field = 1 + n_layers * (dense_window - 1)
+    record_history_end = seq_len - rolling_receptive_field - dense_window
+    if record_history_end < n_records:
+        raise ValueError("sequence is too short to isolate all records from rolling attention")
+
+    record_positions = torch.div(
+        (torch.arange(n_records) * 2 + 1) * record_history_end,
+        2 * n_records,
+        rounding_mode="floor",
+    )
+    values = torch.zeros((batch_size, seq_len), dtype=torch.long)
+    pointers = torch.full((batch_size, seq_len, required_regions), -1.0)
+    token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
+    answers = torch.empty(batch_size, dtype=torch.long)
+    targets = torch.empty((batch_size, required_regions), dtype=torch.long)
+
+    for item in range(batch_size):
+        requested_keys = torch.randperm(n_records, generator=generator)[:required_regions]
+        requested_count = torch.randint(required_regions + 1, (), generator=generator)
+        requested_values = torch.zeros(required_regions, dtype=torch.long)
+        if requested_count:
+            ones = torch.randperm(required_regions, generator=generator)[:requested_count]
+            requested_values[ones] = 1
+        requested_positions = record_positions[requested_keys]
+        values[item, requested_positions] = requested_values
+        token_types[item, requested_positions] = RECORD
+        token_types[item, -1] = QUERY
+        answers[item] = requested_count
+        targets[item] = requested_positions
+
+    history_end = seq_len - dense_window
+    pointers[:, -1] = normalized_window_addresses(targets, history_end, address_stride)
+    target_positions = targets.unsqueeze(0).expand(n_layers, -1, -1).clone()
+    target_addresses = _coverage_window_addresses(
+        target_positions,
+        history_end=history_end,
+        block_size=block_size,
+        address_stride=address_stride,
+        n_windows=n_windows,
+    )
+    route_positions = target_positions[..., 0]
+    route_addresses = normalized_window_addresses(route_positions, history_end, address_stride)
+    return PointerBatch(
+        values=values,
+        pointers=pointers,
+        token_types=token_types,
+        answers=answers,
+        route_addresses=route_addresses,
+        route_positions=route_positions,
+        hops=1,
+        route_target_positions=target_positions,
+        route_target_addresses=target_addresses,
+    )
+
+
+def _coverage_window_addresses(
+    target_positions: Tensor,
+    *,
+    history_end: int,
+    block_size: int,
+    address_stride: int,
+    n_windows: int,
+) -> Tensor:
+    """Greedily choose fixed-width windows that cover the most still-uncovered targets."""
+    layers, batch_size, _ = target_positions.shape
+    n_addresses = (history_end + address_stride - 1) // address_stride
+    result = torch.empty((layers, batch_size, n_windows), dtype=torch.float32)
+    for layer in range(layers):
+        for item in range(batch_size):
+            targets = target_positions[layer, item]
+            candidates: set[int] = set()
+            for target in targets.tolist():
+                first = max(0, (target - block_size + 1 + address_stride - 1) // address_stride)
+                last = min(n_addresses - 1, target // address_stride)
+                candidates.update(range(first, last + 1))
+            uncovered = torch.ones(targets.shape[0], dtype=torch.bool)
+            chosen: list[int] = []
+            for _ in range(n_windows):
+                if not uncovered.any():
+                    chosen.append(chosen[0])
+                    continue
+                best = max(
+                    candidates,
+                    key=lambda candidate: (
+                        int(
+                            (
+                                uncovered
+                                & (candidate * address_stride <= targets)
+                                & (targets < candidate * address_stride + block_size)
+                            ).sum()
+                        ),
+                        -candidate,
+                    ),
+                )
+                chosen.append(best)
+                start = best * address_stride
+                uncovered &= ~((start <= targets) & (targets < start + block_size))
+            result[layer, item] = (torch.tensor(chosen, dtype=torch.float32) + 0.5) / n_addresses
+    return result
+
+
 def make_semantic_batch(
     *,
     batch_size: int,
@@ -346,7 +475,13 @@ def make_address_overrides(
         torch.nan,
         device=device,
     )
-    overrides[:, :, -1, 0] = batch.route_addresses.to(device)
+    if batch.route_target_addresses is None:
+        overrides[:, :, -1, 0] = batch.route_addresses.to(device)
+    else:
+        targets = batch.route_target_addresses.to(device)
+        if targets.shape[-1] != n_windows:
+            raise ValueError("oracle target address count must match active windows")
+        overrides[:, :, -1] = targets
     return overrides
 
 
@@ -365,5 +500,8 @@ def make_oracle_window_masks(
         device=device,
     )
     masks[:, :, -1] = False
-    masks[:, :, -1, 0] = True
+    if batch.route_target_addresses is None:
+        masks[:, :, -1, 0] = True
+    else:
+        masks[:, :, -1] = True
     return masks

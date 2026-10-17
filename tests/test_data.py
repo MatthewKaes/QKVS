@@ -6,6 +6,7 @@ from qkvs.data import (
     RECORD,
     make_memory_anchor_batch,
     make_memory_bank_batch,
+    make_multi_region_batch,
     make_pointer_batch,
     make_semantic_batch,
     make_span_batch,
@@ -194,3 +195,50 @@ def test_scaled_memory_bank_is_beyond_rolling_receptive_field() -> None:
             source = marker - 32
             assert batch.token_types[item, source] == RECORD
             assert source < marker - 16
+
+
+def test_multi_region_answers_require_balanced_requested_records() -> None:
+    batch = make_multi_region_batch(
+        batch_size=16,
+        seq_len=256,
+        dense_window=32,
+        block_size=32,
+        address_stride=8,
+        n_windows=8,
+        n_layers=4,
+        n_records=24,
+        required_regions=8,
+        generator=torch.Generator().manual_seed(93),
+    )
+    assert batch.route_target_positions is not None
+    assert batch.route_target_addresses is not None
+    assert batch.route_target_positions.shape == (4, 16, 8)
+    assert batch.route_target_addresses.shape == (4, 16, 8)
+    rolling_receptive_field = 1 + 4 * (32 - 1)
+    assert torch.all(batch.route_target_positions < 255 - rolling_receptive_field)
+    for item in range(16):
+        targets = batch.route_target_positions[0, item]
+        assert batch.values[item, targets].sum() == batch.answers[item]
+        assert torch.all(batch.token_types[item, targets] == RECORD)
+        expected_pointers = (torch.div(targets, 8, rounding_mode="floor").float() + 0.5) / 28
+        torch.testing.assert_close(batch.pointers[item, -1], expected_pointers)
+    assert 0 <= batch.answers.min() <= batch.answers.max() <= 8
+    assert torch.unique(batch.answers).numel() > 4
+
+
+def test_multi_region_batch_supports_zero_sparse_windows_for_controls() -> None:
+    batch = make_multi_region_batch(
+        batch_size=2,
+        seq_len=128,
+        dense_window=16,
+        block_size=32,
+        address_stride=16,
+        n_windows=0,
+        n_layers=2,
+        n_records=12,
+        required_regions=4,
+        generator=torch.Generator().manual_seed(94),
+    )
+    assert batch.route_target_addresses is not None
+    assert batch.route_target_addresses.shape == (2, 2, 0)
+    assert batch.route_addresses.shape == (2, 2)

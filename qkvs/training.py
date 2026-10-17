@@ -16,6 +16,7 @@ from qkvs.data import (
     make_address_overrides,
     make_memory_anchor_batch,
     make_memory_bank_batch,
+    make_multi_region_batch,
     make_oracle_window_masks,
     make_pointer_batch,
     make_semantic_batch,
@@ -39,6 +40,9 @@ class TrainConfig:
     memory_bank_distractors: int = 3
     memory_bank_source_offset: int = 32
     memory_loss_weight: float = 0.0
+    region_records: int = 100
+    required_regions: int = 8
+    route_assignment_weight: float = 0.25
     fixed_training_batch: bool = False
     train_seq_len: int = 64
     train_seq_lengths: tuple[int, ...] = ()
@@ -48,6 +52,7 @@ class TrainConfig:
     eval_batches: int = 8
     eval_batch_size: int | None = None
     learning_rate: float = 3e-4
+    router_learning_rate: float | None = None
     weight_decay: float = 0.01
     route_loss_weight: float = 4.0
     route_loss_space: str = "normalized"
@@ -125,6 +130,19 @@ def _batch(
             source_offset=train_config.memory_bank_source_offset,
             generator=generator,
         )
+    if train_config.task == "multi_region":
+        return make_multi_region_batch(
+            batch_size=(train_config.batch_size if batch_size is None else batch_size),
+            seq_len=seq_len,
+            dense_window=model_config.dense_window,
+            block_size=model_config.block_size,
+            address_stride=model_config.attention().stride,
+            n_windows=model_config.attention().n_windows,
+            n_layers=model_config.n_layers,
+            n_records=train_config.region_records,
+            required_regions=train_config.required_regions,
+            generator=generator,
+        )
     if train_config.task != "pointer":
         raise ValueError(f"unknown task: {train_config.task}")
     return make_pointer_batch(
@@ -163,8 +181,28 @@ def _teacher_controls(
     window_masks = torch.ones_like(overrides, dtype=torch.bool)
     teacher_on_device = teacher_mask.to(device)
     window_masks[:, teacher_on_device, -1] = False
-    window_masks[:, teacher_on_device, -1, 0] = True
+    if batch.route_target_addresses is None:
+        window_masks[:, teacher_on_device, -1, 0] = True
+    else:
+        window_masks[:, teacher_on_device, -1] = True
     return overrides, window_masks
+
+
+def _window_target_intervals(
+    positions: Tensor,
+    *,
+    history_end: int,
+    block_size: int,
+    stride: int,
+) -> tuple[Tensor, Tensor]:
+    n_addresses = math.ceil(history_end / stride)
+    first_valid = torch.div(
+        (positions - block_size + 1).clamp_min(0) + stride - 1,
+        stride,
+        rounding_mode="floor",
+    )
+    last_valid = torch.div(positions, stride, rounding_mode="floor").clamp_max(n_addresses - 1)
+    return first_valid.float(), (last_valid + 1).float()
 
 
 def _route_loss(
@@ -175,11 +213,51 @@ def _route_loss(
 ) -> Tensor:
     if output.addresses is None or model_config.router_mode != "learned":
         return output.logits.new_zeros(())
-    predicted = output.addresses[:, :, -1, 0].float()
+    predicted = output.addresses[:, :, -1].float()
     if model_config.block_size <= 0:
         raise ValueError("block size must be positive")
+    if train_config.route_loss_space == "set_coverage":
+        if batch.route_target_positions is None:
+            raise ValueError("set coverage requires route target positions")
+        history_end = batch.values.shape[1] - model_config.dense_window
+        stride = model_config.attention().stride
+        n_addresses = math.ceil(history_end / stride)
+        target_lower, target_upper = _window_target_intervals(
+            batch.route_target_positions,
+            history_end=history_end,
+            block_size=model_config.block_size,
+            stride=stride,
+        )
+        scaled = predicted.unsqueeze(-1) * n_addresses
+        distance = (target_lower.unsqueeze(-2) - scaled).clamp_min(0)
+        distance += (scaled - target_upper.unsqueeze(-2)).clamp_min(0)
+        coverage_cost = F.smooth_l1_loss(
+            distance,
+            torch.zeros_like(distance),
+            beta=0.25,
+            reduction="none",
+        )
+        target_centers = (target_lower + target_upper) / 2.0
+        sorted_predictions = (predicted * n_addresses).sort(dim=-1).values
+        sorted_targets = target_centers.sort(dim=-1).values
+        output_count = predicted.shape[-1]
+        target_count = target_centers.shape[-1]
+        quantiles = torch.div(
+            (torch.arange(output_count, device=predicted.device) * 2 + 1) * target_count,
+            2 * output_count,
+            rounding_mode="floor",
+        ).clamp_max(target_count - 1)
+        matched_targets = sorted_targets[..., quantiles]
+        coverage = coverage_cost.amin(dim=-2).mean()
+        assignment = F.smooth_l1_loss(
+            sorted_predictions,
+            matched_targets,
+            beta=0.25,
+        )
+        return coverage + train_config.route_assignment_weight * assignment
+    predicted_first = predicted[..., 0]
     if train_config.route_loss_space == "normalized":
-        return F.smooth_l1_loss(predicted, batch.route_addresses.float(), beta=0.02)
+        return F.smooth_l1_loss(predicted_first, batch.route_addresses.float(), beta=0.02)
     if train_config.route_loss_space == "blocks":
         history_end = batch.values.shape[1] - model_config.dense_window
         stride = model_config.attention().stride
@@ -192,7 +270,7 @@ def _route_loss(
             ).float()
             + 0.5
         )
-        return F.smooth_l1_loss(predicted * n_addresses, target_centers, beta=0.25)
+        return F.smooth_l1_loss(predicted_first * n_addresses, target_centers, beta=0.25)
     raise ValueError(f"unknown route loss space: {train_config.route_loss_space}")
 
 
@@ -225,10 +303,17 @@ def _route_accuracies(
     n_addresses = math.ceil(history_end / stride)
     predicted = addresses[:, :, -1].float().clamp(0.0, 1.0 - torch.finfo(torch.float32).eps)
     predicted_starts = torch.floor(predicted * n_addresses).to(torch.long) * stride
-    targets = batch.route_positions.unsqueeze(-1)
-    correct = (
-        (predicted_starts <= targets) & (targets < predicted_starts + model_config.block_size)
-    ).any(dim=-1)
+    if batch.route_target_positions is None:
+        targets = batch.route_positions.unsqueeze(-1)
+        correct = (
+            (predicted_starts <= targets) & (targets < predicted_starts + model_config.block_size)
+        ).any(dim=-1)
+    else:
+        targets = batch.route_target_positions.unsqueeze(-2)
+        contains = (predicted_starts.unsqueeze(-1) <= targets) & (
+            targets < predicted_starts.unsqueeze(-1) + model_config.block_size
+        )
+        correct = contains.any(dim=-2).float().mean(dim=-1)
     return [value.item() for value in correct.float().mean(dim=1)]
 
 
@@ -371,14 +456,35 @@ def train_run(
 ) -> dict[str, Any]:
     seed_everything(train_config.seed)
     model = QKVSDecoder(model_config).to(device)
+    if (
+        train_config.router_learning_rate is None
+        or model_config.attention_kind != "qkvs"
+        or model_config.router_mode != "learned"
+    ):
+        parameter_groups: Any = model.parameters()
+    else:
+        router_parameters = [
+            parameter
+            for layer in model.layers
+            if layer.attention.s_proj is not None
+            for parameter in layer.attention.s_proj.parameters()
+        ]
+        router_ids = {id(parameter) for parameter in router_parameters}
+        base_parameters = [
+            parameter for parameter in model.parameters() if id(parameter) not in router_ids
+        ]
+        parameter_groups = [
+            {"params": base_parameters, "lr": train_config.learning_rate},
+            {"params": router_parameters, "lr": train_config.router_learning_rate},
+        ]
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        parameter_groups,
         lr=train_config.learning_rate,
         weight_decay=train_config.weight_decay,
         fused=device.type == "cuda",
     )
     generator = torch.Generator().manual_seed(train_config.seed + 101)
-    history: list[dict[str, float | int]] = []
+    history: list[dict[str, Any]] = []
     started = time.perf_counter()
     start_step = 1
     checkpoint_directory = output_directory.parent / "checkpoints"
@@ -496,13 +602,41 @@ def train_run(
                 + train_config.route_loss_weight * route_loss
                 + train_config.memory_loss_weight * memory_loss
             )
+        should_log = step == 1 or step % train_config.log_every == 0 or step == train_config.steps
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        router_gradient_norms: list[list[float]] | None = None
+        if should_log and model_config.attention_kind == "qkvs":
+            router_gradient_norms = []
+            for layer in model.layers:
+                projection = layer.attention.router_output_projection()
+                if projection is None or projection.weight.grad is None:
+                    router_gradient_norms.append([])
+                else:
+                    router_gradient_norms.append(
+                        projection.weight.grad.norm(dim=1)[
+                            : model_config.attention().n_windows
+                        ].tolist()
+                    )
+        if model_config.router_detach_input:
+            router_parameters = [
+                parameter
+                for layer in model.layers
+                if layer.attention.s_proj is not None
+                for parameter in layer.attention.s_proj.parameters()
+            ]
+            router_ids = {id(parameter) for parameter in router_parameters}
+            base_parameters = [
+                parameter for parameter in model.parameters() if id(parameter) not in router_ids
+            ]
+            torch.nn.utils.clip_grad_norm_(base_parameters, 1.0)
+            torch.nn.utils.clip_grad_norm_(router_parameters, 1.0)
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        if step == 1 or step % train_config.log_every == 0 or step == train_config.steps:
+        if should_log:
             accuracies = _route_accuracies(output.addresses, batch, model_config)
-            entry: dict[str, float | int] = {
+            entry: dict[str, Any] = {
                 "step": step,
                 "loss": loss.item(),
                 "answer_loss": answer_loss.item(),
@@ -514,6 +648,8 @@ def train_run(
             }
             if accuracies is not None:
                 entry["route_accuracy_mean"] = sum(accuracies) / len(accuracies)
+            if router_gradient_norms is not None:
+                entry["router_gradient_norms_by_layer"] = router_gradient_norms
             history.append(entry)
             print(
                 f"{train_config.name}: step={step}/{train_config.steps} "

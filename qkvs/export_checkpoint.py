@@ -6,6 +6,8 @@ from pathlib import Path
 
 import torch
 
+from qkvs.config import ModelConfig
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export a replayable model-only checkpoint")
@@ -15,10 +17,15 @@ def main() -> None:
     source = Path(arguments.checkpoint)
     destination = Path(arguments.output)
     checkpoint = torch.load(source, map_location="cpu", weights_only=True)
+    model_config = {
+        key: value
+        for key, value in checkpoint["model_config"].items()
+        if key in ModelConfig.__dataclass_fields__
+    }
     payload = {
         "format_version": 1,
         "model": checkpoint["model"],
-        "model_config": checkpoint["model_config"],
+        "model_config": model_config,
         "training_config": checkpoint.get("training_config"),
         "step": checkpoint.get("step"),
         "source_checkpoint": str(source),

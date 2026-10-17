@@ -126,3 +126,70 @@ def test_raw_pointer_encoding_has_no_learned_projection() -> None:
     assert encoded[0, 0, 0] == 0.25
     assert encoded[0, 0, 1] == 1.0
     assert not encoded[0, 1].any()
+
+
+def test_router_capacity_keeps_parameter_shape_across_active_geometries() -> None:
+    output_shapes = []
+    for windows in (1, 2, 4, 8):
+        model = QKVSDecoder(
+            ModelConfig(
+                vocab_size=9,
+                d_model=32,
+                n_heads=4,
+                n_layers=1,
+                dense_window=8,
+                retrieval_budget=32,
+                block_size=32 // windows,
+                router_capacity=8,
+            )
+        )
+        projection = model.layers[0].attention.s_proj
+        assert isinstance(projection, torch.nn.Linear)
+        output_shapes.append(projection.weight.shape)
+    assert output_shapes == [(8, 32)] * 4
+
+
+def test_router_mlp_preserves_requested_output_capacity() -> None:
+    model = QKVSDecoder(
+        ModelConfig(
+            vocab_size=9,
+            d_model=32,
+            n_heads=4,
+            n_layers=1,
+            dense_window=8,
+            retrieval_budget=32,
+            block_size=4,
+            router_capacity=8,
+            router_mlp_ratio=2,
+        )
+    )
+    router = model.layers[0].attention.s_proj
+    assert isinstance(router, torch.nn.Sequential)
+    assert router[-1].weight.shape == (8, 64)
+
+
+def test_pointer_set_embedding_is_permutation_invariant() -> None:
+    torch.manual_seed(32)
+    model = QKVSDecoder(
+        ModelConfig(
+            vocab_size=9,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            dense_window=4,
+            retrieval_budget=8,
+            block_size=2,
+            pointer_set_encoding="sorted_fourier",
+        )
+    ).eval()
+    values = torch.zeros((1, 12), dtype=torch.long)
+    pointers = torch.full((1, 12, 4), -1.0)
+    pointers[0, -1] = torch.tensor([0.1, 0.3, 0.6, 0.8])
+    permuted = pointers.clone()
+    permuted[0, -1] = pointers[0, -1, torch.tensor([2, 0, 3, 1])]
+    token_types = torch.zeros((1, 12), dtype=torch.long)
+    with torch.no_grad():
+        expected = model(values, pointers, token_types)
+        actual = model(values, permuted, token_types)
+    torch.testing.assert_close(actual.logits, expected.logits)
+    torch.testing.assert_close(actual.addresses, expected.addresses)

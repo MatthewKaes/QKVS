@@ -38,6 +38,14 @@ present in actual cached marker K/V. At an unseen length of 1,024, strict-oracle
 100% while native routing drops to 8.2% and 41.4%, respectively. The remaining demonstrated failure
 is address extrapolation, not local memory writing or cached-content reading.
 
+The subsequent multi-selection study reaches the intended initial geometry (`L=R=256`, eight
+width-32 windows, stride 16, context 4K) and trains every active S output with a
+permutation-invariant set loss. The downstream task and oracle path learn, but native target
+coverage remains 10.3%, close to random, after 200 fixed-4K steps. This is the first controlled
+negative result specifically for simultaneous multi-address learning. Separately, a chunked-SDPA
+backend improves the 8K training step from 5,011 ms to 367 ms at the same 512-token selection
+budget, a 13.6x speedup, though dense SDPA remains much faster.
+
 The eager PyTorch implementation demonstrates bounded work but no wall-clock speedup. Its
 materialized gather and many small address-decoding kernels cost about 0.355 ms per one-layer decode
 from 512 through 32K tokens, while optimized dense SDPA rose from 0.014 to only 0.038 ms. A fused
@@ -98,7 +106,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 23 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 33 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -572,3 +580,96 @@ and
 
 Replayable model-only checkpoints for both fresh-example runs, with SHA-256 hashes, are listed in
 [artifacts/models/README.md](../artifacts/models/README.md).
+
+## Multi-selection geometry and training throughput
+
+The fifth iteration addresses the gap between the successful one-window controls and the proposed
+distributed sampler. It also replaces the slowest reference training path before attempting longer
+runs.
+
+### Chunked SDPA training backend
+
+The online-softmax streaming reference bounded memory by looping in Python over both query chunks
+and candidate tiles. Every tile launched gather, einsum, reduction, exponentiation, and update
+kernels; activation checkpointing repeated that work in backward. Dense attention, by contrast,
+uses a highly optimized fused SDPA implementation.
+
+The new backend materializes selected K/V only for one bounded query chunk, flattens its query
+positions into the batch dimension, and calls SDPA once for the entire candidate set. It retains
+activation checkpointing. Forward outputs and Q/K/V gradients match the materialized reference in
+the test suite.
+
+The matched benchmark uses four layers, width 128, BF16, batch one, `L=256`, `R=256`, eight
+width-32/stride-16 windows, backward, and fused AdamW:
+
+| Context | Dense SDPA | Tiled streaming QKVS | Chunked-SDPA QKVS | Streaming / chunked | Chunked peak increment |
+|---:|---:|---:|---:|---:|---:|
+| 2,048 | 5.28 ms | 986.51 ms | 76.22 ms | 12.9x | 362 MiB |
+| 4,096 | 5.10 ms | 2,285.87 ms | 173.57 ms | 13.2x | 436 MiB |
+| 8,192 | 8.49 ms | 5,010.73 ms | 367.20 ms | 13.6x | 583 MiB |
+
+At 8K, chunk sizes 512, 1,024, and 2,048 take 375.6, 373.3, and 362.9 ms in the tuning run, while
+their peak increments are 583 MiB, 872 MiB, and 1,450 MiB. Chunk 512 is the selected tradeoff: the
+larger working set buys little additional speed. Batch four at 4K measures 687.9 ms and a 1.74 GiB
+peak increment.
+
+This is a material improvement, not a production kernel. The selected sparse path is still about
+43x slower than dense SDPA at 8K. Gather, mask handling, and backward require a custom fused kernel
+to close that constant-factor gap. Raw results are in
+[rtx5070_multiselect_training.json](../artifacts/benchmarks/rtx5070_multiselect_training.json),
+[rtx5070_chunked_training_tuning.json](../artifacts/benchmarks/rtx5070_chunked_training_tuning.json),
+[rtx5070_large_chunk_training_tuning.json](../artifacts/benchmarks/rtx5070_large_chunk_training_tuning.json),
+and
+[rtx5070_multiselect_training_batch4.json](../artifacts/benchmarks/rtx5070_multiselect_training_batch4.json).
+
+### Constant-budget multi-region control
+
+The new task places 100 candidate record positions before the four-layer rolling receptive field.
+The query receives a permutation-invariant set of explicit normalized pointers; the requested
+records contain balanced binary values, and the answer is their exact count. Only requested records
+carry the record tag. This deliberately tests geometry and multi-record aggregation, not semantic
+address discovery.
+
+The configuration keeps `L=256`, `R=256`, four layers, width 128, and an eight-output router head.
+Geometry controls activate one, two, four, or eight outputs with widths 256, 128, 64, or 32 while
+holding total sparse tokens and model parameters fixed. The eight-window control also defines
+strides 32, 16, and 8. Problems requesting one, two, four, and eight independent regions share the
+same infrastructure.
+
+Multiwindow supervision has two permutation-invariant terms:
+
+- a coverage loss over every start interval whose decoded window contains a required position;
+- a one-dimensional sorted matching loss that assigns every active output while permitting target
+  repetition when outputs outnumber required regions.
+
+The recorded 4K capacity run uses eight width-32 windows at stride 16. It additionally gives S a
+canonical sorted Fourier encoding of the explicit pointer set, a two-layer router MLP, detached
+auxiliary-router inputs, a dedicated router learning rate, and separate base/router gradient
+clipping. These controls favor the router. At the final logged step, all 32 active output rows
+across four layers had nonzero gradient norms (minimum 1.23).
+
+### Capacity result
+
+| Model / control | Step | Held-out 4K answer | Held-out target coverage |
+|---|---:|---:|---:|
+| Dense, one required region | 200 | 100.0% | n/a |
+| Dense, eight required regions | 400 | 34.4% | n/a |
+| QKVS, eight regions, coverage oracle | 200 | 43.8% | oracle supplied |
+| QKVS, eight regions, native S | 200 | 15.6% | 10.3% |
+
+The answer baseline is 50% for one region and 11.1% for eight. Each held-out entry uses 32 fresh
+examples, so the exact percentages are preliminary. The important separation is nevertheless
+clear: dense aggregation learns, and the QKVS model can use the correct eight windows, while native
+S remains near random target coverage. The result is in
+[regions8_windows8_width32_stride16_fixed4k_diagnostic.json](../artifacts/results/regions8_windows8_width32_stride16_fixed4k_diagnostic.json),
+with dense controls in
+[regions1_dense_diagnostic.json](../artifacts/results/regions1_dense_diagnostic.json) and
+[regions8_dense_diagnostic.json](../artifacts/results/regions8_dense_diagnostic.json).
+
+This run stops the geometry grid before wasting compute: comparing window counts and strides is not
+meaningful until the principal eight-output router learns its supervised target set. The failure is
+not missing gradients, downstream task capacity, rolling leakage, or insufficient attention
+budget. Under the tested controls, simultaneous continuous scalar address regression is the active
+optimization failure. The next router experiment should use categorical or hierarchical
+coarse/fine address predictions with permutation-invariant matching; only after that control passes
+should the full constant-budget geometry grid and autonomous intermediate retrieval run.

@@ -3,6 +3,7 @@ import torch
 from qkvs.attention import (
     CausalSelfAttention,
     build_selection,
+    chunked_selected_attention,
     duplicate_attention_reference,
     log_multiplicity_reference,
     selected_attention,
@@ -127,6 +128,28 @@ def test_streaming_attention_matches_materialized_forward_and_backward() -> None
         torch.testing.assert_close(actual_input.grad, expected_input.grad, rtol=2e-5, atol=2e-6)
 
 
+def test_chunked_sdpa_matches_materialized_forward_and_backward() -> None:
+    generator = torch.Generator().manual_seed(102)
+    addresses = torch.rand(2, 13, 2, generator=generator)
+    selection = build_selection(addresses, dense_window=4, retrieval_budget=4, block_size=2)
+    materialized_inputs = [
+        torch.randn(2, 2, 13, 4, generator=generator, requires_grad=True) for _ in range(3)
+    ]
+    chunked_inputs = [value.detach().clone().requires_grad_() for value in materialized_inputs]
+    expected = selected_attention(*materialized_inputs, selection)
+    actual = chunked_selected_attention(
+        *chunked_inputs,
+        selection,
+        query_chunk_size=3,
+        checkpoint_chunks=True,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    for expected_input, actual_input in zip(materialized_inputs, chunked_inputs, strict=True):
+        torch.testing.assert_close(actual_input.grad, expected_input.grad, rtol=2e-5, atol=2e-6)
+
+
 def test_router_receives_auxiliary_gradient() -> None:
     torch.manual_seed(3)
     attention = CausalSelfAttention(
@@ -143,6 +166,28 @@ def test_router_receives_auxiliary_gradient() -> None:
     assert output.addresses is not None
     loss = (output.addresses[:, -1, 0] - torch.tensor([0.2, 0.8])).square().mean()
     loss.backward()
+    assert attention.s_proj is not None
+    assert attention.s_proj.weight.grad is not None
+    assert attention.s_proj.weight.grad.abs().sum() > 0
+
+
+def test_detached_router_trains_s_without_changing_its_input() -> None:
+    torch.manual_seed(4)
+    attention = CausalSelfAttention(
+        AttentionConfig(
+            d_model=16,
+            n_heads=4,
+            dense_window=4,
+            retrieval_budget=2,
+            block_size=1,
+            router_detach_input=True,
+        )
+    )
+    hidden = torch.randn(2, 10, 16, requires_grad=True)
+    addresses = attention._addresses(hidden)
+    assert addresses is not None
+    addresses.square().sum().backward()
+    assert hidden.grad is None
     assert attention.s_proj is not None
     assert attention.s_proj.weight.grad is not None
     assert attention.s_proj.weight.grad.abs().sum() > 0

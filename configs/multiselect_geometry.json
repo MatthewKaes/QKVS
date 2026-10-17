@@ -1,0 +1,119 @@
+{
+  "name": "multiselect_geometry",
+  "seed": 18701,
+  "model": {
+    "vocab_size": 9,
+    "d_model": 128,
+    "n_heads": 4,
+    "n_layers": 4,
+    "mlp_ratio": 2,
+    "dense_window": 256,
+    "retrieval_budget": 256,
+    "block_size": 32,
+    "address_stride": 16,
+    "dropout": 0.0,
+    "attention_kind": "qkvs",
+    "router_mode": "learned",
+    "router_capacity": 8,
+    "router_detach_input": true,
+    "router_mlp_ratio": 2,
+    "n_token_types": 4,
+    "pointer_encoding": "fourier",
+    "pointer_set_encoding": "sorted_fourier",
+    "semantic_vocab_size": 0,
+    "sparse_backend": "chunked",
+    "query_chunk_size": 512,
+    "candidate_tile_size": 64,
+    "checkpoint_sparse": true
+  },
+  "training": {
+    "task": "multi_region",
+    "region_records": 100,
+    "required_regions": 8,
+    "train_seq_len": 4096,
+    "train_seq_lengths": [2048, 3072, 4096],
+    "eval_seq_lens": [4096, 6144],
+    "batch_size": 4,
+    "eval_batch_size": 4,
+    "steps": 1200,
+    "eval_batches": 16,
+    "learning_rate": 0.0006,
+    "router_learning_rate": 0.003,
+    "weight_decay": 0.01,
+    "route_loss_weight": 1.0,
+    "route_loss_space": "set_coverage",
+    "route_assignment_weight": 1.0,
+    "teacher_floor": 1.0,
+    "teacher_only_oracle_window": true,
+    "query_only_retrieval": true,
+    "checkpoint_every": 25,
+    "log_every": 25
+  },
+  "runs": [
+    {
+      "name": "regions8_windows1_width256_stride256",
+      "seed": 18701,
+      "model": {"block_size": 256, "address_stride": 256}
+    },
+    {
+      "name": "regions8_windows2_width128_stride128",
+      "seed": 18701,
+      "model": {"block_size": 128, "address_stride": 128}
+    },
+    {
+      "name": "regions8_windows4_width64_stride64",
+      "seed": 18701,
+      "model": {"block_size": 64, "address_stride": 64}
+    },
+    {
+      "name": "regions8_windows8_width32_stride32",
+      "seed": 18701,
+      "model": {"block_size": 32, "address_stride": 32}
+    },
+    {
+      "name": "regions8_windows8_width32_stride16",
+      "seed": 18701
+    },
+    {
+      "name": "regions8_windows8_width32_stride16_fixed4k",
+      "seed": 18701,
+      "training": {"train_seq_lengths": []}
+    },
+    {
+      "name": "regions8_windows8_width32_stride8",
+      "seed": 18701,
+      "model": {"address_stride": 8}
+    },
+    {
+      "name": "regions1_windows8_width32_stride16",
+      "seed": 18701,
+      "training": {"required_regions": 1}
+    },
+    {
+      "name": "regions2_windows8_width32_stride16",
+      "seed": 18701,
+      "training": {"required_regions": 2}
+    },
+    {
+      "name": "regions4_windows8_width32_stride16",
+      "seed": 18701,
+      "training": {"required_regions": 4}
+    },
+    {
+      "name": "regions8_dense",
+      "seed": 18701,
+      "model": {"attention_kind": "dense"}
+    },
+    {
+      "name": "regions1_dense",
+      "seed": 18701,
+      "model": {"attention_kind": "dense"},
+      "training": {"required_regions": 1}
+    },
+    {
+      "name": "regions8_rolling",
+      "seed": 18701,
+      "model": {"attention_kind": "rolling"}
+    }
+  ]
+}

@@ -6,7 +6,8 @@ from typing import Any, Literal
 RouterMode = Literal["learned", "unconditioned", "random"]
 AttentionKind = Literal["qkvs", "dense", "rolling"]
 PointerEncoding = Literal["fourier", "raw"]
-SparseBackend = Literal["materialized", "streaming"]
+PointerSetEncoding = Literal["sum", "sorted_raw", "sorted_fourier"]
+SparseBackend = Literal["materialized", "streaming", "chunked"]
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,9 @@ class AttentionConfig:
     dropout: float = 0.0
     kind: AttentionKind = "qkvs"
     router_mode: RouterMode = "learned"
+    router_capacity: int | None = None
+    router_detach_input: bool = False
+    router_mlp_ratio: int = 0
     sparse_backend: SparseBackend = "streaming"
     query_chunk_size: int = 32
     candidate_tile_size: int = 32
@@ -43,6 +47,10 @@ class AttentionConfig:
                 raise ValueError("QKVS requires a positive retrieval budget")
             if self.retrieval_budget % self.block_size:
                 raise ValueError("retrieval_budget must be divisible by block_size")
+            if self.router_capacity is not None and self.router_capacity < self.n_windows:
+                raise ValueError("router capacity cannot be smaller than the active window count")
+            if self.router_mlp_ratio < 0:
+                raise ValueError("router MLP ratio cannot be negative")
         if self.query_chunk_size <= 0 or self.candidate_tile_size <= 0:
             raise ValueError("sparse attention tile sizes must be positive")
 
@@ -81,8 +89,12 @@ class ModelConfig:
     dropout: float = 0.0
     attention_kind: AttentionKind = "qkvs"
     router_mode: RouterMode = "learned"
+    router_capacity: int | None = None
+    router_detach_input: bool = False
+    router_mlp_ratio: int = 0
     n_token_types: int = 3
     pointer_encoding: PointerEncoding = "fourier"
+    pointer_set_encoding: PointerSetEncoding = "sum"
     semantic_vocab_size: int = 0
     sparse_backend: SparseBackend = "streaming"
     query_chunk_size: int = 32
@@ -104,6 +116,9 @@ class ModelConfig:
             dropout=self.dropout,
             kind=self.attention_kind,
             router_mode=self.router_mode,
+            router_capacity=self.router_capacity,
+            router_detach_input=self.router_detach_input,
+            router_mlp_ratio=self.router_mlp_ratio,
             sparse_backend=self.sparse_backend,
             query_chunk_size=self.query_chunk_size,
             candidate_tile_size=self.candidate_tile_size,

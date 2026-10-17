@@ -36,6 +36,7 @@ def _measure(
     model_config: ModelConfig,
     *,
     seq_len: int,
+    batch_size: int,
     warmup: int,
     repeats: int,
     device: torch.device,
@@ -43,9 +44,9 @@ def _measure(
     torch.manual_seed(19001 + seq_len)
     model = QKVSDecoder(model_config).to(device).train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, fused=True)
-    values = torch.randint(model_config.vocab_size, (1, seq_len), device=device)
-    pointers = torch.full((1, seq_len), -1.0, device=device)
-    token_types = torch.zeros((1, seq_len), device=device, dtype=torch.long)
+    values = torch.randint(model_config.vocab_size, (batch_size, seq_len), device=device)
+    pointers = torch.full((batch_size, seq_len), -1.0, device=device)
+    token_types = torch.zeros((batch_size, seq_len), device=device, dtype=torch.long)
 
     for _ in range(warmup):
         _step(model, optimizer, values, pointers, token_types)
@@ -68,7 +69,7 @@ def _measure(
         "median_step_ms": statistics.median(timings),
         "minimum_step_ms": min(timings),
         "maximum_step_ms": max(timings),
-        "tokens_per_second": seq_len * 1000.0 / statistics.median(timings),
+        "tokens_per_second": batch_size * seq_len * 1000.0 / statistics.median(timings),
         "allocated_baseline_bytes": baseline,
         "peak_allocated_bytes": peak,
         "peak_increment_bytes": max(0, peak - baseline),
@@ -88,6 +89,7 @@ def main() -> None:
         raise RuntimeError("CUDA is required for training-step benchmarks")
     specification = load_json(arguments.config)
     device = torch.device("cuda")
+    batch_size = specification.get("batch_size", 1)
     common = {
         "vocab_size": specification["vocab_size"],
         "d_model": specification["d_model"],
@@ -107,17 +109,26 @@ def main() -> None:
     for seq_len in specification["sequence_lengths"]:
         length_results: dict[str, Any] = {}
         for name, overrides in specification["backends"].items():
-            model_config = ModelConfig(**common, **overrides)
+            model_config = ModelConfig(**{**common, **overrides})
             length_results[name] = _measure(
                 model_config,
                 seq_len=seq_len,
+                batch_size=batch_size,
                 warmup=specification["warmup"],
                 repeats=specification["repeats"],
                 device=device,
             )
+            if overrides.get("attention_kind") != "dense":
+                chunk = min(seq_len, overrides.get("query_chunk_size", common["query_chunk_size"]))
+                selected = min(
+                    seq_len, specification["dense_window"] + specification["retrieval_budget"]
+                )
+                length_results[name]["bounded_chunk_selected_kv_bytes"] = (
+                    2 * batch_size * chunk * selected * specification["d_model"] * 2
+                )
         selected = min(seq_len, specification["dense_window"] + specification["retrieval_budget"])
         length_results["theoretical_full_gather_bytes_per_layer"] = (
-            2 * seq_len * selected * specification["d_model"] * 2
+            2 * batch_size * seq_len * selected * specification["d_model"] * 2
         )
         length_results["theoretical_streaming_tile_bytes"] = (
             2
