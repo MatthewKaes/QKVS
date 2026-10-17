@@ -8,9 +8,9 @@ objective for learned sparse attention. No v6 router is planned.
 
 The only active investigation is the Stage A gate below. It asks whether one selected old block can
 improve a frozen pretrained model's prediction at all. Training `S` is not justified until that
-opportunity is demonstrated. V1 is invalidated, V2 is complete but nondecisive, and V3 is an
-unexecuted preregistration amendment awaiting review. Every protocol and raw result remains
-separate.
+opportunity is demonstrated. V1 is invalidated, V2 is complete but nondecisive, and V3 has
+conditional approval with its final gate amendment frozen before execution. Every protocol and raw
+result remains separate.
 
 ## What the previous experiments established
 
@@ -212,7 +212,7 @@ Every sparse condition gives all tokens the same fixed 32-token system/user-role
 no question, answer option, or document evidence. All other computation is rolling-local; only query
 tokens gain access to the selected historical block at its original RoPE position.
 
-### Compared conditions and unchanged gate
+### Compared conditions and final gate amendment
 
 - `full`: ordinary full causal attention.
 - `rolling`: the last 256 tokens plus the fixed task prefix.
@@ -222,14 +222,19 @@ tokens gain access to the selected historical block at its original RoPE positio
 - `utility_oracle`: the lowest-loss block found by an offline label-dependent scan of all eight
   candidates.
 
-The primary loss remains four-label cross entropy in nats. The V1 thresholds are unchanged. Stage A
-passes only if all checks hold on all 24 examples:
+The primary loss remains four-label cross entropy in nats. Full attention is retained as a diagnostic
+but is not a gate: selective retrieval can legitimately beat full attention by suppressing
+interfering blocks. Stage A passes only if all primary checks hold on all 24 examples:
 
-1. full-context accuracy is at least 50%;
-2. the lower bound of the paired 95% bootstrap interval for full-minus-rolling utility is at least
-   0.05 nat;
-3. the same lower bound for annotated-oracle-minus-rolling utility is at least 0.05 nat;
-4. annotated-oracle utility beats both random and recency, with paired lower bounds above zero.
+1. annotated-block accuracy is at least 50%, twice the four-choice chance rate and the absolute
+   reader-capability sanity check;
+2. the lower bound of the paired 95% bootstrap interval for annotated-block-minus-rolling utility is
+   at least 0.05 nat;
+3. annotated-block utility beats fair random selection, with a paired lower bound above zero;
+4. annotated-block utility beats candidate-recency, with a paired lower bound above zero.
+
+Full accuracy and the full-minus-rolling mean and interval remain in the raw result. They cannot
+change the gate outcome in either direction.
 
 If any check fails, stop before training `S`.
 
@@ -241,11 +246,18 @@ zero in FP32 over 128 tokens. The executable test is
 [test_checkpoint_mask.py](../tests/test_checkpoint_mask.py), and the raw audit is
 [retrieval_utility_actual_checkpoint_mask_audit.json](../artifacts/results/retrieval_utility_actual_checkpoint_mask_audit.json).
 
+Before V3 examples are measured, the same actual-checkpoint comparison must pass a 128-token BF16
+CUDA smoke test. Its preregistered requirements are finite outputs, identical top-1 vocabulary
+prediction, last-hidden cosine at least 0.999, hidden maximum absolute error at most 0.125, and logit
+maximum absolute error at most 0.5. This smoke tests CUDA mask invariance only; it cannot contribute
+examples to the Stage A result.
+
 A new result stores the Git revision and SHA-256 hashes of the experiment module, runtime module,
 configuration, `pyproject.toml`, and `uv.lock`. Initial execution requires those tracked files to be
 committed and clean. Every resume recomputes and exactly compares the revision, hashes,
 configuration, dataset checksum, and device before loading additional measurements.
 
 The amended configuration is `configs/retrieval_utility_stage_a_v3.json`. Its data preparation has
-been executed, but no V3 model measurement has run. Further QKVS investment remains unjustified
-until this protocol is reviewed and the unchanged gate passes.
+been executed, but no V3 model measurement has run. The final gate amendment is frozen before the
+CUDA smoke and full evaluation. Further QKVS investment remains unjustified until the smoke and the
+primary sparse-utility gate pass.

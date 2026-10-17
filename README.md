@@ -125,8 +125,17 @@ On the affected Linux host, run CUDA commands from the user's terminal rather th
 Codex tool executor. Ordinary CPU tests and diagnostics remain safe to run through Codex.
 
 The checkpointed Stage A utility gate is separate from the legacy synthetic experiments. V1 is
-invalidated and V2 is nondecisive; V3 is preregistered but must not run until its amendment is
-reviewed:
+invalidated and V2 is nondecisive. Before V3, run its actual-checkpoint BF16 CUDA mask smoke:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m qkvs.checkpoint_mask_audit \
+  --config configs/retrieval_utility_stage_a_v3.json \
+  --device cuda \
+  --output artifacts/results/retrieval_utility_cuda_mask_smoke.json
+```
+
+Only after that reports `"passed": true`, run the first V3 example:
 
 ```bash
 HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
@@ -136,8 +145,8 @@ HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
   --max-examples-this-run 1
 ```
 
-After review, use one example as a memory/time smoke test, then run checkpointed slices. It evaluates
-only a frozen 0.5B model; it performs no optimization or backward pass.
+Use one example as a memory/time smoke test, then run checkpointed slices. It evaluates only a
+frozen 0.5B model; it performs no optimization or backward pass.
 
 The first five-example Stage A pilot is retained but invalidated: its full-attention condition could
 see the fixed task prompt while its sparse conditions could not. The V2 configuration makes that
@@ -148,3 +157,7 @@ The V3 amendment independently shuffles balanced target positions and labels, sa
 baselines from the same candidate set, places all candidate evidence beyond the 24-layer rolling
 receptive field, verifies masks on the actual checkpoint, and rejects resumes from a different
 source revision.
+
+Full attention remains a recorded diagnostic in V3, not a pass condition. The primary gate requires
+the annotated block to reach at least 50% accuracy and beat rolling, fair random, and
+candidate-recency under the preregistered paired loss criteria.

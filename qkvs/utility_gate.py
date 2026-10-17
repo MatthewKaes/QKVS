@@ -670,7 +670,7 @@ def summarize(
     *,
     configured_examples: int,
     seed: int,
-    gate: dict[str, float],
+    gate: dict[str, Any],
 ) -> dict[str, Any]:
     mode_names = tuple(raw_examples[0]["modes"]) if raw_examples else ()
     modes: dict[str, Any] = {}
@@ -685,6 +685,7 @@ def summarize(
         }
     complete = len(raw_examples) == configured_examples
     gate_results: dict[str, bool] = {}
+    gate_diagnostics: dict[str, Any] = {}
     if complete:
         full_delta = [
             float(example["modes"]["rolling"]["loss"]) - float(example["modes"]["full"]["loss"])
@@ -723,25 +724,51 @@ def summarize(
                 "bootstrap_95pct": _bootstrap_mean_interval(annotated_vs_recency, seed=seed + 104),
             },
         }
-        gate_results = {
-            "full_accuracy": modes["full"]["accuracy"] >= gate["minimum_full_accuracy"],
-            "full_beats_rolling": comparisons["full_minus_rolling_utility_nats"]["bootstrap_95pct"][
-                0
-            ]
-            >= gate["minimum_utility_lower_bound_nats"],
-            "annotated_beats_rolling": comparisons["annotated_minus_rolling_utility_nats"][
-                "bootstrap_95pct"
-            ][0]
-            >= gate["minimum_utility_lower_bound_nats"],
-            "annotated_beats_random": comparisons["annotated_minus_random_utility_nats"][
-                "bootstrap_95pct"
-            ][0]
-            > 0.0,
-            "annotated_beats_recency": comparisons["annotated_minus_recency_utility_nats"][
-                "bootstrap_95pct"
-            ][0]
-            > 0.0,
-        }
+        if gate.get("decision_rule") == "selective_retrieval_utility":
+            gate_results = {
+                "annotated_reader_accuracy": modes["annotated_oracle"]["accuracy"]
+                >= gate["minimum_annotated_accuracy"],
+                "annotated_beats_rolling": comparisons["annotated_minus_rolling_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                >= gate["minimum_annotated_vs_rolling_lower_bound_nats"],
+                "annotated_beats_random": comparisons["annotated_minus_random_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                > 0.0,
+                "annotated_beats_candidate_recency": comparisons[
+                    "annotated_minus_recency_utility_nats"
+                ]["bootstrap_95pct"][0]
+                > 0.0,
+            }
+            full_comparison = comparisons["full_minus_rolling_utility_nats"]
+            gate_diagnostics = {
+                "full_accuracy": modes["full"]["accuracy"],
+                "full_minus_rolling_mean_utility_nats": full_comparison["mean"],
+                "full_minus_rolling_bootstrap_95pct": full_comparison["bootstrap_95pct"],
+                "full_beats_rolling_at_previous_threshold": full_comparison["bootstrap_95pct"][0]
+                >= gate["diagnostic_full_utility_lower_bound_nats"],
+            }
+        else:
+            gate_results = {
+                "full_accuracy": modes["full"]["accuracy"] >= gate["minimum_full_accuracy"],
+                "full_beats_rolling": comparisons["full_minus_rolling_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                >= gate["minimum_utility_lower_bound_nats"],
+                "annotated_beats_rolling": comparisons["annotated_minus_rolling_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                >= gate["minimum_utility_lower_bound_nats"],
+                "annotated_beats_random": comparisons["annotated_minus_random_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                > 0.0,
+                "annotated_beats_recency": comparisons["annotated_minus_recency_utility_nats"][
+                    "bootstrap_95pct"
+                ][0]
+                > 0.0,
+            }
     else:
         comparisons = {}
     utility_oracle_match = [
@@ -792,6 +819,7 @@ def summarize(
         "gate": {
             "thresholds": gate,
             "checks": gate_results,
+            "diagnostics": gate_diagnostics,
             "passed": complete and all(gate_results.values()),
             "decision": (
                 "proceed_to_stage_b"

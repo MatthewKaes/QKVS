@@ -1,6 +1,6 @@
 {
   "stage": "A",
-  "protocol_amendment": "Independent balanced target and label schedules; fair random and recency baselines over the same candidate set; every candidate block beyond the frozen model's 24-layer rolling receptive field; exact source identity required for resume.",
+  "protocol_amendment": "Independent balanced target and label schedules; fair random and recency baselines over the same candidate set; every candidate block beyond the frozen model's 24-layer rolling receptive field; exact source identity required for resume; full attention retained as a diagnostic rather than a gate because selective attention may improve utility by suppressing interference.",
   "hypothesis": "With the fixed 32-token task prompt visible in every condition and supporting evidence beyond the multilayer rolling receptive field, one causally relevant natural-language block at a fixed one-block historical budget reduces frozen-model answer loss relative to rolling-only, random-block, and recency-block attention.",
   "model": {
     "id": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -28,8 +28,10 @@
   "retrieval_budget_blocks": 1,
   "global_prefix_attention": true,
   "gate": {
-    "minimum_full_accuracy": 0.5,
-    "minimum_utility_lower_bound_nats": 0.05
+    "decision_rule": "selective_retrieval_utility",
+    "minimum_annotated_accuracy": 0.5,
+    "minimum_annotated_vs_rolling_lower_bound_nats": 0.05,
+    "diagnostic_full_utility_lower_bound_nats": 0.05
   },
   "output": "artifacts/results/retrieval_utility_stage_a_v3.json"
 }

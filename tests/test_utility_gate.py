@@ -208,3 +208,42 @@ def test_complete_summary_applies_predeclared_gate() -> None:
     assert summary["complete"]
     assert summary["gate"]["decision"] == "proceed_to_stage_b"
     assert summary["gate"]["passed"]
+
+
+def test_selective_utility_gate_does_not_require_full_attention_superiority() -> None:
+    example = {
+        "target_block": 1,
+        "random_block": 2,
+        "recency_block": 3,
+        "gold_label": 0,
+        "modes": {
+            name: {
+                "loss": loss,
+                "correct": correct,
+                "utility_nats": 1.0 - loss,
+                **({"selected_block": 1} if name == "utility_oracle" else {}),
+            }
+            for name, loss, correct in (
+                ("full", 2.0, False),
+                ("rolling", 1.0, False),
+                ("random", 0.9, False),
+                ("recency", 0.8, False),
+                ("annotated_oracle", 0.2, True),
+                ("utility_oracle", 0.2, True),
+            )
+        },
+    }
+    summary = summarize(
+        [example] * 4,
+        configured_examples=4,
+        seed=1,
+        gate={
+            "decision_rule": "selective_retrieval_utility",
+            "minimum_annotated_accuracy": 0.5,
+            "minimum_annotated_vs_rolling_lower_bound_nats": 0.05,
+            "diagnostic_full_utility_lower_bound_nats": 0.05,
+        },
+    )
+    assert summary["gate"]["passed"]
+    assert summary["gate"]["decision"] == "proceed_to_stage_b"
+    assert not summary["gate"]["diagnostics"]["full_beats_rolling_at_previous_threshold"]
