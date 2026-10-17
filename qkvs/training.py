@@ -14,8 +14,10 @@ from qkvs.config import ModelConfig
 from qkvs.data import (
     PointerBatch,
     make_address_overrides,
+    make_memory_anchor_batch,
     make_pointer_batch,
     make_semantic_batch,
+    make_span_batch,
 )
 from qkvs.model import DecoderOutput, QKVSDecoder
 from qkvs.runtime import environment, seed_everything, write_json
@@ -29,7 +31,9 @@ class TrainConfig:
     hops: int = 1
     semantic_keys: int = 8
     answer_vocab_size: int = 16
+    memory_source_window: int = 8
     train_seq_len: int = 64
+    train_seq_lengths: tuple[int, ...] = ()
     eval_seq_lens: tuple[int, ...] = (64, 128)
     batch_size: int = 64
     steps: int = 300
@@ -50,6 +54,7 @@ class TrainConfig:
     def from_dict(cls, value: dict[str, Any]) -> TrainConfig:
         copied = dict(value)
         copied["eval_seq_lens"] = tuple(copied.get("eval_seq_lens", (64, 128)))
+        copied["train_seq_lengths"] = tuple(copied.get("train_seq_lengths", ()))
         copied["hop_curriculum"] = tuple(copied.get("hop_curriculum", ()))
         return cls(**copied)
 
@@ -68,10 +73,33 @@ def _batch(
             seq_len=seq_len,
             dense_window=model_config.dense_window,
             block_size=model_config.block_size,
+            address_stride=model_config.attention().stride,
             n_layers=model_config.n_layers,
             n_keys=train_config.semantic_keys,
             answer_vocab_size=train_config.answer_vocab_size,
             fixed_layout=train_config.task == "semantic_fixed",
+            generator=generator,
+        )
+    if train_config.task == "span":
+        return make_span_batch(
+            batch_size=(train_config.batch_size if batch_size is None else batch_size),
+            seq_len=seq_len,
+            vocab_size=model_config.vocab_size,
+            dense_window=model_config.dense_window,
+            block_size=model_config.block_size,
+            address_stride=model_config.attention().stride,
+            n_layers=model_config.n_layers,
+            generator=generator,
+        )
+    if train_config.task == "memory_anchor":
+        return make_memory_anchor_batch(
+            batch_size=(train_config.batch_size if batch_size is None else batch_size),
+            seq_len=seq_len,
+            vocab_size=model_config.vocab_size,
+            dense_window=model_config.dense_window,
+            address_stride=model_config.attention().stride,
+            n_layers=model_config.n_layers,
+            source_window=train_config.memory_source_window,
             generator=generator,
         )
     if train_config.task != "pointer":
@@ -82,6 +110,7 @@ def _batch(
         vocab_size=model_config.vocab_size,
         dense_window=model_config.dense_window,
         block_size=model_config.block_size,
+        address_stride=model_config.attention().stride,
         n_layers=model_config.n_layers,
         hops=train_config.hops if hops is None else hops,
         generator=generator,
@@ -123,16 +152,17 @@ def _route_loss(
         return F.smooth_l1_loss(predicted, batch.route_addresses.float(), beta=0.02)
     if train_config.route_loss_space == "blocks":
         history_end = batch.values.shape[1] - model_config.dense_window
-        n_blocks = math.ceil(history_end / model_config.block_size)
+        stride = model_config.attention().stride
+        n_addresses = math.ceil(history_end / stride)
         target_centers = (
             torch.div(
                 batch.route_positions,
-                model_config.block_size,
+                stride,
                 rounding_mode="floor",
             ).float()
             + 0.5
         )
-        return F.smooth_l1_loss(predicted * n_blocks, target_centers, beta=0.25)
+        return F.smooth_l1_loss(predicted * n_addresses, target_centers, beta=0.25)
     raise ValueError(f"unknown route loss space: {train_config.route_loss_space}")
 
 
@@ -152,15 +182,14 @@ def _route_accuracies(
     if addresses is None:
         return None
     history_end = batch.values.shape[1] - model_config.dense_window
-    n_blocks = math.ceil(history_end / model_config.block_size)
+    stride = model_config.attention().stride
+    n_addresses = math.ceil(history_end / stride)
     predicted = addresses[:, :, -1].float().clamp(0.0, 1.0 - torch.finfo(torch.float32).eps)
-    predicted_blocks = torch.floor(predicted * n_blocks).to(torch.long)
-    target_blocks = torch.div(
-        batch.route_positions,
-        model_config.block_size,
-        rounding_mode="floor",
-    )
-    correct = (predicted_blocks == target_blocks.unsqueeze(-1)).any(dim=-1)
+    predicted_starts = torch.floor(predicted * n_addresses).to(torch.long) * stride
+    targets = batch.route_positions.unsqueeze(-1)
+    correct = (
+        (predicted_starts <= targets) & (targets < predicted_starts + model_config.block_size)
+    ).any(dim=-1)
     return [value.item() for value in correct.float().mean(dim=1)]
 
 
@@ -343,6 +372,11 @@ def train_run(
 
     for step in range(start_step, train_config.steps + 1):
         model.train()
+        train_seq_len = train_config.train_seq_len
+        if train_config.train_seq_lengths:
+            train_seq_len = train_config.train_seq_lengths[
+                (step - 1) % len(train_config.train_seq_lengths)
+            ]
         training_hops = train_config.hops
         if train_config.hop_curriculum:
             phase = min(
@@ -353,7 +387,7 @@ def train_run(
         batch = _batch(
             model_config,
             train_config,
-            train_config.train_seq_len,
+            train_seq_len,
             generator,
             hops=training_hops,
         ).to(device)
@@ -397,6 +431,7 @@ def train_run(
                 "route_loss": route_loss.item(),
                 "teacher_probability": teacher_probability,
                 "training_hops": training_hops,
+                "train_seq_len": train_seq_len,
             }
             if accuracies is not None:
                 entry["route_accuracy_mean"] = sum(accuracies) / len(accuracies)

@@ -13,8 +13,10 @@ decoding.
 It also establishes a narrow **learning success**. With explicit pointer supervision, a strict
 three-hop model in which only the final query can retrieve history achieved 72.7% native answer
 accuracy at its trained length (chance 3.125%). Its per-layer route accuracies were 95.3%, 91.4%,
-72.7%, and 71.1%, and ablating preceding pointers changed later addresses. The same network with
-oracle routes achieved 100%, so answer capacity was not the limiting factor.
+72.7%, and 71.1%, and ablating preceding pointers changed later addresses. This model was trained
+with oracle-selected attention routes on every example while `S` learned from an auxiliary loss;
+it is a supervised-router baseline, not end-to-end routing discovery from answer loss. The same
+network with oracle routes achieved 100%, so answer capacity was not the limiting factor.
 
 The initial address scheme did **not** establish generalization success. Strict native three-hop
 accuracy fell to 4.7% at 2x context and 3.9% at 4x, despite 100% oracle accuracy. Four-hop native
@@ -88,7 +90,7 @@ The test suite covers:
 - a retrieval-mask ablation used to isolate query-level cascading;
 - pointer-chain and semantic-dataset invariants.
 
-The final local suite has 15 passing tests. The mathematical decode score count is `N` for full
+The final local suite has 19 passing tests. The mathematical decode score count is `N` for full
 attention and at most `L + R` for QKVS; KV storage remains `O(N)` for both.
 
 The CUDA reference benchmark used one BF16 decode query, width 128, four heads, `L=256`, `R=256`,
@@ -175,7 +177,7 @@ and
 ## Experiment D: memory persistence
 
 A trained one-hop model was evaluated with historical retrieval explicitly disabled at the final
-query. “Frequent” inserts address-bearing refresh tokens between the record and final query;
+query. “Frequent” externally supplies address-bearing refresh tokens between the record and final query;
 “once” retrieves once and then leaves a long unused gap; “never until query” is a direct-retrieval
 positive control; “no access” is the negative control.
 
@@ -185,9 +187,10 @@ positive control; “no access” is the negative control.
 | 192 | 35.2% | 2.3% | 87.5% | 7.0% |
 | 384 | 23.4% | 2.3% | 71.1% | 2.3% |
 
-Frequent retrieval can keep information decodable through subsequent dense-window processing, but
-a single old retrieval did not create permanent memory. This is consistent with immutable caches
-and transient hidden-state propagation. See
+This measures persistence when the model is repeatedly given the correct memory address; it does
+not show autonomous decisions to refresh a memory. Frequent retrieval can keep information
+decodable through subsequent dense-window processing, but a single old retrieval did not create
+permanent memory. This is consistent with immutable caches and transient hidden-state propagation. See
 [one_hop_memory_persistence.json](../artifacts/results/one_hop_memory_persistence.json).
 
 ## Experiment E: overlap and multiplicity
@@ -260,3 +263,108 @@ content-dependent search. Artifacts are
    learning success.
 6. Evaluate language data only after routing generalization improves; current evidence does not
    justify that expense.
+
+## Reviewer-directed second iteration
+
+The following controls were added after the initial report. They preserve the reference commit's
+results while testing address representation, causal conditioning, overlap geometry, and the
+rolling-memory mechanism more directly.
+
+### Per-hop oracle intervention
+
+The strict three-hop checkpoint was evaluated with the first `k` query-layer routes replaced by
+oracle addresses while all later routes remained native. Every `k` used the same generated
+examples.
+
+| Length | Native | First hop oracle | First 2 oracle | First 3 oracle | All 4 oracle |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 67.6% | 69.5% | 73.4% | 75.8% | 100.0% |
+| 128 | 3.1% | 3.5% | 3.9% | 6.6% | 100.0% |
+| 256 | 4.7% | 4.3% | 4.7% | 8.2% | 100.0% |
+
+Correcting the explicit first hop does not restore long-context answers. Successive learned routes
+also fail on the unseen address grid; the problem is not isolated to the initial pointer encoder.
+See [strict_router_interventions.json](../artifacts/results/strict_router_interventions.json).
+
+### Paired pointer counterfactual
+
+Pairs hold values, record positions, types, query, and initial retrieval A fixed. Only the pointer
+stored at A changes from B to C. Layer 0 is oracle-routed to A; layer 1 is native.
+
+At length 64, the next predicted address changed in 100% of pairs, the original A-to-B transition
+was correct in 95.3%, the modified A-to-C transition in 93.8%, and both were correct in 89.5% of
+pairs. At 128, both-correct fell to 0% despite predictions changing in 97.7%. This is stronger causal
+evidence that in-distribution `S` follows retrieved pointer content, and equally strong evidence
+that the transition does not extrapolate.
+
+### Pointer representation and mixed lengths
+
+Replacing Fourier features with an unlearned raw scalar in fixed hidden dimensions was worse: the
+fixed-length model achieved only 14.1% answers at length 64, and mixed-length raw training reached
+14.8%. RMS normalization and residual/token mixing make a bare scalar insufficient in this design.
+
+Training the Fourier model cyclically at lengths 32, 48, 64, and 96 materially repaired first-hop
+extrapolation:
+
+| Evaluation length | Fixed-length first hop | Mixed-length first hop | Mixed third hop | Mixed answer |
+|---:|---:|---:|---:|---:|
+| 64 | 95.3% | 92.2% | 33.6% | 29.7% |
+| 96 | not measured | 82.0% | 17.2% | 20.3% |
+| 128 | 3.9% | 77.3% | 8.6% | 8.6% |
+| 192 | not measured | 45.3% | 3.1% | 3.1% |
+| 256 | 2.3% | 37.5% | 0.0% | 3.9% |
+
+The initial first-hop collapse was largely single-grid overfitting. Later-hop representation and
+error compounding remain unsolved. See
+[three_hop_fourier_mixed.json](../artifacts/results/three_hop_fourier_mixed.json).
+
+### True partial overlap
+
+Window width and address stride are now independent. A width-4, stride-1 window can partially
+overlap another width-4 window while retaining the same four-token budget as width-4, stride-4.
+
+A boundary task points at a span start while the answer is the marked token immediately after it.
+When the start is the last position of a stride-4 block, the block-aligned window cannot contain
+the answer; stride 1 always can.
+
+| Length | Block-aligned native / oracle | Partial-overlap native / oracle |
+|---:|---:|---:|
+| 64 | 77.6% / 77.6% | 100.0% / 100.0% |
+| 128 | 10.9% / 69.8% | 13.0% / 97.9% |
+
+The oracle gap validates additional expressivity independently of address prediction. Native
+long-context results remain limited by router extrapolation. See
+[span_block_aligned.json](../artifacts/results/span_block_aligned.json) and
+[span_partial_overlap.json](../artifacts/results/span_partial_overlap.json).
+
+### Rolling working-memory sink without refresh pointers
+
+A source record is placed within eight tokens before a pointer-free memory marker. The marker must
+learn through ordinary dense-window attention to absorb the record. A distant final query retrieves
+only the marker; no intermediate token receives a pointer or refresh address. A matched `L=1`
+control cannot see the source from the marker.
+
+| Model | Length 64 native / oracle | Length 128 native / oracle | Length 256 native / oracle |
+|---|---:|---:|---:|
+| `L=8` rolling sink | 100.0% / 100.0% | 2.6% / 100.0% | 4.7% / 94.8% |
+| `L=1` no rolling | 2.6% / 2.6% | 5.2% / 5.2% | 2.1% / 2.1% |
+
+This demonstrates learned information storage in the rolling region without supplied refresh
+pointers. It still uses supervised query-to-marker routing, so it does not demonstrate autonomous
+selection of which memories deserve storage. The oracle long-context result shows that stored
+content generalizes; native failure is again the address predictor. See
+[memory_sink_rolling.json](../artifacts/results/memory_sink_rolling.json) and
+[memory_sink_no_rolling.json](../artifacts/results/memory_sink_no_rolling.json).
+
+### Updated assessment
+
+- **Conditioned cascading:** strong in-distribution causal evidence, including paired pointer swaps.
+- **Address extrapolation:** mixed-length training fixes much of the first hop, not later hops.
+- **Overlap:** partial overlap has demonstrated expressivity at equal retrieval cost.
+- **Rolling memory:** a pointer-free sink can learn to store locally visible information for later
+  sparse retrieval; autonomous memory prioritization is still untested.
+- **Training:** all strongest cascade results still use oracle-consumed routes plus supervised `S`;
+  a differentiable or reinforcement-based native-routing objective remains necessary.
+
+Model-only checkpoints for the strict baseline and the principal second-iteration controls are
+listed in [artifacts/models/README.md](../artifacts/models/README.md).

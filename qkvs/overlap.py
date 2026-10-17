@@ -84,6 +84,7 @@ def _evaluate_length(
             vocab_size=config.vocab_size,
             dense_window=config.dense_window,
             block_size=config.block_size,
+            address_stride=config.attention().stride,
             n_layers=config.n_layers,
             hops=1,
             generator=generator,
@@ -91,7 +92,8 @@ def _evaluate_length(
         with torch.no_grad():
             native = model(batch.values, batch.pointers, batch.token_types)
         assert native.addresses is not None
-        n_blocks = math.ceil((seq_len - config.dense_window) / config.block_size)
+        stride = config.attention().stride
+        n_blocks = math.ceil((seq_len - config.dense_window) / stride)
         addresses = native.addresses[:, :, -1].float()
         blocks = torch.floor(
             addresses.clamp(0.0, 1.0 - torch.finfo(torch.float32).eps) * n_blocks
@@ -111,12 +113,13 @@ def _evaluate_length(
         has_duplicate = (duplicates > 0).any(dim=0)
         examples_with_duplicates += has_duplicate.sum().item()
 
-        target_blocks = torch.div(
-            batch.route_positions,
-            config.block_size,
-            rounding_mode="floor",
+        predicted_starts = blocks * stride
+        targets = batch.route_positions.unsqueeze(-1)
+        target_multiplicity += (
+            ((predicted_starts <= targets) & (targets < predicted_starts + config.block_size))
+            .sum()
+            .item()
         )
-        target_multiplicity += (blocks == target_blocks.unsqueeze(-1)).sum().item()
         native_predictions = native.logits[:, -1].argmax(dim=-1)
         native_hits = native_predictions == batch.answers
         native_correct += native_hits.sum().item()

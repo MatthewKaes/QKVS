@@ -1,10 +1,13 @@
 import torch
 
 from qkvs.data import (
+    MEMORY,
     QUERY,
     RECORD,
+    make_memory_anchor_batch,
     make_pointer_batch,
     make_semantic_batch,
+    make_span_batch,
     semantic_vocabulary_size,
 )
 
@@ -98,3 +101,42 @@ def test_fixed_semantic_layout_preserves_normalized_key_address_across_lengths()
     torch.testing.assert_close(
         key_addresses(short, 31), key_addresses(long, 127), atol=0.01, rtol=0.0
     )
+
+
+def test_span_answer_is_marked_token_after_addressed_start() -> None:
+    batch = make_span_batch(
+        batch_size=8,
+        seq_len=32,
+        vocab_size=16,
+        dense_window=1,
+        block_size=4,
+        address_stride=1,
+        n_layers=3,
+        generator=torch.Generator().manual_seed(73),
+    )
+    for item in range(8):
+        start = batch.route_positions[0, item]
+        assert batch.answers[item] == batch.values[item, start + 1]
+        assert batch.token_types[item, start + 1] == RECORD
+
+
+def test_memory_anchor_has_no_pointer_and_source_is_in_configured_window() -> None:
+    batch = make_memory_anchor_batch(
+        batch_size=8,
+        seq_len=64,
+        vocab_size=32,
+        dense_window=8,
+        address_stride=1,
+        n_layers=4,
+        source_window=8,
+        generator=torch.Generator().manual_seed(81),
+    )
+    marker = 32
+    assert torch.all(batch.token_types[:, marker] == MEMORY)
+    assert torch.all(batch.pointers[:, marker] == -1)
+    for item in range(8):
+        sources = torch.nonzero(batch.token_types[item] == RECORD).flatten()
+        assert sources.numel() == 1
+        source = sources.item()
+        assert marker - 8 < source < marker
+        assert batch.answers[item] == batch.values[item, source]

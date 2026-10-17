@@ -5,11 +5,12 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from qkvs.attention import normalized_block_centers
+from qkvs.attention import normalized_window_addresses
 
 FILLER = 0
 RECORD = 1
 QUERY = 2
+MEMORY = 3
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ def make_pointer_batch(
     vocab_size: int,
     dense_window: int,
     block_size: int,
+    address_stride: int | None = None,
     n_layers: int,
     hops: int,
     generator: torch.Generator,
@@ -49,6 +51,7 @@ def make_pointer_batch(
     if not 1 <= hops <= n_layers:
         raise ValueError("hops must be between one and the layer count")
     history_end = seq_len - dense_window
+    stride = block_size if address_stride is None else address_stride
     if history_end < hops:
         raise ValueError("sequence does not contain enough historical positions")
 
@@ -63,16 +66,16 @@ def make_pointer_batch(
         chain = permutation[:hops]
         token_types[batch_index, chain] = RECORD
         for hop_index in range(hops - 1):
-            next_address = normalized_block_centers(chain[hop_index + 1], history_end, block_size)
+            next_address = normalized_window_addresses(chain[hop_index + 1], history_end, stride)
             pointers[batch_index, chain[hop_index]] = next_address
         answers[batch_index] = values[batch_index, chain[-1]]
-        start_address = normalized_block_centers(chain[0], history_end, block_size)
+        start_address = normalized_window_addresses(chain[0], history_end, stride)
         pointers[batch_index, -1] = start_address
         token_types[batch_index, -1] = QUERY
         for layer_index in range(n_layers):
             route_positions[layer_index, batch_index] = chain[min(layer_index, hops - 1)]
 
-    route_addresses = normalized_block_centers(route_positions, history_end, block_size)
+    route_addresses = normalized_window_addresses(route_positions, history_end, stride)
     return PointerBatch(
         values=values,
         pointers=pointers,
@@ -81,6 +84,88 @@ def make_pointer_batch(
         route_addresses=route_addresses,
         route_positions=route_positions,
         hops=hops,
+    )
+
+
+def make_span_batch(
+    *,
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    dense_window: int,
+    block_size: int,
+    address_stride: int,
+    n_layers: int,
+    generator: torch.Generator,
+) -> PointerBatch:
+    """Retrieve a marked token immediately after an addressed span start."""
+    history_end = seq_len - dense_window
+    if history_end < 2:
+        raise ValueError("sequence does not contain a two-token historical span")
+    values = torch.randint(vocab_size, (batch_size, seq_len), generator=generator)
+    pointers = torch.full((batch_size, seq_len), -1.0)
+    token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
+    starts = torch.randint(history_end - 1, (batch_size,), generator=generator)
+    answers = torch.empty(batch_size, dtype=torch.long)
+    for item, start in enumerate(starts):
+        token_types[item, start + 1] = RECORD
+        token_types[item, -1] = QUERY
+        answers[item] = values[item, start + 1]
+        pointers[item, -1] = normalized_window_addresses(start, history_end, address_stride)
+    route_positions = starts.unsqueeze(0).expand(n_layers, -1).clone()
+    route_addresses = normalized_window_addresses(route_positions, history_end, address_stride)
+    return PointerBatch(
+        values,
+        pointers,
+        token_types,
+        answers,
+        route_addresses,
+        route_positions,
+        1,
+    )
+
+
+def make_memory_anchor_batch(
+    *,
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    dense_window: int,
+    address_stride: int,
+    n_layers: int,
+    source_window: int,
+    generator: torch.Generator,
+) -> PointerBatch:
+    """Place a record near a pointer-free memory sink retrieved much later."""
+    marker = seq_len // 2
+    if source_window < 2 or marker < source_window:
+        raise ValueError("source window must fit before the memory marker")
+    history_end = seq_len - dense_window
+    if marker >= history_end:
+        raise ValueError("memory marker must be outside the final dense window")
+    values = torch.randint(vocab_size, (batch_size, seq_len), generator=generator)
+    pointers = torch.full((batch_size, seq_len), -1.0)
+    token_types = torch.full((batch_size, seq_len), FILLER, dtype=torch.long)
+    answers = torch.empty(batch_size, dtype=torch.long)
+    marker_positions = torch.full((n_layers, batch_size), marker, dtype=torch.long)
+    for item in range(batch_size):
+        distance = torch.randint(1, source_window, (), generator=generator)
+        source = marker - distance
+        token_types[item, source] = RECORD
+        token_types[item, marker] = MEMORY
+        token_types[item, -1] = QUERY
+        values[item, marker] = 0
+        values[item, -1] = 0
+        answers[item] = values[item, source]
+    route_addresses = normalized_window_addresses(marker_positions, history_end, address_stride)
+    return PointerBatch(
+        values,
+        pointers,
+        token_types,
+        answers,
+        route_addresses,
+        marker_positions,
+        1,
     )
 
 
@@ -95,6 +180,7 @@ def make_semantic_batch(
     seq_len: int,
     dense_window: int,
     block_size: int,
+    address_stride: int | None = None,
     n_layers: int,
     n_keys: int,
     answer_vocab_size: int,
@@ -107,6 +193,7 @@ def make_semantic_batch(
     fixed layout tests whether a semantic key can learn a stable direct-address map.
     """
     history_end = seq_len - dense_window
+    stride = block_size if address_stride is None else address_stride
     if history_end < n_keys:
         raise ValueError("sequence does not contain enough historical positions for all keys")
     vocab_size = semantic_vocabulary_size(n_keys, answer_vocab_size)
@@ -142,7 +229,7 @@ def make_semantic_batch(
 
     if values.max().item() >= vocab_size:
         raise AssertionError("semantic token encoding exceeded its vocabulary")
-    route_addresses = normalized_block_centers(route_positions, history_end, block_size)
+    route_addresses = normalized_window_addresses(route_positions, history_end, stride)
     return PointerBatch(
         values=values,
         pointers=pointers,

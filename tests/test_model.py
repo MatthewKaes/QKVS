@@ -106,3 +106,23 @@ def test_incremental_cache_appends_without_reallocating_or_mutating_history() ->
     assert updated.keys.shape[2] == 3
     assert updated.keys.data_ptr() == storage_pointer
     torch.testing.assert_close(updated.keys[:, :, 0], historical_key)
+
+
+def test_raw_pointer_encoding_has_no_learned_projection() -> None:
+    model = QKVSDecoder(
+        ModelConfig(
+            vocab_size=16,
+            d_model=32,
+            n_heads=4,
+            n_layers=2,
+            dense_window=4,
+            retrieval_budget=2,
+            block_size=1,
+            pointer_encoding="raw",
+        )
+    )
+    assert model.pointer_encoder.projection is None
+    encoded = model.pointer_encoder(torch.tensor([[0.25, -1.0]]))
+    assert encoded[0, 0, 0] == 0.25
+    assert encoded[0, 0, 1] == 1.0
+    assert not encoded[0, 1].any()

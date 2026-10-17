@@ -66,6 +66,32 @@ def test_overlapping_windows_preserve_duplicate_occurrences() -> None:
     assert selection.indices[0, -1, :2].tolist() == selection.indices[0, -1, 2:4].tolist()
 
 
+def test_address_stride_allows_partial_window_overlap() -> None:
+    addresses = torch.full((1, 13, 2), 0.5)
+    addresses[0, -1] = torch.tensor([0.21, 0.41])
+    selection = build_selection(
+        addresses,
+        dense_window=4,
+        retrieval_budget=8,
+        block_size=4,
+        address_stride=2,
+    )
+    assert selection.indices[0, -1].tolist() == [
+        2,
+        3,
+        4,
+        5,
+        4,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+    ]
+
+
 def test_duplicate_occurrences_equal_log_multiplicity_bias() -> None:
     generator = torch.Generator().manual_seed(17)
     q = torch.randn(8, generator=generator)

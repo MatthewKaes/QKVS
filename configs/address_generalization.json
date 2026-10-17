@@ -1,0 +1,52 @@
+{
+  "name": "address_representation_generalization",
+  "seed": 10701,
+  "model": {
+    "vocab_size": 32,
+    "d_model": 96,
+    "n_heads": 4,
+    "n_layers": 4,
+    "mlp_ratio": 3,
+    "dense_window": 1,
+    "retrieval_budget": 1,
+    "block_size": 1,
+    "dropout": 0.0,
+    "attention_kind": "qkvs",
+    "router_mode": "learned",
+    "pointer_encoding": "fourier"
+  },
+  "training": {
+    "task": "pointer",
+    "hops": 3,
+    "train_seq_len": 64,
+    "eval_seq_lens": [64, 96, 128, 192, 256],
+    "batch_size": 32,
+    "eval_batch_size": 8,
+    "steps": 1800,
+    "eval_batches": 16,
+    "learning_rate": 0.0006,
+    "weight_decay": 0.01,
+    "route_loss_weight": 0.2,
+    "route_loss_space": "blocks",
+    "teacher_decay_fraction": 1.0,
+    "teacher_floor": 1.0,
+    "query_only_retrieval": true,
+    "checkpoint_every": 100,
+    "log_every": 100
+  },
+  "runs": [
+    {
+      "name": "three_hop_raw_fixed",
+      "model": {"pointer_encoding": "raw"}
+    },
+    {
+      "name": "three_hop_fourier_mixed",
+      "training": {"train_seq_lengths": [32, 48, 64, 96]}
+    },
+    {
+      "name": "three_hop_raw_mixed",
+      "model": {"pointer_encoding": "raw"},
+      "training": {"train_seq_lengths": [32, 48, 64, 96]}
+    }
+  ]
+}

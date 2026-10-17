@@ -7,16 +7,19 @@ At layer `k`, the same pre-normalized incoming state independently produces `Q`,
 `k + 1` predicts from the residual state after layer `k` attention, so retrieved content can alter
 the next decision without explicit address forwarding or mutable historical KV entries.
 
-For query position `t` (zero based), let `P = t + 1`, dense window `L`, retrieval budget `R`, and
-block width `W`, with `J = R / W` address slots.
+For query position `t` (zero based), let `P = t + 1`, dense window `L`, retrieval budget `R`,
+window width `W`, address stride `G`, and `J = R / W` address slots.
 
 - If `P <= L + R`, candidates are every position in `[0, t]` exactly once.
 - Otherwise, candidates contain `[t - L + 1, t]` plus `J` block-aligned historical windows.
-- A router output `a in [0, 1]` maps in constant time to
-  `floor(a * ceil((t - L + 1) / W))`, clamped to the last eligible historical block.
+- A router output `a in [0, 1]` maps in constant time to a window starting at
+  `G * floor(a * ceil((t - L + 1) / G))`, clamped to the last eligible start.
 - Tokens in a partial final block are masked when they cross into the rolling window.
 - Windows, and therefore token occurrences, may repeat. No deduplication occurs in the reference
   path.
+
+`G = W` reproduces the initial block-aligned geometry. `G < W` permits partially overlapping
+windows without changing the retrieved-token budget.
 
 Selection construction and attention touch at most `L + R` entries per query after the dense
 threshold. Historical KV storage remains linear in sequence length. The current batched training
@@ -37,7 +40,7 @@ direct address prediction and layer-conditioned pointer following are learnable.
 
 ## Initial decisions
 
-- Addresses are absolute fractions of the eligible historical block range.
+- Addresses are absolute fractions of the eligible historical-start range.
 - One scalar is predicted per retrieved block, shared by all attention heads.
 - Rotary position encoding is applied to Q/K; routing uses hidden state directly.
 - Duplicate occurrences are retained rather than converted to a log-count bias.
@@ -49,7 +52,9 @@ direct address prediction and layer-conditioned pointer following are learnable.
 ## Unresolved decisions and planned ablations
 
 - Address parameterization at much longer lengths: scalar precision, hierarchical/coarse-to-fine,
-  or mixed absolute/relative coordinates.
+  or mixed absolute/relative coordinates. Mixed-length Fourier training improves first-hop
+  extrapolation but has not solved later-hop composition; a fixed raw-scalar embedding performed
+  worse.
 - Permutation-invariant supervision when several router slots all carry useful targets.
 - Straight-through, soft-window, or policy-gradient training without address labels.
 - Whether each attention head should own addresses.

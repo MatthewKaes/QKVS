@@ -34,11 +34,18 @@ class KVCache:
 
 def normalized_block_centers(token_indices: Tensor, history_end: int, block_size: int) -> Tensor:
     """Return normalized addresses that decode to the blocks containing token_indices."""
+    return normalized_window_addresses(token_indices, history_end, block_size)
+
+
+def normalized_window_addresses(
+    token_indices: Tensor, history_end: int, address_stride: int
+) -> Tensor:
+    """Return normalized addresses for canonical windows containing token_indices."""
     if history_end <= 0:
         raise ValueError("history_end must be positive")
-    n_blocks = math.ceil(history_end / block_size)
-    blocks = torch.div(token_indices, block_size, rounding_mode="floor")
-    return (blocks.to(torch.float32) + 0.5) / n_blocks
+    n_starts = math.ceil(history_end / address_stride)
+    starts = torch.div(token_indices, address_stride, rounding_mode="floor")
+    return (starts.to(torch.float32) + 0.5) / n_starts
 
 
 def _selection_for_positions(
@@ -48,6 +55,7 @@ def _selection_for_positions(
     dense_window: int,
     retrieval_budget: int,
     block_size: int,
+    address_stride: int,
     full_below_threshold: bool,
 ) -> Selection:
     """Build fixed-width candidate lists without inspecting historical K or V tensors."""
@@ -63,17 +71,17 @@ def _selection_for_positions(
     positions = positions.to(device=device, dtype=torch.long)
     query_positions = positions.view(1, queries, 1)
     history_end = query_positions - dense_window + 1
-    block_count = torch.div(
-        history_end.clamp_min(0) + block_size - 1,
-        block_size,
+    address_count = torch.div(
+        history_end.clamp_min(0) + address_stride - 1,
+        address_stride,
         rounding_mode="floor",
     )
 
     scaled = addresses.clamp(0.0, 1.0 - torch.finfo(addresses.dtype).eps)
-    blocks = torch.floor(scaled * block_count.to(addresses.dtype)).to(torch.long)
-    blocks = torch.minimum(blocks, (block_count - 1).clamp_min(0))
+    address_indices = torch.floor(scaled * address_count.to(addresses.dtype)).to(torch.long)
+    address_indices = torch.minimum(address_indices, (address_count - 1).clamp_min(0))
     offsets = torch.arange(block_size, device=device).view(1, 1, 1, block_size)
-    historical = blocks.unsqueeze(-1) * block_size + offsets
+    historical = address_indices.unsqueeze(-1) * address_stride + offsets
     historical = historical.reshape(batch, queries, retrieval_budget)
     historical_valid = (historical >= 0) & (historical < history_end)
 
@@ -104,6 +112,7 @@ def build_selection(
     dense_window: int,
     retrieval_budget: int,
     block_size: int,
+    address_stride: int | None = None,
 ) -> Selection:
     """Build causal selections for every sequence position."""
     positions = torch.arange(addresses.shape[1], device=addresses.device)
@@ -113,6 +122,7 @@ def build_selection(
         dense_window=dense_window,
         retrieval_budget=retrieval_budget,
         block_size=block_size,
+        address_stride=block_size if address_stride is None else address_stride,
         full_below_threshold=True,
     )
 
@@ -124,6 +134,7 @@ def build_query_selection(
     dense_window: int,
     retrieval_budget: int,
     block_size: int,
+    address_stride: int | None = None,
 ) -> Selection:
     """Build one incremental query's selection in O(L + R) work."""
     if addresses.ndim != 2:
@@ -135,6 +146,7 @@ def build_query_selection(
         dense_window=dense_window,
         retrieval_budget=retrieval_budget,
         block_size=block_size,
+        address_stride=block_size if address_stride is None else address_stride,
         full_below_threshold=True,
     )
 
@@ -297,6 +309,7 @@ class CausalSelfAttention(nn.Module):
                 dense_window=self.config.dense_window,
                 retrieval_budget=self.config.retrieval_budget,
                 block_size=self.config.block_size,
+                address_stride=self.config.stride,
             )
             if retrieval_mask is not None:
                 if retrieval_mask.shape != (batch, time):
@@ -364,6 +377,7 @@ class CausalSelfAttention(nn.Module):
                 dense_window=self.config.dense_window,
                 retrieval_budget=self.config.retrieval_budget,
                 block_size=self.config.block_size,
+                address_stride=self.config.stride,
             )
             attended = selected_attention(q, k, v, selection)
 

@@ -39,11 +39,17 @@ measurements under `artifacts/`. See [docs/architecture.md](docs/architecture.md
 selection rule and unresolved research decisions. The evidence and conclusions from the initial
 study are in [docs/research_report.md](docs/research_report.md).
 
+The reviewer-directed second iteration adds per-hop oracle interventions, paired pointer
+counterfactuals, mixed-length address training, true partial-overlap windows, and a pointer-free
+rolling-memory sink. Key model-only checkpoints are included under
+[artifacts/models](artifacts/models/README.md) for replaying learned routes without optimizer state.
+
 Additional recorded ablations can be reproduced with:
 
 ```bash
 uv run python -m qkvs.persistence --config configs/persistence.json --device cpu
 uv run python -m qkvs.overlap --config configs/overlap.json --device cpu
+uv run python -m qkvs.interventions --config configs/interventions.json --device cpu
 ```
 
 The local NVIDIA driver has a known history of sporadic `Xid 79` bus-loss events. Training runs are

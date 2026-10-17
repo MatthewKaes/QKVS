@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 RouterMode = Literal["learned", "unconditioned", "random"]
 AttentionKind = Literal["qkvs", "dense", "rolling"]
+PointerEncoding = Literal["fourier", "raw"]
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class AttentionConfig:
     dense_window: int = 32
     retrieval_budget: int = 8
     block_size: int = 2
+    address_stride: int | None = None
     dropout: float = 0.0
     kind: AttentionKind = "qkvs"
     router_mode: RouterMode = "learned"
@@ -25,6 +27,12 @@ class AttentionConfig:
             raise ValueError("dense_window must be positive")
         if self.retrieval_budget < 0:
             raise ValueError("retrieval_budget cannot be negative")
+        if self.block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if self.address_stride is not None and self.address_stride <= 0:
+            raise ValueError("address_stride must be positive")
+        if self.address_stride is not None and self.address_stride > self.block_size:
+            raise ValueError("address_stride cannot exceed window width")
         if self.kind == "qkvs":
             if self.retrieval_budget <= 0:
                 raise ValueError("QKVS requires a positive retrieval budget")
@@ -40,6 +48,10 @@ class AttentionConfig:
         if self.kind != "qkvs":
             return 0
         return self.retrieval_budget // self.block_size
+
+    @property
+    def stride(self) -> int:
+        return self.block_size if self.address_stride is None else self.address_stride
 
     @property
     def selection_budget(self) -> int:
@@ -58,10 +70,12 @@ class ModelConfig:
     dense_window: int = 32
     retrieval_budget: int = 8
     block_size: int = 2
+    address_stride: int | None = None
     dropout: float = 0.0
     attention_kind: AttentionKind = "qkvs"
     router_mode: RouterMode = "learned"
     n_token_types: int = 3
+    pointer_encoding: PointerEncoding = "fourier"
 
     def attention(self) -> AttentionConfig:
         return AttentionConfig(
@@ -70,6 +84,7 @@ class ModelConfig:
             dense_window=self.dense_window,
             retrieval_budget=self.retrieval_budget,
             block_size=self.block_size,
+            address_stride=self.address_stride,
             dropout=self.dropout,
             kind=self.attention_kind,
             router_mode=self.router_mode,

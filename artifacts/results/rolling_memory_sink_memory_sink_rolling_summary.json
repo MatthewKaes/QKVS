@@ -1,0 +1,86 @@
+[
+  {
+    "elapsed_seconds": 16.878406852999888,
+    "evaluations": {
+      "128": {
+        "native": {
+          "answer_accuracy": 0.026041666666666668,
+          "answer_loss": 7.741957008838654,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.009986041074929139,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        }
+      },
+      "256": {
+        "native": {
+          "answer_accuracy": 0.046875,
+          "answer_loss": 9.010365744431814,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        },
+        "oracle": {
+          "answer_accuracy": 0.9479166666666666,
+          "answer_loss": 0.08684208257667099,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        }
+      },
+      "64": {
+        "native": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.004250092742343743,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "route_accuracy_mean": 1.0
+        },
+        "oracle": {
+          "answer_accuracy": 1.0,
+          "answer_loss": 0.004250092742343743,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "route_accuracy_mean": 1.0
+        }
+      }
+    },
+    "name": "memory_sink_rolling"
+  }
+]

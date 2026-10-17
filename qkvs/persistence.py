@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from qkvs.attention import normalized_block_centers
+from qkvs.attention import normalized_window_addresses
 from qkvs.config import ModelConfig
 from qkvs.data import QUERY, RECORD
 from qkvs.model import QKVSDecoder
@@ -52,8 +52,8 @@ def _make_batch(
             history_end = position - config.dense_window + 1
             if target >= history_end:
                 raise AssertionError("persistence target was not historical")
-            pointers[item, position] = normalized_block_centers(
-                target, history_end, config.block_size
+            pointers[item, position] = normalized_window_addresses(
+                target, history_end, config.attention().stride
             )
             token_types[item, position] = QUERY
             retrieval_mask[item, position] = True

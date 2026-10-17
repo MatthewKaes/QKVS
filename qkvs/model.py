@@ -22,18 +22,35 @@ class DecoderCache:
 
 
 class PointerEncoder(nn.Module):
-    def __init__(self, d_model: int, n_frequencies: int = 8) -> None:
+    def __init__(self, d_model: int, mode: str = "fourier", n_frequencies: int = 8) -> None:
         super().__init__()
+        self.d_model = d_model
+        self.mode = mode
         self.n_frequencies = n_frequencies
-        self.projection = nn.Sequential(
-            nn.Linear(2 + 2 * n_frequencies, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model),
-        )
+        if mode == "fourier":
+            self.projection: nn.Module | None = nn.Sequential(
+                nn.Linear(2 + 2 * n_frequencies, d_model),
+                nn.SiLU(),
+                nn.Linear(d_model, d_model),
+            )
+        elif mode == "raw":
+            self.projection = None
+        else:
+            raise ValueError(f"unknown pointer encoding: {mode}")
 
     def forward(self, pointers: Tensor) -> Tensor:
         valid = (pointers >= 0).to(torch.float32)
         addresses = pointers.clamp(0.0, 1.0).to(torch.float32)
+        if self.mode == "raw":
+            encoded = torch.zeros(
+                *pointers.shape,
+                self.d_model,
+                device=pointers.device,
+                dtype=torch.float32,
+            )
+            encoded[..., 0] = addresses * valid
+            encoded[..., 1] = valid
+            return encoded
         frequencies = 2.0 ** torch.arange(
             self.n_frequencies, device=pointers.device, dtype=torch.float32
         )
@@ -47,6 +64,7 @@ class PointerEncoder(nn.Module):
             ),
             dim=-1,
         )
+        assert self.projection is not None
         return self.projection(features) * valid.unsqueeze(-1)
 
 
@@ -96,7 +114,7 @@ class QKVSDecoder(nn.Module):
         self.config = config
         self.value_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.type_embedding = nn.Embedding(config.n_token_types, config.d_model)
-        self.pointer_encoder = PointerEncoder(config.d_model)
+        self.pointer_encoder = PointerEncoder(config.d_model, mode=config.pointer_encoding)
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList(DecoderBlock(config) for _ in range(config.n_layers))
         self.final_norm = nn.RMSNorm(config.d_model)

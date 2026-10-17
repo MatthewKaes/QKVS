@@ -1,0 +1,86 @@
+[
+  {
+    "elapsed_seconds": 16.406851672999892,
+    "evaluations": {
+      "128": {
+        "native": {
+          "answer_accuracy": 0.052083333333333336,
+          "answer_loss": 3.46681547164917,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        },
+        "oracle": {
+          "answer_accuracy": 0.052083333333333336,
+          "answer_loss": 3.4667168060938516,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        }
+      },
+      "256": {
+        "native": {
+          "answer_accuracy": 0.020833333333333332,
+          "answer_loss": 3.475453873475393,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        },
+        "oracle": {
+          "answer_accuracy": 0.020833333333333332,
+          "answer_loss": 3.4757335682710013,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "route_accuracy_mean": 0.0
+        }
+      },
+      "64": {
+        "native": {
+          "answer_accuracy": 0.026041666666666668,
+          "answer_loss": 3.473791778087616,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "route_accuracy_mean": 1.0
+        },
+        "oracle": {
+          "answer_accuracy": 0.026041666666666668,
+          "answer_loss": 3.473791778087616,
+          "examples": 192,
+          "route_accuracy_by_layer": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "route_accuracy_mean": 1.0
+        }
+      }
+    },
+    "name": "memory_sink_no_rolling"
+  }
+]

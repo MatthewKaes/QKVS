@@ -1,0 +1,282 @@
+{
+  "elapsed_seconds": 14.675488930000029,
+  "environment": {
+    "cuda_available": true,
+    "git_revision": "af6dc70a989afdbc833ab733874174d062b86104",
+    "gpu": {
+      "architectures": [
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+        "compute_120"
+      ],
+      "compute_capability": [
+        12,
+        0
+      ],
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12383748096
+    },
+    "nvidia_driver_module": "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  610.57.04  Release Build  (root@)  ",
+    "pid": 26911,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "python": "3.13.15",
+    "torch": "2.9.0+cu130",
+    "torch_cuda": "13.0"
+  },
+  "evaluations": {
+    "128": {
+      "native": {
+        "answer_accuracy": 0.13020833333333334,
+        "answer_loss": 3.7877050836881003,
+        "examples": 192,
+        "route_accuracy_by_layer": [
+          0.16145833333333334,
+          0.010416666666666666,
+          0.046875,
+          0.041666666666666664
+        ],
+        "route_accuracy_mean": 0.06510416666666667
+      },
+      "oracle": {
+        "answer_accuracy": 0.9791666666666666,
+        "answer_loss": 0.15354267921065912,
+        "examples": 192,
+        "route_accuracy_by_layer": [
+          0.16145833333333334,
+          0.010416666666666666,
+          0.005208333333333333,
+          0.005208333333333333
+        ],
+        "route_accuracy_mean": 0.04557291666666667
+      }
+    },
+    "64": {
+      "native": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.0011003187488919746,
+        "examples": 192,
+        "route_accuracy_by_layer": [
+          0.96875,
+          0.9791666666666666,
+          0.9791666666666666,
+          0.9791666666666666
+        ],
+        "route_accuracy_mean": 0.9765625
+      },
+      "oracle": {
+        "answer_accuracy": 1.0,
+        "answer_loss": 0.0010991431966734428,
+        "examples": 192,
+        "route_accuracy_by_layer": [
+          0.96875,
+          0.9895833333333334,
+          0.9947916666666666,
+          0.9947916666666666
+        ],
+        "route_accuracy_mean": 0.9869791666666666
+      }
+    }
+  },
+  "history": [
+    {
+      "answer_loss": 2.7722222805023193,
+      "loss": 6.298174858093262,
+      "route_accuracy_mean": 0.0390625,
+      "route_loss": 17.629762649536133,
+      "step": 1,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.24325212836265564,
+      "loss": 0.5365675687789917,
+      "route_accuracy_mean": 0.546875,
+      "route_loss": 1.4665772914886475,
+      "step": 100,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.039690881967544556,
+      "loss": 0.12750674784183502,
+      "route_accuracy_mean": 0.765625,
+      "route_loss": 0.43907931447029114,
+      "step": 200,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.018724996596574783,
+      "loss": 0.09876197576522827,
+      "route_accuracy_mean": 0.9765625,
+      "route_loss": 0.40018486976623535,
+      "step": 300,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.011024458333849907,
+      "loss": 0.09516919404268265,
+      "route_accuracy_mean": 0.8359375,
+      "route_loss": 0.42072367668151855,
+      "step": 400,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.007172994315624237,
+      "loss": 0.02765791118144989,
+      "route_accuracy_mean": 0.9765625,
+      "route_loss": 0.10242458432912827,
+      "step": 500,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.005551720038056374,
+      "loss": 0.08321327716112137,
+      "route_accuracy_mean": 0.515625,
+      "route_loss": 0.3883077800273895,
+      "step": 600,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.004286270122975111,
+      "loss": 0.02890019305050373,
+      "route_accuracy_mean": 0.984375,
+      "route_loss": 0.12306961417198181,
+      "step": 700,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0032468046993017197,
+      "loss": 0.0499279722571373,
+      "route_accuracy_mean": 0.890625,
+      "route_loss": 0.23340582847595215,
+      "step": 800,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0027826237492263317,
+      "loss": 0.05961906164884567,
+      "route_accuracy_mean": 0.7734375,
+      "route_loss": 0.28418219089508057,
+      "step": 900,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0020709210075438023,
+      "loss": 0.03865347057580948,
+      "route_accuracy_mean": 0.921875,
+      "route_loss": 0.18291273713111877,
+      "step": 1000,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0018136276630684733,
+      "loss": 0.038126762956380844,
+      "route_accuracy_mean": 0.90625,
+      "route_loss": 0.18156567215919495,
+      "step": 1100,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0015642826911062002,
+      "loss": 0.025004971772432327,
+      "route_accuracy_mean": 0.90625,
+      "route_loss": 0.11720344424247742,
+      "step": 1200,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0013476979220286012,
+      "loss": 0.04866941645741463,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.2366085946559906,
+      "step": 1300,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    },
+    {
+      "answer_loss": 0.0010674359509721398,
+      "loss": 0.018556352704763412,
+      "route_accuracy_mean": 1.0,
+      "route_loss": 0.08744458854198456,
+      "step": 1400,
+      "teacher_probability": 1.0,
+      "train_seq_len": 64,
+      "training_hops": 1
+    }
+  ],
+  "model": {
+    "address_stride": 1,
+    "attention_kind": "qkvs",
+    "block_size": 4,
+    "d_model": 96,
+    "dense_window": 1,
+    "dropout": 0.0,
+    "mlp_ratio": 3,
+    "n_heads": 4,
+    "n_layers": 4,
+    "n_token_types": 3,
+    "pointer_encoding": "fourier",
+    "retrieval_budget": 4,
+    "router_mode": "learned",
+    "vocab_size": 16
+  },
+  "name": "span_partial_overlap",
+  "peak_training_cuda_memory_bytes": 74740224,
+  "training": {
+    "answer_vocab_size": 16,
+    "batch_size": 32,
+    "checkpoint_every": 100,
+    "eval_batch_size": 8,
+    "eval_batches": 24,
+    "eval_seq_lens": [
+      64,
+      128
+    ],
+    "hop_curriculum": [],
+    "hops": 1,
+    "learning_rate": 0.0006,
+    "log_every": 100,
+    "name": "span_partial_overlap",
+    "query_only_retrieval": true,
+    "route_loss_space": "blocks",
+    "route_loss_weight": 0.2,
+    "seed": 11702,
+    "semantic_keys": 8,
+    "steps": 1400,
+    "task": "span",
+    "teacher_decay_fraction": 0.8,
+    "teacher_floor": 1.0,
+    "train_seq_len": 64,
+    "train_seq_lengths": [],
+    "weight_decay": 0.01
+  }
+}

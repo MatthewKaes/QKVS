@@ -1,0 +1,10 @@
+{
+  "name": "strict_router_interventions",
+  "seed": 9701,
+  "checkpoint": "artifacts/checkpoints/three_hop_block_loss_teacher_safe.pt",
+  "sequence_lengths": [64, 128, 256],
+  "hops": 3,
+  "oracle_prefix_layers": [0, 1, 2, 3, 4],
+  "batch_size": 16,
+  "batches": 16
+}
