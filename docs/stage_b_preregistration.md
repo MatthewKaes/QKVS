@@ -6,8 +6,9 @@ Stage A is frozen and remains the evidence that one correctly selected historica
 downstream value. Stage B is a separate positive-control investigation on branch
 `research/stage-b-causal-directory`.
 
-This document preregisters the experiment before causal-oracle evaluation or S training. The
-directory training path has not run. Learned admission, eviction, compression, recurrent memory
+The arbiter approved this protocol at revision `6d6c237`. The seed aggregate and Stage A question
+exclusions were locked in the immediately following bounded correction. Causal-oracle evaluation
+and directory training have not run. Learned admission, eviction, compression, recurrent memory
 tokens, multiple retrieved windows, and kernel optimization are explicitly out of scope.
 
 ## Question and hypothesis
@@ -69,8 +70,11 @@ mechanical equivalence bounds are therefore:
 - identical top-1 token.
 
 The actual checkpoint passes these bounds for all three mask modes. Before the oracle dataset runs,
-one deterministic full-length example must also pass an incremental CUDA replay under the same
-semantic conditions. Failure blocks all subsequent work.
+one deterministic full-length example must also pass BF16 incremental CUDA replay for both rolling
+and causal-oracle masks under the same semantic conditions. Its source revision, configuration,
+input tokens, and raw measurements are written atomically. The Gate 0 runner refuses to start unless
+that artifact passed under the exact same source identity and configuration. Failure blocks all
+subsequent work.
 
 ## Historical isolation and data
 

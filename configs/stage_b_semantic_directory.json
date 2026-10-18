@@ -1,6 +1,6 @@
 {
   "stage": "B",
-  "status": "preregistered_not_approved_for_full_run",
+  "status": "approved_execution_gated",
   "model": {
     "id": "Qwen/Qwen2.5-0.5B-Instruct",
     "revision": "7ae557604adf67be50417f59c2c2f167def9a775"
@@ -55,6 +55,18 @@
     "minimum_causal_oracle_vs_rolling_lower_bound_nats": 0.05,
     "bootstrap_samples": 2000,
     "output": "artifacts/results/stage_b_causal_oracle_parity.json"
+  },
+  "full_length_causal_audit": {
+    "example_index": 0,
+    "modes": [
+      "rolling",
+      "causal_oracle"
+    ],
+    "hidden_max_absolute_error": 0.002,
+    "logit_max_absolute_error": 0.0001,
+    "minimum_last_hidden_cosine": 0.999999,
+    "require_top1_match": true,
+    "output": "artifacts/results/stage_b_full_length_causal_equivalence.json"
   },
   "directory": {
     "slots": 8,

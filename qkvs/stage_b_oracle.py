@@ -37,6 +37,7 @@ def _source_identity(config_path: str | Path) -> dict[str, Any]:
     exclusion = root / specification["datasets"]["evaluation"]["excluded_question_ids_path"]
     files = [
         root / "qkvs" / "causal_reference.py",
+        root / "qkvs" / "stage_b_full_causal_audit.py",
         root / "qkvs" / "stage_b_oracle.py",
         root / "qkvs" / "utility_gate.py",
         root / "qkvs" / "runtime.py",
@@ -67,6 +68,20 @@ def _source_identity(config_path: str | Path) -> dict[str, Any]:
         "tracked_files_clean": tracked_clean,
         "files": {str(path.relative_to(root)): _sha256(path) for path in files},
     }
+
+
+def _validate_full_audit(
+    full_audit: dict[str, Any],
+    *,
+    specification: dict[str, Any],
+    identity: dict[str, Any],
+) -> None:
+    if not full_audit.get("passed"):
+        raise ValueError("full-length causal equivalence failed")
+    if full_audit.get("source_identity") != identity:
+        raise ValueError("full-length audit source identity does not match oracle-parity source")
+    if full_audit.get("config") != specification:
+        raise ValueError("full-length audit configuration does not match oracle parity")
 
 
 def _score(
@@ -271,6 +286,11 @@ def main() -> None:
     identity = _source_identity(args.config)
     if not identity["tracked_files_clean"]:
         raise ValueError("oracle-parity source files must be committed before measurement")
+    full_audit_path = Path(specification["full_length_causal_audit"]["output"])
+    if not full_audit_path.exists():
+        raise ValueError("full-length causal equivalence must pass before oracle parity")
+    full_audit = load_json(full_audit_path)
+    _validate_full_audit(full_audit, specification=specification, identity=identity)
     expected = {
         "config": specification,
         "dataset_sha256": _sha256(Path(dataset["cache_path"])),

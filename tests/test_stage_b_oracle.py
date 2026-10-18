@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from qkvs.stage_b_oracle import summarize
+import pytest
+
+from qkvs.stage_b_oracle import _validate_full_audit, summarize
 
 
 def _example(causal_loss: float) -> dict:
@@ -49,3 +51,16 @@ def test_causal_oracle_gate_stops_before_s_training_on_no_utility() -> None:
     )
     assert not summary["gate"]["passed"]
     assert summary["gate"]["decision"] == "stop_before_s_training"
+
+
+def test_oracle_gate_requires_matching_successful_full_length_audit() -> None:
+    specification = {"stage": "B"}
+    identity = {"git_revision": "approved"}
+    audit = {"passed": True, "config": specification, "source_identity": identity}
+    _validate_full_audit(audit, specification=specification, identity=identity)
+    with pytest.raises(ValueError, match="source identity"):
+        _validate_full_audit(
+            {**audit, "source_identity": {"git_revision": "different"}},
+            specification=specification,
+            identity=identity,
+        )

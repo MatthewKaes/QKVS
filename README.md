@@ -149,5 +149,24 @@ or deployment-compatible routing.
 
 Stage B is preregistered separately in
 [docs/stage_b_preregistration.md](docs/stage_b_preregistration.md). Its strict single-pass causal
-reference and actual-checkpoint incremental audit are implemented, but causal-oracle evaluation and
-S training remain blocked pending arbiter review. No directory model has been trained.
+reference and actual-checkpoint incremental audit are implemented and the protocol is approved. Run
+the full-length CUDA equivalence gate first:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m qkvs.stage_b_full_causal_audit \
+  --config configs/stage_b_semantic_directory.json \
+  --device cuda
+```
+
+Only if it passes, run the causal-oracle parity gate:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m qkvs.stage_b_oracle \
+  --config configs/stage_b_semantic_directory.json \
+  --device cuda \
+  --max-examples-this-run 1
+```
+
+S training remains blocked until Gate 0 passes. No directory model has been trained.
