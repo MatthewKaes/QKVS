@@ -1,0 +1,127 @@
+{
+  "protocol": "stage_b_numerical_validation_replacement_v1",
+  "status": "proposed_for_independent_review_not_authorized",
+  "scope": "numerical_and_causal_validation_only",
+  "stage_b_status": "blocked",
+  "calibration_evidence": {
+    "path": "artifacts/results/stage_b_numerical_diagnostic_v2.json",
+    "sha256": "4544aea20122069c2d6e194ea33a2cf86bd345ae026078b0220a3c42b1223164",
+    "source_revision": "a30d0a18f1352837412f35ededc954e551ec53ac",
+    "example_index": 0,
+    "use": "threshold_calibration_only",
+    "excluded_from_validation": true,
+    "invalid_measurement": "layer_zero_batch_vs_cache omitted layer-0 input normalization and must not be interpreted"
+  },
+  "validation_examples": {
+    "indices": [
+      1,
+      2,
+      4,
+      6
+    ],
+    "selection_rule": "first post-calibration examples giving all four answer labels and four distinct target positions",
+    "gold_labels": [
+      3,
+      2,
+      1,
+      0
+    ],
+    "target_positions": [
+      6,
+      0,
+      5,
+      4
+    ],
+    "no_threshold_tuning_after_results": true
+  },
+  "causal_semantics": {
+    "conditions": [
+      "bf16_sdpa_default",
+      "fp32_sdpa_math"
+    ],
+    "require_no_future_visible_mask_cells": true,
+    "require_oracle_difference_exactly_final_retrieval_row": true,
+    "require_all_nonretrieval_layers_equal_rolling": true,
+    "future_counterfactual_cutoffs": [
+      "global_prefix_end_minus_one",
+      "selected_block_end_minus_one",
+      "history_midpoint",
+      "query_start_minus_one"
+    ],
+    "require_future_prefix_exact_match_to_same_shape_reference": true,
+    "require_all_cache_layer_lengths_equal_sequence_length": true
+  },
+  "fp32_mechanical_validation": {
+    "conditions": [
+      "fp32_sdpa_math",
+      "fp32_eager"
+    ],
+    "modes": [
+      "rolling",
+      "causal_oracle"
+    ],
+    "rolling_all_token_layer_trace": true,
+    "thresholds": {
+      "maximum_all_token_layer_hidden_error": 0.005,
+      "maximum_final_hidden_error": 0.001,
+      "minimum_final_hidden_cosine": 0.999999,
+      "maximum_full_vocabulary_logit_error": 0.0005,
+      "maximum_four_label_loss_error_nats": 0.0001,
+      "maximum_label_log_probability_error": 0.0001,
+      "maximum_four_label_total_variation": 0.0001,
+      "maximum_utility_path_error_nats": 0.0002,
+      "maximum_uncached_prefix_vs_cached_hidden_error": 0.001,
+      "require_four_label_prediction_match": true,
+      "require_full_vocabulary_top1_match": true,
+      "require_all_finite": true
+    },
+    "backend_agreement": {
+      "maximum_four_label_loss_difference_nats": 0.0001,
+      "maximum_utility_difference_nats": 0.0002
+    }
+  },
+  "bf16_task_sensitivity": {
+    "condition": "bf16_sdpa_default",
+    "modes": [
+      "rolling",
+      "causal_oracle"
+    ],
+    "require_incremental_repeat_exact": true,
+    "require_batch_incremental_four_label_prediction_match": true,
+    "report_without_equivalence_threshold": [
+      "gold_label_loss_delta_nats",
+      "label_log_probability_max_error",
+      "four_label_total_variation",
+      "causal_oracle_utility_delta_nats"
+    ],
+    "reason": "Calibration showed BF16 loss and utility differences large enough to affect the frozen Gate 0 margin, so a post-hoc scalar tolerance cannot establish decision equivalence."
+  },
+  "conditional_gate_0_amendment": {
+    "authorized_by_this_proposal": false,
+    "require_independent_approval": true,
+    "if_approved": {
+      "examples": 24,
+      "evaluate_both_paths": [
+        "bf16_batched",
+        "bf16_incremental"
+      ],
+      "require_each_path_independently_pass_frozen_accuracy_gate": true,
+      "require_each_path_independently_pass_frozen_paired_utility_lower_bound": true,
+      "do_not_average_or_select_between_paths": true,
+      "preserve_per_example_paired_losses_for_both_paths": true
+    }
+  },
+  "stop_conditions": [
+    "any causal semantic invariant fails",
+    "any FP32 mechanical or backend threshold fails",
+    "any BF16 four-label prediction differs between batch and incremental",
+    "either BF16 path fails Gate 0 if the dual-path amendment is independently approved"
+  ],
+  "prohibited": [
+    "retroactively marking the original full-length gate passed",
+    "running Gate 0 before independent approval",
+    "implementing or training S",
+    "changing directory capacity or retrieval architecture",
+    "tuning replacement thresholds after validation results"
+  ]
+}

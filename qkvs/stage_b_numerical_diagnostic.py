@@ -447,6 +447,7 @@ def _sequence_projection_summary(
 def _batched_layer_zero_kv(model: nn.Module, input_ids: Tensor) -> tuple[Tensor, Tensor]:
     decoder = model.model
     hidden_states = decoder.embed_tokens(input_ids)
+    hidden_states = decoder.layers[0].input_layernorm(hidden_states)
     positions = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
     position_embeddings = decoder.rotary_emb(hidden_states, positions)
     attention = decoder.layers[0].self_attn

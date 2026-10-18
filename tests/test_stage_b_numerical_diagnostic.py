@@ -13,6 +13,7 @@ from qkvs.causal_reference import (
     rolling_mask_plan,
 )
 from qkvs.stage_b_numerical_diagnostic import (
+    _batched_layer_zero_kv,
     _forward_trace,
     _incremental_trace,
     _mask_structure,
@@ -62,6 +63,24 @@ def test_layer_trace_preserves_reference_execution() -> None:
     assert batch_trace.shape == (5, 1, 24, 32)
     assert cache["first_length_mismatch"] is None
     assert cache["all_layers_have_full_length"]
+
+
+def test_layer_zero_cache_reference_includes_attention_input_normalization() -> None:
+    model = _model()
+    input_ids = torch.randint(0, model.config.vocab_size, (1, 24))
+    plan = rolling_mask_plan(
+        length=24,
+        n_layers=model.config.num_hidden_layers,
+        rolling_tokens=8,
+        global_prefix_end=2,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    with torch.inference_mode():
+        _, cache, _, _ = _incremental_trace(model, input_ids, plan.masks)
+        batched_key, batched_value = _batched_layer_zero_kv(model, input_ids)
+    torch.testing.assert_close(batched_key, cache.layers[0].keys, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(batched_value, cache.layers[0].values, atol=1e-6, rtol=1e-6)
 
 
 def test_trace_summary_locates_earliest_token_then_layer() -> None:

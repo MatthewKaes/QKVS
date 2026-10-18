@@ -89,3 +89,57 @@ HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
   --device cuda \
   --max-conditions-this-run 1
 ```
+
+## Numerical diagnostic result
+
+V2 completed all four conditions at revision `a30d0a1`. The raw artifact is
+[`stage_b_numerical_diagnostic_v2.json`](../artifacts/results/stage_b_numerical_diagnostic_v2.json),
+SHA-256 `4544aea20122069c2d6e194ea33a2cf86bd345ae026078b0220a3c42b1223164`.
+
+| Maximum observed discrepancy | BF16 | FP32 |
+|---|---:|---:|
+| Any rolling token/layer hidden value | 15.75 | 0.001911 |
+| Final hidden value | 2.5 | 0.000282 |
+| Full-vocabulary logit | 0.53125 | 0.0000858 |
+| Four-label gold-loss delta | 0.1236 nat | 0.0000119 nat |
+| Causal-oracle utility-path delta | 0.0760 nat | 0.00000244 nat |
+
+Embeddings match exactly. In both BF16 conditions, divergence exceeds `0.01` at layer 0, token 0
+and exceeds `1.0` by token 1 after subsequent layers. Forcing SDPA math does not remove it. FP32
+math and eager both remain below `0.002` across the complete rolling token/layer trace and agree on
+four-label loss within `8.6e-6` nat. This localizes the large discrepancy to low-precision,
+shape-dependent execution rather than a particular SDPA backend.
+
+Mask structure is exact in all four conditions: no future cell is visible, the causal oracle adds
+exactly 128 cells at the final layer-1 retrieval row, and every other layer matches rolling. Four
+same-shape future-token counterfactuals per condition leave all earlier states bitwise unchanged.
+Every cache layer reaches exactly 7,263 entries. FP32 uncached-prefix versus cached-incremental
+hidden errors remain below `0.00051`; BF16 uncached-prefix versus full-batch errors reach 2.5 even
+without cache reuse. These checks provide no evidence of causal-mask or cache-length corruption.
+
+The raw `layer_zero_batch_vs_cache` content comparison is invalid: its batched reference omitted
+the layer-0 attention input normalization. It is excluded from the diagnosis, and the diagnostic
+helper is corrected after the result-bearing revision with a CPU regression test. The preserved raw
+artifact is not modified.
+
+BF16 matching top-1 labels are not enough to restore the original equivalence gate. Its four-label
+loss sensitivity is larger than the frozen 0.05-nat Gate 0 utility margin and changes the sign of
+single-example causal-oracle utility between paths/backends. Stage B therefore remains blocked.
+
+## Replacement numerical-validation proposal
+
+The evidence justifies replacing one mixed numerical gate with separate causal, FP32 mechanical,
+and BF16 decision-robustness checks. The complete review-only proposal is
+[`stage_b_numerical_validation_replacement_proposal.json`](../configs/stage_b_numerical_validation_replacement_proposal.json).
+It is **not authorized for execution**.
+
+The proposal excludes calibration example 0 and preregisters examples 1, 2, 4, and 6, which are the
+first post-calibration examples spanning all four answer labels and four distinct target positions.
+It requires exact mask/future invariants, full-length FP32 batch/incremental validation under math
+SDPA and eager attention, and explicit BF16 four-label sensitivity reporting. Because no honest
+post-hoc BF16 tolerance can show that a 0.076-nat utility change is irrelevant to a 0.05-nat gate,
+any later Gate 0 would have to pass independently under both batched and incremental BF16 paths.
+The paths may not be averaged or selected after inspection.
+
+Independent review is required before executing this replacement or Gate 0. `S`, directory, and
+architectural work remain prohibited.
