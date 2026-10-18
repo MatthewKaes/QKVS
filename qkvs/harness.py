@@ -1267,10 +1267,16 @@ def print_summary(result: dict[str, Any]) -> None:
         )
     for name, comparison in result["summary"].get("paired_utility", {}).items():
         interval = comparison["paired_bootstrap_95_interval_nats"]
-        print(
-            f"{name}: paired utility={comparison['mean_utility_nats']:.6f} nat "
-            f"95% interval=[{interval[0]:.6f}, {interval[1]:.6f}]"
-        )
+        if interval is None:
+            print(
+                f"{name}: paired utility={comparison['mean_utility_nats']:.6f} nat "
+                f"({comparison['statistical_interpretation']})"
+            )
+        else:
+            print(
+                f"{name}: paired utility={comparison['mean_utility_nats']:.6f} nat "
+                f"95% interval=[{interval[0]:.6f}, {interval[1]:.6f}]"
+            )
 
 
 def dump_json(value: Any) -> None:

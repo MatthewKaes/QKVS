@@ -18,8 +18,8 @@ def paired_bootstrap_interval(
     samples: int,
     seed: int,
 ) -> list[float]:
-    if not differences:
-        return [0.0, 0.0]
+    if len(differences) < 2:
+        raise ValueError("paired stream bootstrap requires at least two independent streams")
     if samples <= 0:
         raise ValueError("bootstrap sample count must be positive")
     generator = random.Random(seed)
@@ -30,6 +30,35 @@ def paired_bootstrap_interval(
     lower = estimates[int(0.025 * (samples - 1))]
     upper = estimates[int(0.975 * (samples - 1))]
     return [lower, upper]
+
+
+def _paired_comparison_summary(
+    baseline_losses: dict[str, float],
+    condition_losses: dict[str, float],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    common = sorted(set(baseline_losses) & set(condition_losses))
+    differences = [baseline_losses[key] - condition_losses[key] for key in common]
+    paired_streams = len(common)
+    if paired_streams >= 2:
+        interval = paired_bootstrap_interval(
+            differences,
+            samples=bootstrap_samples,
+            seed=seed,
+        )
+        interpretation = "paired_stream_bootstrap"
+    else:
+        interval = None
+        interpretation = "descriptive_single_stream" if paired_streams == 1 else "no_paired_streams"
+    return {
+        "paired_streams": paired_streams,
+        "mean_utility_nats": _mean(differences),
+        "paired_bootstrap_95_interval_nats": interval,
+        "statistical_interpretation": interpretation,
+        "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
+    }
 
 
 def _windows(access: dict[str, Any]) -> list[tuple[int, int]]:
@@ -408,18 +437,12 @@ def summarize_measurements(
         for condition, losses in sorted(losses_by_condition.items()):
             if condition == baseline:
                 continue
-            common = sorted(set(baseline_losses) & set(losses))
-            differences = [baseline_losses[key] - losses[key] for key in common]
-            paired[condition] = {
-                "paired_streams": len(common),
-                "mean_utility_nats": _mean(differences),
-                "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
-                    differences,
-                    samples=bootstrap_samples,
-                    seed=seed,
-                ),
-                "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
-            }
+            paired[condition] = _paired_comparison_summary(
+                baseline_losses,
+                losses,
+                bootstrap_samples=bootstrap_samples,
+                seed=seed,
+            )
         return paired
 
     paired = comparisons(sequence_losses)
@@ -444,19 +467,15 @@ def summarize_measurements(
         ) -> None:
             comparison_baseline = losses_by_condition[comparison["baseline"]]
             comparison_condition = losses_by_condition[comparison["condition"]]
-            common = sorted(set(comparison_baseline) & set(comparison_condition))
-            differences = [comparison_baseline[key] - comparison_condition[key] for key in common]
             destination[comparison["name"]] = {
                 "baseline": comparison["baseline"],
                 "condition": comparison["condition"],
-                "paired_streams": len(common),
-                "mean_utility_nats": _mean(differences),
-                "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
-                    differences,
-                    samples=bootstrap_samples,
+                **_paired_comparison_summary(
+                    comparison_baseline,
+                    comparison_condition,
+                    bootstrap_samples=bootstrap_samples,
                     seed=seed,
                 ),
-                "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
             }
 
         add_comparison(paired, sequence_losses)

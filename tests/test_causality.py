@@ -698,8 +698,8 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     )
 
 
-def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) -> None:
-    from qkvs.harness import run_experiment, validate_config
+def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, capsys) -> None:
+    from qkvs.harness import print_summary, run_experiment, validate_config
 
     class ByteTokenizer:
         init_kwargs = {"_commit_hash": "1" * 40}
@@ -910,6 +910,18 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
     assert "untrained_s" in first["summary"]["paired_utility"]
     assert "heatfield" in first["summary"]["paired_utility"]
     assert "trained_vs_untrained" in first["summary"]["paired_utility"]
+    descriptive = first["summary"]["paired_utility"]["trained_vs_untrained"]
+    assert descriptive["paired_streams"] == 1
+    assert descriptive["paired_bootstrap_95_interval_nats"] is None
+    assert descriptive["statistical_interpretation"] == "descriptive_single_stream"
+    assert set(descriptive["per_stream_utility_nats"]) == {"evaluation"}
+    assert all(
+        first["summary"]["post_transition_region_paired_utility"][region]["trained_vs_untrained"][
+            "statistical_interpretation"
+        ]
+        == "descriptive_single_stream"
+        for region in ("early", "middle", "late")
+    )
     assert all(
         "historical_budget_utilization" in condition["retrieval"]
         for condition in first["summary"]["conditions"].values()
@@ -919,6 +931,8 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         is None
     )
     assert first["summary"]["conditions"]["heatfield"]["post_transition"]["scored_tokens"]
+    print_summary(first)
+    assert "(descriptive_single_stream)" in capsys.readouterr().out
 
     _, resumed = run_experiment(
         config,

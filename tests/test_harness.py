@@ -47,7 +47,7 @@ def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
     assert "[  3 / 12 ]" in rendered
 
 
-def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> None:
+def test_checked_in_configurations_are_valid_and_pilot_is_approved() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     learning_study = validate_config_file("configs/heatfield_learning_study.json")
@@ -66,11 +66,11 @@ def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> Non
     )
     assert learning_study == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "heatfield_long_context_learning_study",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
 
 

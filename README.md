@@ -172,8 +172,8 @@ synthetic transformer. The same reader interface also supports frozen Hugging Fa
 `Qwen2ForCausalLM` full-attention checkpoints, including grouped-query attention and the
 checkpoint's positional and normalization modules. A pretrained run additionally requires a
 pinned model and tokenizer revision, an explicit execution dtype, a SHA-256-pinned UTF-8 source,
-and fixed token boundaries. The checked-in long-context study is a draft protocol only and remains
-non-runnable until arbiter authorization.
+and fixed token boundaries. The checked-in long-context study is approved for one exploratory,
+human-initiated GPU pilot; this authorization does not extend to follow-up runs or protocol changes.
 
 The Qwen2 adapter writes each layer's position-rotated K/V once, then gathers only the actual
 historical occurrences and mandatory rolling window used by that layer's ordinary Q/K/V
@@ -271,14 +271,16 @@ python -m qkvs run \
   --device cuda
 ```
 
-The study configuration is complete but remains `draft_not_authorized`; the command refuses to run
-until an independent arbiter changes that status. It uses independent 16,384-token training and
-held-out spans from a SHA-256-pinned Project Gutenberg source, with `W=4096`, `T=6144`, `J=64`,
-spatial resolution 8, and `R=512`. A missing local source is fetched atomically from its pinned HTTPS
-origin and rejected unless byte count and digest match. Conditions are rolling-only, fixed offsets,
-identically initialized untrained S, trained S, and full QKV. `heatfield_initial.json` remains an
-incomplete earlier design draft. Codex must not run CUDA workloads. Configuration validation,
-status, and summarization do not import the model runtime or initialize CUDA.
+The study configuration is `approved` for one human-initiated exploratory learning/feasibility
+pilot. It is not a conclusive convergence or generalization test. It uses independent 16,384-token
+training and held-out spans from a SHA-256-pinned Project Gutenberg source, with `W=4096`, `T=6144`,
+`J=64`, spatial resolution 8, and `R=512`. A missing local source is fetched atomically from its
+pinned HTTPS origin and rejected unless byte count and digest match. Conditions are rolling-only,
+fixed offsets, identically initialized untrained S, trained S, and full QKV. Stop on nonfinite
+losses, identity mismatches, or resource exhaustion; preserve resumable artifacts rather than
+changing the frozen protocol. `heatfield_initial.json` remains an incomplete earlier design draft.
+Codex must not run CUDA workloads. Configuration validation, status, and summarization do not
+import the model runtime or initialize CUDA.
 
 ## Configuration and artifacts
 
@@ -289,12 +291,14 @@ Unsupported combinations fail validation.
 
 Each run writes `artifacts/results/<run-id>/result.json`. The artifact contains source and config
 hashes, raw per-token losses, compact exact K/V access ranges, overlap and coverage measurements,
-paired utility, deterministic bootstrap uncertainty, progress, and completion state. Common-prefix
-and post-transition quality are summarized separately, including early/middle/late continuation
-loss. Wall time covers snapshot restoration plus continuation; accelerator peak memory is recorded
-when available. These are implementation measurements, not theoretical speedup claims. Writes are
-atomic; rerunning the same command resumes without duplicating completed condition/stream pairs.
+paired utility, deterministic bootstrap uncertainty where at least two independent streams exist,
+progress, and completion state. A one-stream comparison retains its raw paired loss but is labeled
+descriptive and has no bootstrap confidence interval. Common-prefix and post-transition quality are
+summarized separately, including early/middle/late continuation loss. Wall time covers snapshot
+restoration plus continuation; accelerator peak memory is recorded when available. These are
+implementation measurements, not theoretical speedup claims. Writes are atomic; rerunning the same
+command resumes without duplicating completed condition/stream pairs.
 
-`configs/heatfield_learning_study.json` is the sole prepared learning study and remains unapproved.
-Passing CPU smoke tests or pretrained adapter diagnostics does not authorize it or establish that
-learned S improves hard next-token prediction.
+`configs/heatfield_learning_study.json` is the sole approved exploratory learning pilot. Passing
+CPU smoke tests, completing this pilot, or observing a favorable region does not establish that
+learned S converges, generalizes, or improves hard next-token prediction.

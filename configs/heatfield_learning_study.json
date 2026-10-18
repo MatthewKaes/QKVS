@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "heatfield_long_context_learning_study",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "heatfield-long-context-learning-study",
     "seed": 20261018
