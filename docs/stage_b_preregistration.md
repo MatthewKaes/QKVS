@@ -98,6 +98,13 @@ deterministically split 80/20 by seed `20265001`; validation uses only held-out 
 The frozen sizes are 512 training, 128 validation, and 128 evaluation examples. No representation,
 normalization statistic, checkpoint choice, or hyperparameter may use evaluation examples.
 
+The exact 24 Stage A V3 question IDs are frozen in
+[`stage_b_excluded_question_ids.json`](../configs/stage_b_excluded_question_ids.json), together with
+the source artifact hash. They are removed from the SQuAD development pool before Stage B held-out
+examples are sampled. Gate 0 deliberately reuses those questions only to measure causal-oracle
+parity with Stage A; they cannot appear in selector training, validation, model selection, or the
+Stage B held-out learned-selector evaluation.
+
 ## Gate 0: causally aligned oracle parity
 
 This gate runs before S training on the same 24 examples used by Stage A V3:
@@ -203,6 +210,15 @@ article-disjoint evaluation split:
 Results are reported independently for all three training seeds. The primary gate uses the pooled
 causal representation. Closing-token and nondeployable-teacher results cannot rescue a failed
 primary condition.
+
+The primary three-seed aggregate is formed before any gate calculation. For every held-out example
+and condition, answer loss, correctness, address correctness, and counterfactual indicators are
+first averaged across the three fixed seeds. Paired condition differences are then formed from
+those per-example seed means. The 2,000-sample paired bootstrap resamples examples, carrying each
+example's complete three-seed tuple together. Seeds are not treated as independent examples, no
+seed is selected after evaluation, and all individual-seed measurements remain in the raw result.
+Recovered utility uses aggregate mean losses computed from these per-example seed means; it never
+averages seed-level or example-level ratios.
 
 If the causal oracle passes but learned S fails, diagnosis proceeds in order: closing versus pooled
 causal representation quality, semantic selection loss/accuracy, then optimizer telemetry. Model

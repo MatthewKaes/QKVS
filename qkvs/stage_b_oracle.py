@@ -33,6 +33,8 @@ from qkvs.utility_gate import (
 def _source_identity(config_path: str | Path) -> dict[str, Any]:
     root = Path(__file__).resolve().parent.parent
     config = Path(config_path).resolve()
+    specification = load_json(config)
+    exclusion = root / specification["datasets"]["evaluation"]["excluded_question_ids_path"]
     files = [
         root / "qkvs" / "causal_reference.py",
         root / "qkvs" / "stage_b_oracle.py",
@@ -41,6 +43,7 @@ def _source_identity(config_path: str | Path) -> dict[str, Any]:
         root / "pyproject.toml",
         root / "uv.lock",
         config,
+        exclusion,
     ]
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"],

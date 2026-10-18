@@ -16,7 +16,8 @@
       "name": "SQuAD dev v1.1",
       "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json",
       "sha256": "95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9",
-      "cache_path": "artifacts/cache/squad/dev-v1.1.json"
+      "cache_path": "artifacts/cache/squad/dev-v1.1.json",
+      "excluded_question_ids_path": "configs/stage_b_excluded_question_ids.json"
     },
     "article_split_seed": 20265001,
     "validation_article_fraction": 0.2,
@@ -80,6 +81,14 @@
       20267003
     ],
     "checkpoint_selection": "lowest_validation_cross_entropy"
+  },
+  "seed_aggregation": {
+    "primary": "per_example_mean_across_three_seeds",
+    "uncertainty": "paired_bootstrap_over_examples",
+    "bootstrap_samples": 2000,
+    "preserve_individual_seed_results": true,
+    "treat_seeds_as_independent_examples": false,
+    "select_best_seed": false
   },
   "controls": [
     "query_only_position_keys",
