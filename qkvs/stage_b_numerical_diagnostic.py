@@ -190,7 +190,9 @@ def _incremental_trace(
         device=input_ids.device,
     )
     first_length_mismatch = None
+    supplied_positions: list[int] = []
     for position in range(input_ids.shape[1]):
+        supplied_positions.append(position)
         token_masks = tuple(
             mask[:, :, position : position + 1, : position + 1] for mask in layer_masks
         )
@@ -224,6 +226,12 @@ def _incremental_trace(
             "all_layers_have_full_length": all(
                 length == input_ids.shape[1] for length in layer_lengths
             ),
+            "supplied_cache_positions": {
+                "count": len(supplied_positions),
+                "first": supplied_positions[0] if supplied_positions else None,
+                "last": supplied_positions[-1] if supplied_positions else None,
+                "contiguous_zero_based": supplied_positions == list(range(input_ids.shape[1])),
+            },
         },
     )
 

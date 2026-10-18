@@ -143,3 +143,22 @@ The paths may not be averaged or selected after inspection.
 
 Independent review is required before executing this replacement or Gate 0. `S`, directory, and
 architectural work remain prohibited.
+
+## Replacement numerical-validation authorization
+
+On 2026-10-17, the independent arbiter approved
+`stage_b_numerical_validation_replacement_v1` at repository revision
+`848ed3e1fbc39c07bc0d81136defc2f1702e7d2f` for implementation and execution of the replacement
+numerical validation only. The frozen validation examples, causal invariants, FP32 thresholds,
+BF16 sensitivity measurements, and independent execution paths remain unchanged.
+
+The approved validation must also compare corrected layer-0 batched and cached K/V projections on
+the actual Qwen checkpoint at full context length under each execution configuration. It verifies
+cache order, positions, shapes, and projection semantics and reports numerical differences without
+introducing a post-hoc tolerance. The original failed audit and diagnostic artifacts remain
+immutable. Any frozen validation failure stops execution without parameter changes or a rescue
+rerun.
+
+This authorization does not approve Gate 0, causal-oracle dataset evaluation, S training,
+directory-capacity changes, or heat-field implementation. A completed replacement validation must
+return its raw measurements, source revision, and observed outcome for a new independent decision.

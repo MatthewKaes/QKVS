@@ -1,6 +1,6 @@
 {
   "protocol": "stage_b_numerical_validation_replacement_v1",
-  "status": "proposed_for_independent_review_not_authorized",
+  "status": "approved_for_numerical_validation_only",
   "scope": "numerical_and_causal_validation_only",
   "stage_b_status": "blocked",
   "calibration_evidence": {
