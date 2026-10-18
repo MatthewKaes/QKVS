@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "experiment": "heatfield_learning_study",
+  "experiment": "heatfield_long_context_learning_study",
   "status": "draft_not_authorized",
   "run": {
-    "id": "heatfield-learning-study",
+    "id": "heatfield-long-context-learning-study",
     "seed": 20261018
   },
   "model": {
@@ -16,54 +16,44 @@
   "data": {
     "kind": "tokenized_text",
     "source": {
-      "path": "../data/heatfield_learning_study.txt",
-      "sha256": "36428d3ffbc0c2e091a5fb5d31640c4b850cdc2ccdec4ac03fd160fdceb1c4b1"
+      "path": "../data/project_gutenberg_1661.txt",
+      "url": "https://www.gutenberg.org/cache/epub/1661/pg1661.txt",
+      "bytes": 607606,
+      "sha256": "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0"
     },
     "boundaries": [
       {
-        "id": "train-000",
+        "id": "train-sherlock-000",
         "split": "train",
         "start_token": 0,
-        "stop_token": 96
+        "stop_token": 16384
       },
       {
-        "id": "train-001",
-        "split": "train",
-        "start_token": 96,
-        "stop_token": 192
-      },
-      {
-        "id": "evaluation-000",
+        "id": "evaluation-sherlock-000",
         "split": "evaluation",
-        "start_token": 684,
-        "stop_token": 780
-      },
-      {
-        "id": "evaluation-001",
-        "split": "evaluation",
-        "start_token": 780,
-        "stop_token": 876
+        "start_token": 32768,
+        "stop_token": 49152
       }
     ]
   },
   "attention": {
-    "rolling_tokens": 16,
-    "activation_tokens": 24,
-    "historical_token_budget": 16
+    "rolling_tokens": 4096,
+    "activation_tokens": 6144,
+    "historical_token_budget": 512
   },
   "selection": {
-    "proposal_count": 4,
-    "window_width": 4,
+    "proposal_count": 64,
+    "window_width": 8,
     "gamma": {
       "mode": "fixed",
-      "value": 0.75
+      "value": 0.85
     },
     "beta": {
       "mode": "fixed",
-      "value": 1.0
+      "value": 1.25
     },
     "learned": {
-      "latent_size": 128,
+      "latent_size": 256,
       "minimum_spread": 0.5,
       "maximum_spread": 2.0,
       "gate_threshold": 0.4
@@ -77,10 +67,14 @@
         "name": "fixed_offsets",
         "policy": "fixed_offsets",
         "offsets": [
-          24,
-          40,
-          56,
-          72
+          4096, 4224, 4352, 4480, 4608, 4736, 4864, 4992,
+          5120, 5248, 5376, 5504, 5632, 5760, 5888, 6016,
+          6144, 6272, 6400, 6528, 6656, 6784, 6912, 7040,
+          7168, 7296, 7424, 7552, 7680, 7808, 7936, 8064,
+          8192, 8320, 8448, 8576, 8704, 8832, 8960, 9088,
+          9216, 9344, 9472, 9600, 9728, 9856, 9984, 10112,
+          10240, 10368, 10496, 10624, 10752, 10880, 11008, 11136,
+          11264, 11392, 11520, 11648, 11776, 11904, 12032, 12160
         ]
       },
       {
@@ -90,33 +84,46 @@
       {
         "name": "trained_s",
         "policy": "heatfield"
+      },
+      {
+        "name": "full_qkv",
+        "policy": "full_qkv"
       }
     ]
   },
   "training": {
     "enabled": true,
-    "steps": 48,
+    "steps": 40,
     "learning_rate": 0.0003,
     "coverage_weight": 1.0,
     "utility_weight": 1.0,
-    "checkpoint_interval": 8,
-    "position_schedule": "cyclic",
+    "checkpoint_interval": 4,
+    "rollout_tokens": 256,
+    "targets_per_rollout": 3,
+    "position_schedule": "streaming_stratified",
     "layer_schedule": "round_robin"
   },
   "evaluation": {
     "metric": "next_token_cross_entropy",
     "paired_conditions": true,
+    "proposal_trace_interval": 64,
     "baseline": "rolling",
     "comparisons": [
       {
         "name": "trained_s_vs_untrained_s",
         "baseline": "untrained_s",
         "condition": "trained_s"
+      },
+      {
+        "name": "trained_s_vs_full_qkv",
+        "baseline": "full_qkv",
+        "condition": "trained_s"
       }
     ],
     "bootstrap_samples": 500
   },
   "execution": {
+    "prefill_chunk_tokens": 128,
     "allowed_devices": [
       "cuda"
     ],

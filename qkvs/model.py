@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,20 +40,31 @@ class DensePrefillSnapshot:
     identity: dict[str, Any]
     prefix_tokens: tuple[int, ...]
     next_position: int
-    key_cache: tuple[tuple[Tensor, ...], ...]
-    value_cache: tuple[tuple[Tensor, ...], ...]
+    key_cache: tuple[Tensor, ...]
+    value_cache: tuple[Tensor, ...]
     dense_losses: tuple[float, ...]
     dense_predictions: tuple[int, ...]
     boundary_logits: Tensor
+
+
+@dataclass
+class HeatfieldRolloutState:
+    """Mutable causal continuation owned by one training stream."""
+
+    stream_id: str
+    next_position: int
+    key_cache: list[_LayerKVCache]
+    value_cache: list[_LayerKVCache]
+    policy_states: list[PolicyState]
 
 
 @dataclass(frozen=True)
 class AccessRecord:
     token_position: int
     layer: int
-    rolling_indices: tuple[int, ...]
-    historical_indices: tuple[int, ...]
-    actual_indices: tuple[int, ...]
+    rolling_range: tuple[int, int]
+    historical_windows_encoded: bytes
+    attention_mode: str
     historical_occurrences: int
     historical_unique_tokens: int
     duplicate_historical_occurrences: int
@@ -67,8 +79,47 @@ class AccessRecord:
     gathered_key_occurrences: int
     gathered_value_occurrences: int
 
+    @property
+    def rolling_indices(self) -> tuple[int, ...]:
+        return tuple(range(*self.rolling_range))
+
+    @property
+    def historical_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index for start, stop in self.historical_windows for index in range(start, stop)
+        )
+
+    @property
+    def historical_windows(self) -> tuple[tuple[int, int], ...]:
+        return _unpack_windows(self.historical_windows_encoded)
+
+    @property
+    def actual_indices(self) -> tuple[int, ...]:
+        return (*self.historical_indices, *self.rolling_indices)
+
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "token_position": self.token_position,
+            "layer": self.layer,
+            "rolling_range": self.rolling_range,
+            "historical_windows_varint_base64": base64.b64encode(
+                self.historical_windows_encoded
+            ).decode("ascii"),
+            "attention_mode": self.attention_mode,
+            "historical_occurrences": self.historical_occurrences,
+            "historical_unique_tokens": self.historical_unique_tokens,
+            "duplicate_historical_occurrences": self.duplicate_historical_occurrences,
+            "rolling_overlap_occurrences": self.rolling_overlap_occurrences,
+            "proposal_centers": self.proposal_centers,
+            "proposal_spreads": self.proposal_spreads,
+            "proposal_weights": self.proposal_weights,
+            "proposal_active": self.proposal_active,
+            "support_position": self.support_position,
+            "history_end": self.history_end,
+            "cache_length": self.cache_length,
+            "gathered_key_occurrences": self.gathered_key_occurrences,
+            "gathered_value_occurrences": self.gathered_value_occurrences,
+        }
 
 
 @dataclass(frozen=True)
@@ -97,6 +148,8 @@ def _access_record(
     layer: int,
     rolling: tuple[int, ...],
     historical: tuple[int, ...],
+    historical_windows: tuple[tuple[int, int], ...] | None = None,
+    attention_mode: str = "bounded",
     proposal_centers: tuple[float, ...],
     proposal_spreads: tuple[float, ...],
     proposal_weights: tuple[float, ...],
@@ -106,18 +159,39 @@ def _access_record(
     cache_length: int,
     gathered_key_occurrences: int,
     gathered_value_occurrences: int,
+    historical_occurrence_count: int | None = None,
+    historical_unique_count: int | None = None,
 ) -> AccessRecord:
+    if not rolling:
+        raise ValueError("an attention access must include working memory")
+    if historical_windows is None:
+        ranges: list[tuple[int, int]] = []
+        start = None
+        previous = None
+        for index in historical:
+            if start is None or previous is None or index != previous + 1:
+                if start is not None and previous is not None:
+                    ranges.append((start, previous + 1))
+                start = index
+            previous = index
+        if start is not None and previous is not None:
+            ranges.append((start, previous + 1))
+        historical_windows = tuple(ranges)
     rolling_set = set(rolling)
     unique_historical = len(set(historical))
+    occurrence_count = (
+        len(historical) if historical_occurrence_count is None else historical_occurrence_count
+    )
+    unique_count = unique_historical if historical_unique_count is None else historical_unique_count
     return AccessRecord(
         token_position=position,
         layer=layer,
-        rolling_indices=rolling,
-        historical_indices=historical,
-        actual_indices=(*historical, *rolling),
-        historical_occurrences=len(historical),
-        historical_unique_tokens=unique_historical,
-        duplicate_historical_occurrences=len(historical) - unique_historical,
+        rolling_range=(rolling[0], rolling[-1] + 1),
+        historical_windows_encoded=_pack_windows(historical_windows),
+        attention_mode=attention_mode,
+        historical_occurrences=occurrence_count,
+        historical_unique_tokens=unique_count,
+        duplicate_historical_occurrences=occurrence_count - unique_count,
         rolling_overlap_occurrences=sum(index in rolling_set for index in historical),
         proposal_centers=proposal_centers,
         proposal_spreads=proposal_spreads,
@@ -131,13 +205,181 @@ def _access_record(
     )
 
 
+def _encode_varint(value: int, output: bytearray) -> None:
+    if value < 0:
+        raise ValueError("window coordinates must be nonnegative")
+    while value >= 0x80:
+        output.append((value & 0x7F) | 0x80)
+        value >>= 7
+    output.append(value)
+
+
+def _decode_varint(encoded: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while offset < len(encoded):
+        byte = encoded[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, offset
+        shift += 7
+        if shift > 63:
+            break
+    raise ValueError("invalid packed historical window")
+
+
+def _pack_windows(windows: tuple[tuple[int, int], ...]) -> bytes:
+    encoded = bytearray()
+    for start, stop in windows:
+        if stop <= start:
+            raise ValueError("historical windows must be nonempty")
+        _encode_varint(start, encoded)
+        _encode_varint(stop - start, encoded)
+    return bytes(encoded)
+
+
+def _unpack_windows(encoded: bytes) -> tuple[tuple[int, int], ...]:
+    windows = []
+    offset = 0
+    while offset < len(encoded):
+        start, offset = _decode_varint(encoded, offset)
+        length, offset = _decode_varint(encoded, offset)
+        if length <= 0:
+            raise ValueError("packed historical windows must be nonempty")
+        windows.append((start, start + length))
+    return tuple(windows)
+
+
+class _LayerKVCache:
+    """Preallocated layer cache supporting O(selected occurrences) direct gathers."""
+
+    def __init__(
+        self,
+        storage: Tensor,
+        length: int = 0,
+        *,
+        writable: bool = True,
+        overlay: list[Tensor] | None = None,
+    ) -> None:
+        if storage.ndim != 3 or length < 0 or length > storage.shape[1]:
+            raise ValueError("invalid layer K/V cache storage")
+        self.storage = storage
+        self.length = length
+        self.writable = writable
+        self.overlay = overlay or []
+
+    @classmethod
+    def empty(
+        cls,
+        *,
+        heads: int,
+        capacity: int,
+        head_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> _LayerKVCache:
+        return cls(torch.empty((heads, capacity, head_dim), device=device, dtype=dtype))
+
+    @classmethod
+    def from_prefix(
+        cls,
+        prefix: Tensor,
+        *,
+        capacity: int,
+        device: torch.device,
+    ) -> _LayerKVCache:
+        prefix = prefix.to(device)
+        cache = cls.empty(
+            heads=prefix.shape[0],
+            capacity=capacity,
+            head_dim=prefix.shape[2],
+            device=device,
+            dtype=prefix.dtype,
+        )
+        cache.storage[:, : prefix.shape[1]].copy_(prefix)
+        cache.length = prefix.shape[1]
+        return cache
+
+    def __len__(self) -> int:
+        return self.length + len(self.overlay)
+
+    def append(self, value: Tensor) -> None:
+        if value.shape != self.storage[:, 0].shape:
+            raise ValueError("layer K/V cache append is outside its fixed storage")
+        if not self.writable:
+            self.overlay.append(value)
+            return
+        if self.length >= self.storage.shape[1]:
+            raise ValueError("layer K/V cache append is outside its fixed storage")
+        self.storage[:, self.length].copy_(value)
+        self.length += 1
+
+    def gather(
+        self,
+        indices: tuple[int, ...] | Tensor | None,
+        *,
+        occurrence_limit: int | None,
+    ) -> Tensor:
+        if indices is None:
+            if occurrence_limit is not None:
+                raise ValueError("full-cache gather cannot claim a bounded occurrence limit")
+            base = self.storage[:, : self.length]
+            if not self.overlay:
+                return base
+            return torch.cat((base, torch.stack(self.overlay, dim=1)), dim=1)
+        occurrence_count = len(indices)
+        if occurrence_limit is not None and occurrence_count > occurrence_limit:
+            raise ValueError("actual K/V gather exceeds the bounded occurrence limit")
+        if isinstance(indices, Tensor):
+            if indices.numel() == 0:
+                raise ValueError("actual K/V gather must include the rolling window")
+            index = indices.to(device=self.storage.device, dtype=torch.long)
+        else:
+            if not indices:
+                raise ValueError("actual K/V gather must include the rolling window")
+            if any(value < 0 or value >= len(self) for value in indices):
+                raise ValueError("actual K/V gather index is outside the layer cache")
+            index = torch.tensor(indices, device=self.storage.device, dtype=torch.long)
+        if not self.overlay:
+            return self.storage[:, : self.length].index_select(1, index)
+        base_mask = index < self.length
+        if bool(base_mask.all()):
+            return self.storage[:, : self.length].index_select(1, index)
+        if bool(base_mask.any()) and not bool(
+            torch.equal(index, torch.sort(index, stable=True).values)
+        ):
+            raise ValueError("branched cache indices must keep base entries before overlays")
+        pieces = []
+        if bool(base_mask.any()):
+            pieces.append(self.storage[:, : self.length].index_select(1, index[base_mask]))
+        overlay_indices = (index[~base_mask] - self.length).detach().cpu().tolist()
+        pieces.append(torch.stack([self.overlay[value] for value in overlay_indices], dim=1))
+        return torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
+
+    def fork(self) -> _LayerKVCache:
+        return _LayerKVCache(self.storage, self.length, writable=False)
+
+    def snapshot(self) -> Tensor:
+        if self.overlay:
+            raise ValueError("branched K/V cache cannot be checkpointed")
+        return self.storage[:, : self.length].detach().cpu().clone()
+
+
 def _gather_cache_occurrences(
-    cache: list[Tensor],
-    indices: tuple[int, ...],
+    cache: list[Tensor] | _LayerKVCache,
+    indices: tuple[int, ...] | Tensor | None,
     *,
     occurrence_limit: int | None,
 ) -> Tensor:
     """Stack only executed cache occurrences, preserving order and duplicates."""
+
+    if isinstance(cache, _LayerKVCache):
+        return cache.gather(indices, occurrence_limit=occurrence_limit)
+    if indices is None:
+        if occurrence_limit is not None:
+            raise ValueError("full-cache gather cannot claim a bounded occurrence limit")
+        indices = tuple(range(len(cache)))
 
     if occurrence_limit is not None and len(indices) > occurrence_limit:
         raise ValueError("actual K/V gather exceeds the bounded occurrence limit")
@@ -239,13 +481,17 @@ class FrozenCausalReader(nn.Module):
         activation_tokens: int,
         dense_snapshot: DensePrefillSnapshot | None = None,
         snapshot_ownership: str = "evaluation",
+        prefill_chunk_tokens: int = 128,
+        proposal_trace_interval: int = 1,
     ) -> list[TokenScore]:
-        del snapshot_ownership
+        del prefill_chunk_tokens, snapshot_ownership
         if dense_snapshot is not None:
             raise ValueError("synthetic reader does not accept Qwen2 dense prefill snapshots")
         _validate_transition(rolling_tokens, activation_tokens)
         if activation_tokens == 0:
             raise ValueError("bounded execution requires a positive activation threshold")
+        if proposal_trace_interval <= 0:
+            raise ValueError("proposal trace interval must be positive")
         self.to(device)
         key_cache: list[list[Tensor]] = [[] for _ in self.layers]
         value_cache: list[list[Tensor]] = [[] for _ in self.layers]
@@ -271,34 +517,52 @@ class FrozenCausalReader(nn.Module):
                         weights: tuple[float, ...] = ()
                         active: tuple[bool, ...] = ()
                         occurrence_limit = None
+                        historical_windows: tuple[tuple[int, int], ...] = ()
+                        attention_mode = "dense"
                     else:
                         rolling_start = max(0, position - rolling_tokens + 1)
-                        proposal_set = policy.propose(
-                            SelectionContext(
-                                position=position,
-                                layer=layer_index,
-                                history_end=rolling_start,
-                                hidden=normalized,
-                                lower_layer=lower_layer_selection,
-                            ),
-                            policy_states[layer_index],
-                        )
-                        policy_states[layer_index] = proposal_set.state
-                        lower_layer_selection = proposal_set.soft_parameters
-                        selection = resolve_proposals(
-                            proposal_set.proposals,
-                            history_end=rolling_start,
-                            window_width=window_width,
-                            historical_token_budget=historical_token_budget,
-                            beta=proposal_set.beta,
-                        )
                         rolling = tuple(range(rolling_start, position + 1))
-                        historical = selection.indices
-                        centers = tuple(proposal.center for proposal in proposal_set.proposals)
-                        spreads = tuple(proposal.spread for proposal in proposal_set.proposals)
-                        weights = tuple(proposal.weight for proposal in proposal_set.proposals)
-                        active = tuple(proposal.active for proposal in proposal_set.proposals)
-                        occurrence_limit = rolling_tokens + historical_token_budget
+                        if getattr(policy, "full_qkv", False):
+                            historical = tuple(range(rolling_start))
+                            historical_windows = ((0, rolling_start),) if rolling_start else ()
+                            centers = ()
+                            spreads = ()
+                            weights = ()
+                            active = ()
+                            occurrence_limit = None
+                            attention_mode = "full_qkv"
+                        else:
+                            proposal_set = policy.propose(
+                                SelectionContext(
+                                    position=position,
+                                    layer=layer_index,
+                                    history_end=rolling_start,
+                                    hidden=normalized,
+                                    lower_layer=lower_layer_selection,
+                                ),
+                                policy_states[layer_index],
+                            )
+                            policy_states[layer_index] = proposal_set.state
+                            lower_layer_selection = proposal_set.soft_parameters
+                            selection = resolve_proposals(
+                                proposal_set.proposals,
+                                history_end=rolling_start,
+                                window_width=window_width,
+                                historical_token_budget=historical_token_budget,
+                                beta=proposal_set.beta,
+                            )
+                            historical = selection.indices
+                            historical_windows = tuple(
+                                (window[0], window[-1] + 1)
+                                for window in selection.windows
+                                if window
+                            )
+                            centers = tuple(proposal.center for proposal in proposal_set.proposals)
+                            spreads = tuple(proposal.spread for proposal in proposal_set.proposals)
+                            weights = tuple(proposal.weight for proposal in proposal_set.proposals)
+                            active = tuple(proposal.active for proposal in proposal_set.proposals)
+                            occurrence_limit = rolling_tokens + historical_token_budget
+                            attention_mode = "bounded"
                     actual_indices = (*historical, *rolling)
                     keys = _gather_cache_occurrences(
                         key_cache[layer_index],
@@ -315,10 +579,18 @@ class FrozenCausalReader(nn.Module):
                         layer=layer_index,
                         rolling=rolling,
                         historical=historical,
-                        proposal_centers=centers,
-                        proposal_spreads=spreads,
-                        proposal_weights=weights,
-                        proposal_active=active,
+                        historical_windows=historical_windows,
+                        attention_mode=attention_mode,
+                        proposal_centers=(
+                            centers if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_spreads=(
+                            spreads if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_weights=(
+                            weights if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_active=(active if position % proposal_trace_interval == 0 else ()),
                         support_position=stream.support_positions[position],
                         history_end=rolling_start,
                         cache_length=len(key_cache[layer_index]),
@@ -350,7 +622,7 @@ class FrozenCausalReader(nn.Module):
                             if position < min(rolling_tokens, activation_tokens)
                             else "dense_bridge"
                             if position < activation_tokens
-                            else "qkvs"
+                            else "post_transition"
                         ),
                     )
                 )
@@ -436,8 +708,8 @@ class HuggingFaceQwen2Reader:
         layer: Any,
         hidden: Tensor,
         position_embeddings: tuple[Tensor, Tensor],
-        key_cache: list[Tensor],
-        value_cache: list[Tensor],
+        key_cache: list[Tensor] | _LayerKVCache,
+        value_cache: list[Tensor] | _LayerKVCache,
     ) -> tuple[Tensor, Tensor, Tensor]:
         residual = hidden
         normalized = layer.input_layernorm(hidden)
@@ -464,9 +736,9 @@ class HuggingFaceQwen2Reader:
         layer: Any,
         residual: Tensor,
         query: Tensor,
-        key_cache: list[Tensor],
-        value_cache: list[Tensor],
-        actual_indices: tuple[int, ...],
+        key_cache: list[Tensor] | _LayerKVCache,
+        value_cache: list[Tensor] | _LayerKVCache,
+        actual_indices: tuple[int, ...] | Tensor | None,
         *,
         occurrence_limit: int | None,
     ) -> tuple[Tensor, int, int]:
@@ -498,8 +770,8 @@ class HuggingFaceQwen2Reader:
         layer: Any,
         residual: Tensor,
         query: Tensor,
-        key_cache: list[Tensor],
-        value_cache: list[Tensor],
+        key_cache: list[Tensor] | _LayerKVCache,
+        value_cache: list[Tensor] | _LayerKVCache,
         historical_occupancy: Tensor,
         rolling: tuple[int, ...],
     ) -> Tensor:
@@ -530,15 +802,23 @@ class HuggingFaceQwen2Reader:
         *,
         start_layer: int,
         position_embeddings: tuple[Tensor, Tensor],
-        key_cache: list[list[Tensor]],
-        value_cache: list[list[Tensor]],
+        key_cache: list[list[Tensor] | _LayerKVCache],
+        value_cache: list[list[Tensor] | _LayerKVCache],
         rolling: tuple[int, ...],
     ) -> Tensor:
         backbone = self.model.model
         for layer_index in range(start_layer, len(backbone.layers)):
             layer = backbone.layers[layer_index]
-            branch_keys = list(key_cache[layer_index])
-            branch_values = list(value_cache[layer_index])
+            branch_keys = (
+                key_cache[layer_index].fork()
+                if isinstance(key_cache[layer_index], _LayerKVCache)
+                else list(key_cache[layer_index])
+            )
+            branch_values = (
+                value_cache[layer_index].fork()
+                if isinstance(value_cache[layer_index], _LayerKVCache)
+                else list(value_cache[layer_index])
+            )
             residual, _, query = self._append_layer_kv(
                 layer,
                 hidden,
@@ -585,6 +865,7 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         device: torch.device,
         ownership: str,
+        prefill_chunk_tokens: int,
     ) -> dict[str, Any]:
         config = self.model.config
         return {
@@ -594,6 +875,7 @@ class HuggingFaceQwen2Reader:
             "prefix_length": len(prefix_tokens),
             "working_memory_tokens": rolling_tokens,
             "activation_tokens": activation_tokens,
+            "prefill_chunk_tokens": prefill_chunk_tokens,
             "model": self.identity(),
             "model_weights_sha256": self._model_weights_sha256(),
             "position": {
@@ -623,6 +905,7 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         device: torch.device,
         ownership: str,
+        prefill_chunk_tokens: int = 128,
     ) -> None:
         _validate_transition(rolling_tokens, activation_tokens)
         if activation_tokens == 0:
@@ -636,6 +919,7 @@ class HuggingFaceQwen2Reader:
             activation_tokens=activation_tokens,
             device=device,
             ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
         )
         if snapshot.identity != expected or snapshot.prefix_tokens != prefix:
             raise ValueError("dense prefill snapshot identity does not match this continuation")
@@ -644,9 +928,13 @@ class HuggingFaceQwen2Reader:
         layer_count = len(self.model.model.layers)
         if len(snapshot.key_cache) != layer_count or len(snapshot.value_cache) != layer_count:
             raise ValueError("dense prefill layer cache count is invalid")
-        if any(len(cache) != activation_tokens for cache in snapshot.key_cache):
+        if any(
+            cache.ndim != 3 or cache.shape[1] != activation_tokens for cache in snapshot.key_cache
+        ):
             raise ValueError("dense prefill key cache length is invalid")
-        if any(len(cache) != activation_tokens for cache in snapshot.value_cache):
+        if any(
+            cache.ndim != 3 or cache.shape[1] != activation_tokens for cache in snapshot.value_cache
+        ):
             raise ValueError("dense prefill value cache length is invalid")
         if len(snapshot.dense_losses) != max(0, activation_tokens - 1):
             raise ValueError("dense prefill loss metadata is invalid")
@@ -661,6 +949,7 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         device: torch.device,
         ownership: str,
+        prefill_chunk_tokens: int = 128,
     ) -> DensePrefillSnapshot:
         """Run the S-independent dense prefix once and retain continuation state."""
 
@@ -671,46 +960,47 @@ class HuggingFaceQwen2Reader:
             raise ValueError("token stream is shorter than the dense prefill")
         if activation_tokens > self.model.config.max_position_embeddings:
             raise ValueError("dense prefill exceeds the model's supported position range")
+        if prefill_chunk_tokens <= 0:
+            raise ValueError("dense prefill chunk size must be positive")
         self.model.to(device)
-        backbone = self.model.model
-        key_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
-        value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
+        from transformers import StaticCache
+
+        cache = StaticCache(config=self.model.config, max_cache_len=activation_tokens)
         dense_losses: list[float] = []
         dense_predictions: list[int] = []
         boundary_logits: Tensor | None = None
 
         with torch.inference_mode():
-            for position, token in enumerate(stream.tokens[:activation_tokens]):
-                token_id = torch.tensor([[token]], device=device)
-                hidden = backbone.embed_tokens(token_id)
-                position_ids = torch.tensor([[position]], device=device)
-                position_embeddings = backbone.rotary_emb(hidden, position_ids)
-                dense_indices = tuple(range(position + 1))
-                for layer_index, layer in enumerate(backbone.layers):
-                    residual, _, query = self._append_layer_kv(
-                        layer,
-                        hidden,
-                        position_embeddings,
-                        key_cache[layer_index],
-                        value_cache[layer_index],
+            for start in range(0, activation_tokens, prefill_chunk_tokens):
+                stop = min(activation_tokens, start + prefill_chunk_tokens)
+                positions = torch.arange(start, stop, device=device)
+                output = self.model(
+                    input_ids=torch.tensor([stream.tokens[start:stop]], device=device),
+                    past_key_values=cache,
+                    use_cache=True,
+                    cache_position=positions,
+                    position_ids=positions.unsqueeze(0),
+                    logits_to_keep=0,
+                )
+                cache = output.past_key_values
+                logits = output.logits[0]
+                dense_predictions.extend(logits.argmax(dim=-1).detach().cpu().tolist())
+                scored_stop = min(stop, activation_tokens - 1)
+                scored = scored_stop - start
+                if scored > 0:
+                    targets = torch.tensor(
+                        stream.tokens[start + 1 : scored_stop + 1],
+                        device=device,
                     )
-                    hidden, _, _ = self._finish_layer(
-                        layer,
-                        residual,
-                        query,
-                        key_cache[layer_index],
-                        value_cache[layer_index],
-                        dense_indices,
-                        occurrence_limit=None,
+                    dense_losses.extend(
+                        torch.nn.functional.cross_entropy(
+                            logits[:scored], targets, reduction="none"
+                        )
+                        .detach()
+                        .cpu()
+                        .tolist()
                     )
-                logits = self.model.lm_head(backbone.norm(hidden))[0, 0]
-                dense_predictions.append(int(logits.argmax().item()))
-                if position + 1 < activation_tokens:
-                    target = torch.tensor([stream.tokens[position + 1]], device=device)
-                    dense_losses.append(
-                        float(torch.nn.functional.cross_entropy(logits.unsqueeze(0), target))
-                    )
-                boundary_logits = logits.detach().cpu().clone()
+                boundary_logits = logits[-1].detach().cpu().clone()
 
         if boundary_logits is None:
             raise RuntimeError("dense prefill did not execute any tokens")
@@ -722,16 +1012,17 @@ class HuggingFaceQwen2Reader:
                 activation_tokens=activation_tokens,
                 device=device,
                 ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
             ),
             prefix_tokens=prefix,
             next_position=activation_tokens,
             key_cache=tuple(
-                tuple(value.detach().cpu().clone() for value in layer_cache)
-                for layer_cache in key_cache
+                layer.keys[0, :, :activation_tokens].detach().cpu().clone()
+                for layer in cache.layers
             ),
             value_cache=tuple(
-                tuple(value.detach().cpu().clone() for value in layer_cache)
-                for layer_cache in value_cache
+                layer.values[0, :, :activation_tokens].detach().cpu().clone()
+                for layer in cache.layers
             ),
             dense_losses=tuple(dense_losses),
             dense_predictions=tuple(dense_predictions),
@@ -744,6 +1035,7 @@ class HuggingFaceQwen2Reader:
             activation_tokens=activation_tokens,
             device=device,
             ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
         )
         return snapshot
 
@@ -775,14 +1067,15 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         device: torch.device,
         ownership: str,
+        prefill_chunk_tokens: int = 128,
     ) -> DensePrefillSnapshot:
         saved = torch.load(Path(path), map_location="cpu", weights_only=True)
         snapshot = DensePrefillSnapshot(
             identity=saved["identity"],
             prefix_tokens=tuple(saved["prefix_tokens"]),
             next_position=int(saved["next_position"]),
-            key_cache=tuple(tuple(cache) for cache in saved["key_cache"]),
-            value_cache=tuple(tuple(cache) for cache in saved["value_cache"]),
+            key_cache=tuple(saved["key_cache"]),
+            value_cache=tuple(saved["value_cache"]),
             dense_losses=tuple(saved["dense_losses"]),
             dense_predictions=tuple(saved["dense_predictions"]),
             boundary_logits=saved["boundary_logits"],
@@ -794,8 +1087,136 @@ class HuggingFaceQwen2Reader:
             activation_tokens=activation_tokens,
             device=device,
             ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
         )
         return snapshot
+
+    def _caches_from_dense_prefill(
+        self,
+        snapshot: DensePrefillSnapshot,
+        device: torch.device,
+    ) -> tuple[list[_LayerKVCache], list[_LayerKVCache]]:
+        capacity = self.model.config.max_position_embeddings
+        return (
+            [
+                _LayerKVCache.from_prefix(layer, capacity=capacity, device=device)
+                for layer in snapshot.key_cache
+            ],
+            [
+                _LayerKVCache.from_prefix(layer, capacity=capacity, device=device)
+                for layer in snapshot.value_cache
+            ],
+        )
+
+    def new_heatfield_rollout_state(
+        self,
+        stream: TokenStream,
+        snapshot: DensePrefillSnapshot,
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int,
+    ) -> HeatfieldRolloutState:
+        self._validate_dense_prefill(
+            snapshot,
+            stream,
+            rolling_tokens=rolling_tokens,
+            activation_tokens=activation_tokens,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        key_cache, value_cache = self._caches_from_dense_prefill(snapshot, device)
+        return HeatfieldRolloutState(
+            stream_id=stream.stream_id,
+            next_position=activation_tokens,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            policy_states=[PolicyState() for _ in self.model.model.layers],
+        )
+
+    def serialize_heatfield_rollout_state(self, state: HeatfieldRolloutState) -> dict[str, Any]:
+        return {
+            "stream_id": state.stream_id,
+            "next_position": state.next_position,
+            "key_cache": tuple(cache.snapshot() for cache in state.key_cache),
+            "value_cache": tuple(cache.snapshot() for cache in state.value_cache),
+            "policy_states": tuple(
+                {
+                    "centers": policy_state.centers,
+                    "recurrent": (
+                        policy_state.recurrent.detach().cpu()
+                        if policy_state.recurrent is not None
+                        else None
+                    ),
+                }
+                for policy_state in state.policy_states
+            ),
+        }
+
+    def restore_heatfield_rollout_state(
+        self,
+        saved: dict[str, Any],
+        stream: TokenStream,
+        snapshot: DensePrefillSnapshot,
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int,
+    ) -> HeatfieldRolloutState:
+        self._validate_dense_prefill(
+            snapshot,
+            stream,
+            rolling_tokens=rolling_tokens,
+            activation_tokens=activation_tokens,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        next_position = int(saved["next_position"])
+        if (
+            saved["stream_id"] != stream.stream_id
+            or next_position < activation_tokens
+            or next_position > len(stream.tokens) - 1
+        ):
+            raise ValueError("streaming training checkpoint continuation is invalid")
+        key_tensors = tuple(saved["key_cache"])
+        value_tensors = tuple(saved["value_cache"])
+        layer_count = len(self.model.model.layers)
+        if (
+            len(key_tensors) != layer_count
+            or len(value_tensors) != layer_count
+            or any(tensor.shape[1] != next_position for tensor in key_tensors)
+            or any(tensor.shape[1] != next_position for tensor in value_tensors)
+        ):
+            raise ValueError("streaming training checkpoint K/V length is invalid")
+        capacity = self.model.config.max_position_embeddings
+        policy_states = [
+            PolicyState(
+                tuple(record["centers"]),
+                record["recurrent"].to(device) if record["recurrent"] is not None else None,
+            )
+            for record in saved["policy_states"]
+        ]
+        if len(policy_states) != layer_count:
+            raise ValueError("streaming training checkpoint S state is invalid")
+        return HeatfieldRolloutState(
+            stream_id=stream.stream_id,
+            next_position=next_position,
+            key_cache=[
+                _LayerKVCache.from_prefix(tensor, capacity=capacity, device=device)
+                for tensor in key_tensors
+            ],
+            value_cache=[
+                _LayerKVCache.from_prefix(tensor, capacity=capacity, device=device)
+                for tensor in value_tensors
+            ],
+            policy_states=policy_states,
+        )
 
     def _scores_from_dense_prefill(
         self,
@@ -849,6 +1270,8 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int = 0,
         dense_snapshot: DensePrefillSnapshot | None = None,
         snapshot_ownership: str = "evaluation",
+        prefill_chunk_tokens: int = 128,
+        proposal_trace_interval: int = 1,
     ) -> tuple[list[TokenScore], Tensor | None]:
         _validate_transition(rolling_tokens, activation_tokens)
         if len(stream.tokens) > self.model.config.max_position_embeddings:
@@ -857,6 +1280,8 @@ class HuggingFaceQwen2Reader:
             raise ValueError("full-history diagnostics do not use activation snapshots")
         if dense_snapshot is not None and activation_tokens == 0:
             raise ValueError("dense prefill snapshot supplied without an activation threshold")
+        if proposal_trace_interval <= 0:
+            raise ValueError("proposal trace interval must be positive")
         self.model.to(device)
         backbone = self.model.model
         if activation_tokens:
@@ -867,6 +1292,7 @@ class HuggingFaceQwen2Reader:
                     activation_tokens=activation_tokens,
                     device=device,
                     ownership=snapshot_ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
                 )
             self._validate_dense_prefill(
                 dense_snapshot,
@@ -875,15 +1301,9 @@ class HuggingFaceQwen2Reader:
                 activation_tokens=activation_tokens,
                 device=device,
                 ownership=snapshot_ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
             )
-            key_cache = [
-                [value.to(device) for value in layer_cache]
-                for layer_cache in dense_snapshot.key_cache
-            ]
-            value_cache = [
-                [value.to(device) for value in layer_cache]
-                for layer_cache in dense_snapshot.value_cache
-            ]
+            key_cache, value_cache = self._caches_from_dense_prefill(dense_snapshot, device)
             scores = self._scores_from_dense_prefill(
                 dense_snapshot,
                 stream,
@@ -898,13 +1318,15 @@ class HuggingFaceQwen2Reader:
             start_position = 0
         policy_states = [PolicyState() for _ in backbone.layers]
         output_logits: list[Tensor] | None = [] if diagnostic_full_history else None
+        pending_scores: list[tuple[int, int, Tensor, Tensor, tuple[AccessRecord, ...]]] = []
+        stream_token_ids = torch.tensor(stream.tokens, device=device)
+        absolute_positions = torch.arange(len(stream.tokens), device=device)
 
         with torch.inference_mode():
             for position in range(start_position, len(stream.tokens) - 1):
-                token = stream.tokens[position]
-                token_id = torch.tensor([[token]], device=device)
+                token_id = stream_token_ids[position].view(1, 1)
                 hidden = backbone.embed_tokens(token_id)
-                position_ids = torch.tensor([[position]], device=device)
+                position_ids = absolute_positions[position].view(1, 1)
                 position_embeddings = backbone.rotary_emb(hidden, position_ids)
                 token_accesses: list[AccessRecord] = []
                 lower_layer_selection = None
@@ -920,12 +1342,16 @@ class HuggingFaceQwen2Reader:
 
                     rolling_start = max(0, position - rolling_tokens + 1)
                     rolling = tuple(range(rolling_start, position + 1))
-                    if diagnostic_full_history:
-                        historical = tuple(range(rolling_start))
+                    if diagnostic_full_history or getattr(policy, "full_qkv", False):
+                        historical: tuple[int, ...] = ()
+                        historical_windows = ((0, rolling_start),) if rolling_start else ()
                         centers: tuple[float, ...] = ()
                         spreads: tuple[float, ...] = ()
                         weights: tuple[float, ...] = ()
                         active: tuple[bool, ...] = ()
+                        actual_indices = None
+                        occurrence_limit = None
+                        attention_mode = "full_qkv"
                     else:
                         proposal_set = policy.propose(
                             SelectionContext(
@@ -947,16 +1373,16 @@ class HuggingFaceQwen2Reader:
                             beta=proposal_set.beta,
                         )
                         historical = selection.indices
+                        historical_windows = tuple(
+                            (window[0], window[-1] + 1) for window in selection.windows if window
+                        )
                         centers = tuple(proposal.center for proposal in proposal_set.proposals)
                         spreads = tuple(proposal.spread for proposal in proposal_set.proposals)
                         weights = tuple(proposal.weight for proposal in proposal_set.proposals)
                         active = tuple(proposal.active for proposal in proposal_set.proposals)
-                    actual_indices = (*historical, *rolling)
-                    occurrence_limit = (
-                        None
-                        if diagnostic_full_history
-                        else rolling_tokens + historical_token_budget
-                    )
+                        actual_indices = (*historical, *rolling)
+                        occurrence_limit = rolling_tokens + historical_token_budget
+                        attention_mode = "bounded"
                     hidden, gathered_keys, gathered_values = self._finish_layer(
                         layer,
                         residual,
@@ -971,15 +1397,29 @@ class HuggingFaceQwen2Reader:
                         layer=layer_index,
                         rolling=rolling,
                         historical=historical,
-                        proposal_centers=centers,
-                        proposal_spreads=spreads,
-                        proposal_weights=weights,
-                        proposal_active=active,
+                        historical_windows=historical_windows,
+                        attention_mode=attention_mode,
+                        proposal_centers=(
+                            centers if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_spreads=(
+                            spreads if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_weights=(
+                            weights if position % proposal_trace_interval == 0 else ()
+                        ),
+                        proposal_active=(active if position % proposal_trace_interval == 0 else ()),
                         support_position=stream.support_positions[position],
                         history_end=rolling_start,
                         cache_length=len(key_cache[layer_index]),
                         gathered_key_occurrences=gathered_keys,
                         gathered_value_occurrences=gathered_values,
+                        historical_occurrence_count=(
+                            rolling_start if attention_mode == "full_qkv" else None
+                        ),
+                        historical_unique_count=(
+                            rolling_start if attention_mode == "full_qkv" else None
+                        ),
                     )
                     token_accesses.append(access)
 
@@ -988,18 +1428,33 @@ class HuggingFaceQwen2Reader:
                     output_logits.append(logits.detach().cpu())
                 target = stream.tokens[position + 1]
                 loss = torch.nn.functional.cross_entropy(
-                    logits.unsqueeze(0), torch.tensor([target], device=device)
+                    logits.unsqueeze(0), stream_token_ids[position + 1].view(1)
                 )
-                scores.append(
-                    TokenScore(
-                        position=position,
-                        target=target,
-                        loss=float(loss.item()),
-                        prediction=int(logits.argmax().item()),
-                        accesses=tuple(token_accesses),
-                        phase="qkvs",
+                pending_scores.append(
+                    (
+                        position,
+                        target,
+                        loss.detach(),
+                        logits.argmax().detach(),
+                        tuple(token_accesses),
                     )
                 )
+        if pending_scores:
+            losses = torch.stack([record[2] for record in pending_scores]).cpu().tolist()
+            predictions = torch.stack([record[3] for record in pending_scores]).cpu().tolist()
+            scores.extend(
+                TokenScore(
+                    position=record[0],
+                    target=record[1],
+                    loss=float(loss),
+                    prediction=int(prediction),
+                    accesses=record[4],
+                    phase="post_transition",
+                )
+                for record, loss, prediction in zip(
+                    pending_scores, losses, predictions, strict=True
+                )
+            )
         return scores, torch.stack(output_logits) if output_logits is not None else None
 
     def execute(
@@ -1014,6 +1469,8 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         dense_snapshot: DensePrefillSnapshot | None = None,
         snapshot_ownership: str = "evaluation",
+        prefill_chunk_tokens: int = 128,
+        proposal_trace_interval: int = 1,
     ) -> list[TokenScore]:
         if activation_tokens == 0:
             raise ValueError("bounded execution requires a positive activation threshold")
@@ -1028,8 +1485,159 @@ class HuggingFaceQwen2Reader:
             activation_tokens=activation_tokens,
             dense_snapshot=dense_snapshot,
             snapshot_ownership=snapshot_ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+            proposal_trace_interval=proposal_trace_interval,
         )
         return scores
+
+    def _heatfield_objective_from_proposal(
+        self,
+        stream: TokenStream,
+        proposal_set: Any,
+        *,
+        position: int,
+        layer_index: int,
+        residual: Tensor,
+        query: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+        key_cache: list[list[Tensor] | _LayerKVCache],
+        value_cache: list[list[Tensor] | _LayerKVCache],
+        rolling: tuple[int, ...],
+        historical_token_budget: int,
+        window_width: int,
+        coverage_weight: float,
+        utility_weight: float,
+        device: torch.device,
+    ) -> tuple[Tensor, dict[str, Any], tuple[int, ...]]:
+        if proposal_set.soft_parameters is None:
+            raise RuntimeError("learned policy did not provide differentiable proposals")
+        rolling_start = rolling[0]
+        selection = resolve_proposals(
+            proposal_set.proposals,
+            history_end=rolling_start,
+            window_width=window_width,
+            historical_token_budget=historical_token_budget,
+            beta=proposal_set.beta,
+        )
+        target = torch.tensor([stream.tokens[position + 1]], device=device)
+        target_layer = self.model.model.layers[layer_index]
+
+        with torch.no_grad():
+            rolling_hidden, _, _ = self._finish_layer(
+                target_layer,
+                residual,
+                query,
+                key_cache[layer_index],
+                value_cache[layer_index],
+                rolling,
+                occurrence_limit=len(rolling),
+            )
+            rolling_logits = self._complete_current_token(
+                rolling_hidden,
+                start_layer=layer_index + 1,
+                position_embeddings=position_embeddings,
+                key_cache=key_cache,
+                value_cache=value_cache,
+                rolling=rolling,
+            )
+            rolling_loss = torch.nn.functional.cross_entropy(rolling_logits.unsqueeze(0), target)
+            selected_indices = (*selection.indices, *rolling)
+            selected_hidden, _, _ = self._finish_layer(
+                target_layer,
+                residual,
+                query,
+                key_cache[layer_index],
+                value_cache[layer_index],
+                selected_indices,
+                occurrence_limit=len(rolling) + historical_token_budget,
+            )
+            selected_logits = self._complete_current_token(
+                selected_hidden,
+                start_layer=layer_index + 1,
+                position_embeddings=position_embeddings,
+                key_cache=key_cache,
+                value_cache=value_cache,
+                rolling=rolling,
+            )
+            selected_loss = torch.nn.functional.cross_entropy(selected_logits.unsqueeze(0), target)
+
+            teacher_keys = _gather_cache_occurrences(
+                key_cache[layer_index], None, occurrence_limit=None
+            )
+            attention = target_layer.self_attn
+            teacher_keys = self._repeat_kv(
+                teacher_keys.unsqueeze(0), attention.num_key_value_groups
+            ).squeeze(0)
+            teacher_logits = torch.einsum("hd,hnd->hn", query, teacher_keys)
+            teacher_weights = torch.softmax(
+                teacher_logits * attention.scaling,
+                dim=-1,
+                dtype=torch.float32,
+            ).mean(dim=0)
+            teacher_history = teacher_weights[:rolling_start]
+            teacher_history = teacher_history / teacher_history.sum().clamp_min(1e-12)
+
+        soft = proposal_set.soft_parameters
+        historical_positions = torch.arange(
+            rolling_start,
+            device=soft.device,
+            dtype=soft.dtype,
+        )
+        centers = soft[:, 0:1]
+        spreads = (window_width * soft[:, 1:2] / proposal_set.beta).clamp_min(0.5)
+        importance = soft[:, 2:3]
+        gates = soft[:, 3:4]
+        distance = (historical_positions.unsqueeze(0) - centers) / spreads
+        kernels = torch.exp(-0.5 * distance.square())
+        proposal_occupancy = gates * (1.0 - torch.exp(-importance * kernels))
+        proposal_occupancy = proposal_occupancy.clamp(0.0, 1.0 - 1e-6)
+        collective_occupancy = 1.0 - torch.prod(1.0 - proposal_occupancy, dim=0)
+        coverage_reward = torch.sum(teacher_history.to(soft.dtype) * collective_occupancy)
+        coverage_loss = 1.0 - coverage_reward
+
+        soft_hidden = self._finish_layer_with_soft_history(
+            target_layer,
+            residual,
+            query,
+            key_cache[layer_index],
+            value_cache[layer_index],
+            collective_occupancy,
+            rolling,
+        )
+        soft_logits = self._complete_current_token(
+            soft_hidden,
+            start_layer=layer_index + 1,
+            position_embeddings=position_embeddings,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            rolling=rolling,
+        )
+        soft_loss = torch.nn.functional.cross_entropy(soft_logits.unsqueeze(0), target)
+        utility_surrogate = soft_loss - rolling_loss.detach()
+        objective = coverage_weight * coverage_loss + utility_weight * utility_surrogate
+        windows = tuple((window[0], window[-1] + 1) for window in selection.windows if window)
+        metrics = {
+            "position": position,
+            "layer": layer_index,
+            "objective": float(objective.detach()),
+            "coverage_loss": float(coverage_loss.detach()),
+            "soft_next_token_loss": float(soft_loss.detach()),
+            "rolling_next_token_loss": float(rolling_loss),
+            "hard_selected_next_token_loss": float(selected_loss),
+            "hard_utility": float(rolling_loss - selected_loss),
+            "soft_utility": float(rolling_loss - soft_loss.detach()),
+            "soft_hard_utility_gap": float(selected_loss - soft_loss.detach()),
+            "teacher_historical_attention_mass": float(teacher_weights[:rolling_start].sum()),
+            "historical_windows": windows,
+            "historical_occurrences": selection.occurrence_count,
+            "historical_unique_tokens": selection.unique_count,
+            "overlap_occurrences": selection.occurrence_count - selection.unique_count,
+            "proposal_parameters": soft.detach().cpu().tolist(),
+            "coverage_overlap_alpha": 0.0,
+            "trajectory": "learned_hard_detached",
+            "temporal_credit_assignment": "target_step_only",
+        }
+        return objective, metrics, selection.indices
 
     def heatfield_training_objective(
         self,
@@ -1047,6 +1655,7 @@ class HuggingFaceQwen2Reader:
         activation_tokens: int,
         dense_snapshot: DensePrefillSnapshot | None = None,
         snapshot_ownership: str = "train",
+        prefill_chunk_tokens: int = 128,
     ) -> tuple[Tensor, dict[str, Any]]:
         """Build one truncated causal S objective while the reader remains frozen."""
 
@@ -1071,6 +1680,7 @@ class HuggingFaceQwen2Reader:
                     activation_tokens=activation_tokens,
                     device=device,
                     ownership=snapshot_ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
                 )
             self._validate_dense_prefill(
                 dense_snapshot,
@@ -1079,15 +1689,9 @@ class HuggingFaceQwen2Reader:
                 activation_tokens=activation_tokens,
                 device=device,
                 ownership=snapshot_ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
             )
-            key_cache = [
-                [value.to(device) for value in layer_cache]
-                for layer_cache in dense_snapshot.key_cache
-            ]
-            value_cache = [
-                [value.to(device) for value in layer_cache]
-                for layer_cache in dense_snapshot.value_cache
-            ]
+            key_cache, value_cache = self._caches_from_dense_prefill(dense_snapshot, device)
             trajectory_start = activation_tokens
         else:
             key_cache = [[] for _ in backbone.layers]
@@ -1234,138 +1838,178 @@ class HuggingFaceQwen2Reader:
             ),
             policy_states[layer_index],
         )
-        if proposal_set.soft_parameters is None:
-            raise RuntimeError("learned policy did not provide differentiable proposals")
-        selection = resolve_proposals(
-            proposal_set.proposals,
-            history_end=rolling_start,
-            window_width=window_width,
-            historical_token_budget=historical_token_budget,
-            beta=proposal_set.beta,
-        )
-        target = torch.tensor([stream.tokens[position + 1]], device=device)
-
-        with torch.no_grad():
-            rolling_hidden, _, _ = self._finish_layer(
-                target_layer,
-                residual,
-                query,
-                key_cache[layer_index],
-                value_cache[layer_index],
-                rolling,
-                occurrence_limit=rolling_tokens,
-            )
-            rolling_logits = self._complete_current_token(
-                rolling_hidden,
-                start_layer=layer_index + 1,
-                position_embeddings=position_embeddings,
-                key_cache=key_cache,
-                value_cache=value_cache,
-                rolling=rolling,
-            )
-            rolling_loss = torch.nn.functional.cross_entropy(rolling_logits.unsqueeze(0), target)
-            selected_indices = (*selection.indices, *rolling)
-            selected_hidden, _, _ = self._finish_layer(
-                target_layer,
-                residual,
-                query,
-                key_cache[layer_index],
-                value_cache[layer_index],
-                selected_indices,
-                occurrence_limit=rolling_tokens + historical_token_budget,
-            )
-            selected_logits = self._complete_current_token(
-                selected_hidden,
-                start_layer=layer_index + 1,
-                position_embeddings=position_embeddings,
-                key_cache=key_cache,
-                value_cache=value_cache,
-                rolling=rolling,
-            )
-            selected_loss = torch.nn.functional.cross_entropy(selected_logits.unsqueeze(0), target)
-
-            full_indices = tuple(range(position + 1))
-            teacher_keys = _gather_cache_occurrences(
-                key_cache[layer_index], full_indices, occurrence_limit=None
-            )
-            attention = target_layer.self_attn
-            teacher_keys = self._repeat_kv(
-                teacher_keys.unsqueeze(0), attention.num_key_value_groups
-            ).squeeze(0)
-            teacher_logits = torch.einsum("hd,hnd->hn", query, teacher_keys)
-            teacher_weights = torch.softmax(
-                teacher_logits * attention.scaling,
-                dim=-1,
-                dtype=torch.float32,
-            ).mean(dim=0)
-            teacher_history = teacher_weights[:rolling_start]
-            teacher_history = teacher_history / teacher_history.sum().clamp_min(1e-12)
-
-        soft = proposal_set.soft_parameters
-        historical_positions = torch.arange(
-            rolling_start,
-            device=soft.device,
-            dtype=soft.dtype,
-        )
-        centers = soft[:, 0:1]
-        spreads = (window_width * soft[:, 1:2] / proposal_set.beta).clamp_min(0.5)
-        importance = soft[:, 2:3]
-        gates = soft[:, 3:4]
-        distance = (historical_positions.unsqueeze(0) - centers) / spreads
-        kernels = torch.exp(-0.5 * distance.square())
-        proposal_occupancy = gates * (1.0 - torch.exp(-importance * kernels))
-        proposal_occupancy = proposal_occupancy.clamp(0.0, 1.0 - 1e-6)
-        collective_occupancy = 1.0 - torch.prod(1.0 - proposal_occupancy, dim=0)
-        coverage_reward = torch.sum(teacher_history.to(soft.dtype) * collective_occupancy)
-        coverage_loss = 1.0 - coverage_reward
-
-        soft_hidden = self._finish_layer_with_soft_history(
-            target_layer,
-            residual,
-            query,
-            key_cache[layer_index],
-            value_cache[layer_index],
-            collective_occupancy,
-            rolling,
-        )
-        soft_logits = self._complete_current_token(
-            soft_hidden,
-            start_layer=layer_index + 1,
+        objective, metrics, _ = self._heatfield_objective_from_proposal(
+            stream,
+            proposal_set,
+            position=position,
+            layer_index=layer_index,
+            residual=residual,
+            query=query,
             position_embeddings=position_embeddings,
             key_cache=key_cache,
             value_cache=value_cache,
             rolling=rolling,
+            historical_token_budget=historical_token_budget,
+            window_width=window_width,
+            coverage_weight=coverage_weight,
+            utility_weight=utility_weight,
+            device=device,
         )
-        soft_loss = torch.nn.functional.cross_entropy(soft_logits.unsqueeze(0), target)
-        utility_surrogate = soft_loss - rolling_loss.detach()
-        objective = coverage_weight * coverage_loss + utility_weight * utility_surrogate
-        metrics = {
-            "position": position,
-            "layer": layer_index,
-            "objective": float(objective.detach()),
-            "coverage_loss": float(coverage_loss.detach()),
-            "soft_next_token_loss": float(soft_loss.detach()),
-            "rolling_next_token_loss": float(rolling_loss),
-            "hard_selected_next_token_loss": float(selected_loss),
-            "hard_utility": float(rolling_loss - selected_loss),
-            "soft_utility": float(rolling_loss - soft_loss.detach()),
-            "soft_hard_utility_gap": float(selected_loss - soft_loss.detach()),
-            "teacher_historical_attention_mass": float(teacher_weights[:rolling_start].sum()),
-            "historical_indices": selection.indices,
-            "historical_occurrences": selection.occurrence_count,
-            "historical_unique_tokens": selection.unique_count,
-            "overlap_occurrences": selection.occurrence_count - selection.unique_count,
-            "proposal_parameters": soft.detach().cpu().tolist(),
-            "coverage_overlap_alpha": 0.0,
-            "trajectory": "learned_hard_detached",
-            "activation_tokens": activation_tokens,
-            "dense_prefix_reused": reused_dense_snapshot,
-            "trajectory_historical_occurrences": trajectory_historical_occurrences,
-            "trajectory_unique_tokens": trajectory_unique_tokens,
-            "trajectory_overlap_occurrences": trajectory_overlap_occurrences,
-            "temporal_credit_assignment": "target_step_only",
-        }
+        metrics.update(
+            {
+                "activation_tokens": activation_tokens,
+                "dense_prefix_reused": reused_dense_snapshot,
+                "trajectory_historical_occurrences": trajectory_historical_occurrences,
+                "trajectory_unique_tokens": trajectory_unique_tokens,
+                "trajectory_overlap_occurrences": trajectory_overlap_occurrences,
+            }
+        )
         return objective, metrics
+
+    def heatfield_training_rollout(
+        self,
+        stream: TokenStream,
+        policy: LearnedHeatFieldPolicy,
+        state: HeatfieldRolloutState,
+        *,
+        stop_position: int,
+        target_layers: dict[int, int],
+        rolling_tokens: int,
+        historical_token_budget: int,
+        window_width: int,
+        coverage_weight: float,
+        utility_weight: float,
+        device: torch.device,
+    ) -> tuple[list[Tensor], list[dict[str, Any]]]:
+        """Advance one causal segment with fixed S weights and target-local gradients."""
+
+        start_position = state.next_position
+        if state.stream_id != stream.stream_id:
+            raise ValueError("streaming training state belongs to another stream")
+        if not start_position < stop_position <= len(stream.tokens) - 1:
+            raise ValueError("streaming training rollout bounds are invalid")
+        layer_count = len(self.model.model.layers)
+        if any(
+            position < start_position
+            or position >= stop_position
+            or layer < 0
+            or layer >= layer_count
+            for position, layer in target_layers.items()
+        ):
+            raise ValueError("streaming training target is outside the rollout")
+        self.model.to(device)
+        policy.to(device)
+        backbone = self.model.model
+        objectives: list[Tensor] = []
+        metrics: list[dict[str, Any]] = []
+        historical_occurrences = 0
+        unique_tokens = 0
+        overlap_occurrences = 0
+        rollout_token_ids = torch.tensor(stream.tokens[start_position:stop_position], device=device)
+        rollout_positions = torch.arange(start_position, stop_position, device=device)
+
+        for position in range(start_position, stop_position):
+            offset = position - start_position
+            with torch.no_grad():
+                token_id = rollout_token_ids[offset].view(1, 1)
+                hidden = backbone.embed_tokens(token_id)
+                position_ids = rollout_positions[offset].view(1, 1)
+                position_embeddings = backbone.rotary_emb(hidden, position_ids)
+            rolling_start = max(0, position - rolling_tokens + 1)
+            rolling = tuple(range(rolling_start, position + 1))
+            lower_layer_selection = None
+            target_layer_index = target_layers.get(position)
+
+            for layer_index, layer in enumerate(backbone.layers):
+                with torch.no_grad():
+                    residual, normalized, query = self._append_layer_kv(
+                        layer,
+                        hidden,
+                        position_embeddings,
+                        state.key_cache[layer_index],
+                        state.value_cache[layer_index],
+                    )
+                context = SelectionContext(
+                    position=position,
+                    layer=layer_index,
+                    history_end=rolling_start,
+                    hidden=normalized[0, 0].detach(),
+                    lower_layer=lower_layer_selection,
+                )
+                if layer_index == target_layer_index:
+                    proposal_set = policy.propose(context, state.policy_states[layer_index])
+                    objective, target_metrics, selected_indices = (
+                        self._heatfield_objective_from_proposal(
+                            stream,
+                            proposal_set,
+                            position=position,
+                            layer_index=layer_index,
+                            residual=residual,
+                            query=query,
+                            position_embeddings=position_embeddings,
+                            key_cache=state.key_cache,
+                            value_cache=state.value_cache,
+                            rolling=rolling,
+                            historical_token_budget=historical_token_budget,
+                            window_width=window_width,
+                            coverage_weight=coverage_weight,
+                            utility_weight=utility_weight,
+                            device=device,
+                        )
+                    )
+                    objectives.append(objective)
+                    metrics.append(target_metrics)
+                else:
+                    with torch.no_grad():
+                        proposal_set = policy.propose(context, state.policy_states[layer_index])
+                    selection = resolve_proposals(
+                        proposal_set.proposals,
+                        history_end=rolling_start,
+                        window_width=window_width,
+                        historical_token_budget=historical_token_budget,
+                        beta=proposal_set.beta,
+                    )
+                    selected_indices = selection.indices
+
+                recurrent = proposal_set.state.recurrent
+                state.policy_states[layer_index] = PolicyState(
+                    proposal_set.state.centers,
+                    recurrent.detach() if recurrent is not None else None,
+                )
+                lower_layer_selection = (
+                    proposal_set.soft_parameters.detach()
+                    if proposal_set.soft_parameters is not None
+                    else None
+                )
+                occurrence_count = len(selected_indices)
+                unique_count = len(set(selected_indices))
+                historical_occurrences += occurrence_count
+                unique_tokens += unique_count
+                overlap_occurrences += occurrence_count - unique_count
+                with torch.no_grad():
+                    hidden, _, _ = self._finish_layer(
+                        layer,
+                        residual,
+                        query,
+                        state.key_cache[layer_index],
+                        state.value_cache[layer_index],
+                        (*selected_indices, *rolling),
+                        occurrence_limit=rolling_tokens + historical_token_budget,
+                    )
+            state.next_position = position + 1
+
+        for target_metrics in metrics:
+            target_metrics.update(
+                {
+                    "rollout_start_position": start_position,
+                    "rollout_stop_position": stop_position,
+                    "rollout_historical_occurrences": historical_occurrences,
+                    "rollout_unique_tokens": unique_tokens,
+                    "rollout_overlap_occurrences": overlap_occurrences,
+                    "selector_weights_fixed_within_rollout": True,
+                }
+            )
+        return objectives, metrics
 
     def full_history_diagnostic(
         self,

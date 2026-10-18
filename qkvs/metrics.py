@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import random
 from collections import defaultdict
 from collections.abc import Iterable
@@ -31,18 +32,108 @@ def paired_bootstrap_interval(
     return [lower, upper]
 
 
+def _windows(access: dict[str, Any]) -> list[tuple[int, int]]:
+    if "historical_windows_varint_base64" in access:
+        encoded = base64.b64decode(access["historical_windows_varint_base64"], validate=True)
+        windows = []
+        offset = 0
+
+        def decode_varint() -> int:
+            nonlocal offset
+            value = 0
+            shift = 0
+            while offset < len(encoded):
+                byte = encoded[offset]
+                offset += 1
+                value |= (byte & 0x7F) << shift
+                if not byte & 0x80:
+                    return value
+                shift += 7
+                if shift > 63:
+                    break
+            raise ValueError("invalid packed historical window")
+
+        while offset < len(encoded):
+            start = decode_varint()
+            length = decode_varint()
+            if length <= 0:
+                raise ValueError("packed historical windows must be nonempty")
+            windows.append((start, start + length))
+        return windows
+    if "historical_windows" in access:
+        return [tuple(window) for window in access["historical_windows"]]
+    indices = access.get("historical_indices", [])
+    windows: list[tuple[int, int]] = []
+    for index in indices:
+        if windows and index == windows[-1][1]:
+            windows[-1] = (windows[-1][0], index + 1)
+        else:
+            windows.append((index, index + 1))
+    return windows
+
+
+def _rolling_range(access: dict[str, Any]) -> tuple[int, int]:
+    if "rolling_range" in access:
+        return tuple(access["rolling_range"])
+    indices = access.get("rolling_indices", [])
+    return (indices[0], indices[-1] + 1) if indices else (0, 0)
+
+
+def _merged(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, stop in sorted(windows):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(stop, merged[-1][1]))
+        else:
+            merged.append((start, stop))
+    return merged
+
+
+def _interval_length(windows: list[tuple[int, int]]) -> int:
+    return sum(stop - start for start, stop in _merged(windows))
+
+
+def _intersection_length(first: list[tuple[int, int]], second: list[tuple[int, int]]) -> int:
+    left = _merged(first)
+    right = _merged(second)
+    total = 0
+    left_index = 0
+    right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        start = max(left[left_index][0], right[right_index][0])
+        stop = min(left[left_index][1], right[right_index][1])
+        total += max(0, stop - start)
+        if left[left_index][1] <= right[right_index][1]:
+            left_index += 1
+        else:
+            right_index += 1
+    return total
+
+
+def _contains(windows: list[tuple[int, int]], position: int) -> bool:
+    return any(start <= position < stop for start, stop in windows)
+
+
 def summarize_accesses(
     accesses: list[dict[str, Any]],
     *,
     historical_token_budget: int | None = None,
 ) -> dict[str, Any]:
-    historical_occurrences = sum(len(access["historical_indices"]) for access in accesses)
-    historical_unique = sum(len(set(access["historical_indices"])) for access in accesses)
-    duplicate_occurrences = historical_occurrences - historical_unique
-    rolling_occurrences = sum(len(access["rolling_indices"]) for access in accesses)
-    rolling_overlap_occurrences = sum(
-        sum(index in set(access["rolling_indices"]) for index in access["historical_indices"])
+    historical_occurrences = sum(
+        access.get(
+            "historical_occurrences",
+            sum(stop - start for start, stop in _windows(access)),
+        )
         for access in accesses
+    )
+    historical_unique = sum(
+        access.get("historical_unique_tokens", _interval_length(_windows(access)))
+        for access in accesses
+    )
+    duplicate_occurrences = historical_occurrences - historical_unique
+    rolling_occurrences = sum(stop - start for start, stop in map(_rolling_range, accesses))
+    rolling_overlap_occurrences = sum(
+        access.get("rolling_overlap_occurrences", 0) for access in accesses
     )
     proposal_centers = [
         center
@@ -69,21 +160,25 @@ def summarize_accesses(
         len(access.get("proposal_active", ())) - sum(access.get("proposal_active", ()))
         for access in accesses
     )
-    normalized_historical_positions = [
-        index / access["history_end"]
+    normalized_historical_position_sum = sum(
+        (start + stop - 1) * (stop - start) / 2 / access["history_end"]
         for access in accesses
         if access["history_end"] > 0
-        for index in access["historical_indices"]
-    ]
+        for start, stop in _windows(access)
+    )
     support_trials = [
         access
         for access in accesses
         if access["support_position"] is not None
         and access["support_position"] < access["token_position"] + 1
     ]
-    support_hits = sum(
-        access["support_position"] in access["actual_indices"] for access in support_trials
-    )
+    support_hits = 0
+    for access in support_trials:
+        support = access["support_position"]
+        rolling_start, rolling_stop = _rolling_range(access)
+        support_hits += bool(
+            rolling_start <= support < rolling_stop or _contains(_windows(access), support)
+        )
 
     by_layer: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for access in accesses:
@@ -93,25 +188,33 @@ def summarize_accesses(
     for layer_accesses in by_layer.values():
         ordered = sorted(layer_accesses, key=lambda access: access["token_position"])
         for previous, current in zip(ordered, ordered[1:], strict=False):
-            previous_indices = set(previous["historical_indices"])
-            current_indices = set(current["historical_indices"])
-            union = previous_indices | current_indices
-            stability.append(len(previous_indices & current_indices) / len(union) if union else 1.0)
+            previous_windows = _windows(previous)
+            current_windows = _windows(current)
+            intersection = _intersection_length(previous_windows, current_windows)
+            union = (
+                _interval_length(previous_windows)
+                + _interval_length(current_windows)
+                - intersection
+            )
+            stability.append(intersection / union if union else 1.0)
             if previous["support_position"] != current["support_position"]:
-                responsiveness.append(float(previous_indices != current_indices))
+                responsiveness.append(float(previous_windows != current_windows))
 
     per_layer = {
         str(layer): {
             "attention_steps": len(layer_accesses),
             "historical_token_occurrences": sum(
-                len(access["historical_indices"]) for access in layer_accesses
-            ),
-            "duplicate_historical_occurrences": sum(
-                len(access["historical_indices"]) - len(set(access["historical_indices"]))
+                access.get(
+                    "historical_occurrences",
+                    sum(stop - start for start, stop in _windows(access)),
+                )
                 for access in layer_accesses
             ),
+            "duplicate_historical_occurrences": sum(
+                access.get("duplicate_historical_occurrences", 0) for access in layer_accesses
+            ),
             "rolling_token_occurrences": sum(
-                len(access["rolling_indices"]) for access in layer_accesses
+                stop - start for start, stop in map(_rolling_range, layer_accesses)
             ),
         }
         for layer, layer_accesses in sorted(by_layer.items())
@@ -130,17 +233,24 @@ def summarize_accesses(
         "mean_proposal_spread": _mean(proposal_spreads),
         "active_proposals": active_proposals,
         "inactive_proposals": inactive_proposals,
-        "mean_normalized_historical_position": _mean(normalized_historical_positions),
+        "proposal_trace_records": sum(bool(access["proposal_centers"]) for access in accesses),
+        "mean_normalized_historical_position": (
+            normalized_historical_position_sum / historical_occurrences
+            if historical_occurrences
+            else 0.0
+        ),
         "support_coverage": support_hits / len(support_trials) if support_trials else None,
         "support_trials": len(support_trials),
         "temporal_stability": _mean(stability),
         "temporal_responsiveness": _mean(responsiveness),
         "responsiveness_trials": len(responsiveness),
     }
+    unbounded = any(access.get("attention_mode") == "full_qkv" for access in accesses)
+    summary["bounded_historical_attention"] = not unbounded
     if historical_token_budget is not None:
         maximum = len(accesses) * historical_token_budget
         summary["historical_budget_utilization"] = (
-            historical_occurrences / maximum if maximum else 0.0
+            None if unbounded else historical_occurrences / maximum if maximum else 0.0
         )
     return summary
 
@@ -197,8 +307,16 @@ def summarize_measurements(
         by_condition[measurement["condition"]].append(measurement)
     conditions: dict[str, Any] = {}
     sequence_losses: dict[str, dict[str, float]] = {}
+    post_sequence_losses: dict[str, dict[str, float]] = {}
+    region_sequence_losses: dict[str, dict[str, dict[str, float]]] = {}
     for condition, records in sorted(by_condition.items()):
         token_losses = [score["loss"] for record in records for score in record["token_scores"]]
+        post_scores = [
+            score
+            for record in records
+            for score in record["token_scores"]
+            if score.get("phase") in {"post_transition", "qkvs"}
+        ]
         accesses = [
             access
             for record in records
@@ -210,6 +328,38 @@ def summarize_measurements(
             for record in records
         }
         sequence_losses[condition] = per_sequence
+        post_sequence_losses[condition] = {
+            record["stream_id"]: _mean(
+                score["loss"]
+                for score in record["token_scores"]
+                if score.get("phase") in {"post_transition", "qkvs"}
+            )
+            for record in records
+        }
+        region_losses: dict[str, list[float]] = {"early": [], "middle": [], "late": []}
+        region_per_stream: dict[str, dict[str, float]] = {
+            "early": {},
+            "middle": {},
+            "late": {},
+        }
+        region_names = ("early", "middle", "late")
+        for record in records:
+            continuation = [
+                score
+                for score in record["token_scores"]
+                if score.get("phase") in {"post_transition", "qkvs"}
+            ]
+            for index, score in enumerate(continuation):
+                region = region_names[min(2, 3 * index // max(1, len(continuation)))]
+                region_losses[region].append(score["loss"])
+            for region in region_names:
+                region_per_stream[region][record["stream_id"]] = _mean(
+                    score["loss"]
+                    for index, score in enumerate(continuation)
+                    if region_names[min(2, 3 * index // max(1, len(continuation)))] == region
+                )
+        region_sequence_losses[condition] = region_per_stream
+        performance = [record["performance"] for record in records if "performance" in record]
         conditions[condition] = {
             "streams": len(records),
             "scored_tokens": len(token_losses),
@@ -223,47 +373,102 @@ def summarize_measurements(
                 accesses,
                 historical_token_budget=historical_token_budget,
             ),
+            "post_transition": {
+                "scored_tokens": len(post_scores),
+                "mean_next_token_cross_entropy": _mean(score["loss"] for score in post_scores),
+                "accuracy": _mean(
+                    float(score["prediction"] == score["target"]) for score in post_scores
+                ),
+                "loss_by_context_region": {
+                    name: _mean(region_losses[name]) for name in region_names
+                },
+            },
+            "measured_execution": {
+                "streams": len(performance),
+                "mean_wall_seconds_including_snapshot_restore": _mean(
+                    item["wall_seconds_including_snapshot_restore"] for item in performance
+                ),
+                "mean_post_transition_tokens_per_second": _mean(
+                    item["post_transition_tokens_per_second"] for item in performance
+                ),
+                "max_peak_accelerator_bytes": max(
+                    (item.get("peak_accelerator_bytes") or 0 for item in performance),
+                    default=0,
+                )
+                or None,
+            },
         }
 
     if baseline not in sequence_losses:
         raise ValueError("configured baseline is absent from completed measurements")
-    paired: dict[str, Any] = {}
-    baseline_losses = sequence_losses[baseline]
-    for condition, losses in sorted(sequence_losses.items()):
-        if condition == baseline:
-            continue
-        common = sorted(set(baseline_losses) & set(losses))
-        differences = [baseline_losses[key] - losses[key] for key in common]
-        paired[condition] = {
-            "paired_streams": len(common),
-            "mean_utility_nats": _mean(differences),
-            "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
-                differences,
-                samples=bootstrap_samples,
-                seed=seed,
-            ),
-            "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
-        }
+
+    def comparisons(losses_by_condition: dict[str, dict[str, float]]) -> dict[str, Any]:
+        paired: dict[str, Any] = {}
+        baseline_losses = losses_by_condition[baseline]
+        for condition, losses in sorted(losses_by_condition.items()):
+            if condition == baseline:
+                continue
+            common = sorted(set(baseline_losses) & set(losses))
+            differences = [baseline_losses[key] - losses[key] for key in common]
+            paired[condition] = {
+                "paired_streams": len(common),
+                "mean_utility_nats": _mean(differences),
+                "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
+                    differences,
+                    samples=bootstrap_samples,
+                    seed=seed,
+                ),
+                "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
+            }
+        return paired
+
+    paired = comparisons(sequence_losses)
+    post_paired = comparisons(post_sequence_losses)
+    region_paired = {
+        region: comparisons(
+            {condition: losses[region] for condition, losses in region_sequence_losses.items()}
+        )
+        for region in ("early", "middle", "late")
+    }
     for comparison in paired_comparisons or []:
         if (
             comparison["baseline"] not in sequence_losses
             or comparison["condition"] not in sequence_losses
         ):
             continue
-        comparison_baseline = sequence_losses[comparison["baseline"]]
-        comparison_condition = sequence_losses[comparison["condition"]]
-        common = sorted(set(comparison_baseline) & set(comparison_condition))
-        differences = [comparison_baseline[key] - comparison_condition[key] for key in common]
-        paired[comparison["name"]] = {
-            "baseline": comparison["baseline"],
-            "condition": comparison["condition"],
-            "paired_streams": len(common),
-            "mean_utility_nats": _mean(differences),
-            "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
-                differences,
-                samples=bootstrap_samples,
-                seed=seed,
-            ),
-            "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
-        }
-    return {"conditions": conditions, "paired_utility": paired}
+
+        def add_comparison(
+            destination: dict[str, Any],
+            losses_by_condition: dict[str, dict[str, float]],
+            comparison: dict[str, str] = comparison,
+        ) -> None:
+            comparison_baseline = losses_by_condition[comparison["baseline"]]
+            comparison_condition = losses_by_condition[comparison["condition"]]
+            common = sorted(set(comparison_baseline) & set(comparison_condition))
+            differences = [comparison_baseline[key] - comparison_condition[key] for key in common]
+            destination[comparison["name"]] = {
+                "baseline": comparison["baseline"],
+                "condition": comparison["condition"],
+                "paired_streams": len(common),
+                "mean_utility_nats": _mean(differences),
+                "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
+                    differences,
+                    samples=bootstrap_samples,
+                    seed=seed,
+                ),
+                "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
+            }
+
+        add_comparison(paired, sequence_losses)
+        add_comparison(post_paired, post_sequence_losses)
+        for region in ("early", "middle", "late"):
+            add_comparison(
+                region_paired[region],
+                {condition: losses[region] for condition, losses in region_sequence_losses.items()},
+            )
+    return {
+        "conditions": conditions,
+        "paired_utility": paired,
+        "post_transition_paired_utility": post_paired,
+        "post_transition_region_paired_utility": region_paired,
+    }

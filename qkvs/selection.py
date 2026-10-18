@@ -71,6 +71,16 @@ class RollingOnlyPolicy:
         return ProposalSet((), state)
 
 
+class FullQKVPolicy:
+    """Explicit unbounded continuation reference; it is not an R-matched selector."""
+
+    full_qkv = True
+
+    def propose(self, context: SelectionContext, state: PolicyState) -> ProposalSet:
+        del context
+        return ProposalSet((), state)
+
+
 class FixedOffsetPolicy:
     """A bounded control that proposes fixed distances behind the current token."""
 
@@ -190,40 +200,35 @@ class LearnedHeatFieldPolicy(nn.Module):
             dim=-1,
         )
         previous = state.recurrent
-        if previous is not None:
+        if previous is None:
+            previous = torch.zeros_like(candidate)
+        else:
             previous = previous.to(device=candidate.device, dtype=candidate.dtype)
             if previous.shape != candidate.shape:
                 raise ValueError("temporal selection state has the wrong shape")
-            current = self.gamma * previous + (1.0 - self.gamma) * candidate
-            current = torch.stack(
-                (
-                    current[:, 0].clamp(0.0, history_scale),
-                    current[:, 1],
-                    current[:, 2],
-                    current[:, 3],
-                ),
-                dim=-1,
-            )
-        else:
-            current = candidate
+        current = self.gamma * previous + (1.0 - self.gamma) * candidate
+        current = torch.stack(
+            (
+                current[:, 0].clamp(0.0, history_scale),
+                current[:, 1],
+                current[:, 2],
+                current[:, 3],
+            ),
+            dim=-1,
+        )
 
         proposals = []
         normalized_centers = []
-        for proposal in current:
-            center = (
-                float(((proposal[0] + 0.5) / context.history_end).detach())
-                if context.history_end > 0
-                else 0.0
-            )
+        for center_value, spread, weight, gate in current.detach().cpu().tolist():
+            center = (center_value + 0.5) / context.history_end if context.history_end > 0 else 0.0
             center = min(max(center, 0.0), 1.0)
             normalized_centers.append(center)
             proposals.append(
                 HeatFieldProposal(
                     center=center,
-                    spread=float(proposal[1].detach()),
-                    weight=float(proposal[2].detach()),
-                    active=context.history_end > 0
-                    and float(proposal[3].detach()) >= self.gate_threshold,
+                    spread=spread,
+                    weight=weight,
+                    active=context.history_end > 0 and gate >= self.gate_threshold,
                 )
             )
         return ProposalSet(
@@ -306,6 +311,8 @@ def build_policy(
     policy = condition["policy"]
     if policy == "rolling":
         return RollingOnlyPolicy()
+    if policy == "full_qkv":
+        return FullQKVPolicy()
     if policy == "fixed_offsets":
         if len(condition["offsets"]) > controls["proposal_count"]:
             raise ValueError("fixed offsets exceed proposal capacity")

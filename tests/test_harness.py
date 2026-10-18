@@ -69,7 +69,7 @@ def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> Non
         "runnable": False,
         "errors": [],
         "not_runnable_reasons": ["configuration is not authorized for harness execution"],
-        "experiment": "heatfield_learning_study",
+        "experiment": "heatfield_long_context_learning_study",
         "status": "draft_not_authorized",
     }
 
@@ -187,6 +187,49 @@ def test_tokenized_text_streams_have_fixed_boundaries_and_source_identity(tmp_pa
             config_path=tmp_path / "config.json",
             tokenizer=ByteTokenizer(),
         )
+
+
+def test_missing_pinned_text_is_downloaded_atomically(tmp_path, monkeypatch) -> None:
+    import urllib.request
+
+    payload = b"one genuinely fetched source, not a repeated synthetic passage"
+    source = tmp_path / "downloaded.txt"
+
+    class Response(io.BytesIO):
+        pass
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda url, timeout: Response(payload),
+    )
+    specification = {
+        "data": {
+            "kind": "tokenized_text",
+            "source": {
+                "path": source.name,
+                "url": "https://example.invalid/pinned.txt",
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+            "boundaries": [{"id": "text", "start_token": 0, "stop_token": 8}],
+        }
+    }
+
+    class ByteTokenizer:
+        def encode(self, text, *, add_special_tokens):
+            assert not add_special_tokens
+            return list(text.encode())
+
+    _, identity = _tokenized_text_streams(
+        specification,
+        config_path=tmp_path / "config.json",
+        tokenizer=ByteTokenizer(),
+    )
+    assert source.read_bytes() == payload
+    assert identity["source_url"] == "https://example.invalid/pinned.txt"
+    assert identity["source_bytes"] == len(payload)
+    assert not source.with_suffix(".txt.tmp").exists()
 
 
 def test_cpu_run_is_reproducible_resumable_and_paired(tmp_path) -> None:

@@ -13,6 +13,7 @@ import qkvs.model as model_module
 from qkvs.model import FrozenCausalReader, HuggingFaceQwen2Reader, TokenStream
 from qkvs.selection import (
     FixedOffsetPolicy,
+    FullQKVPolicy,
     HeatFieldProposal,
     LearnedHeatFieldPolicy,
     PolicyState,
@@ -174,17 +175,17 @@ def test_direct_cache_gather_reads_real_occurrences_in_order() -> None:
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))
 def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_factory) -> None:
     reader = reader_factory()
-    original_stack = torch.stack
-    stacked_widths: list[int] = []
+    original_gather = model_module._gather_cache_occurrences
+    gathered_widths: list[int] = []
 
-    def guarded_stack(tensors, *args, **kwargs):
-        dim = kwargs.get("dim", args[0] if args else 0)
-        if dim == 1:
-            stacked_widths.append(len(tensors))
-            assert len(tensors) <= 5
-        return original_stack(tensors, *args, **kwargs)
+    def guarded_gather(cache, indices, *, occurrence_limit):
+        gathered = original_gather(cache, indices, occurrence_limit=occurrence_limit)
+        if occurrence_limit is not None:
+            gathered_widths.append(gathered.shape[1])
+            assert gathered.shape[1] <= 5
+        return gathered
 
-    monkeypatch.setattr(torch, "stack", guarded_stack)
+    monkeypatch.setattr(model_module, "_gather_cache_occurrences", guarded_gather)
     scores = reader.execute(
         _stream(tuple(index % 16 for index in range(48))),
         FixedOffsetPolicy((8, 16, 24)),
@@ -194,9 +195,9 @@ def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_facto
         window_width=1,
         device=torch.device("cpu"),
     )
-    assert stacked_widths
+    assert gathered_widths
     assert max(access.cache_length for score in scores for access in score.accesses) == 47
-    assert max(stacked_widths) == 5
+    assert max(gathered_widths) == 5
 
 
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))
@@ -214,7 +215,12 @@ def test_direct_gather_matches_legacy_materialized_scores(monkeypatch, reader_fa
 
     def legacy_gather(cache, indices, *, occurrence_limit):
         assert occurrence_limit is None or len(indices) <= occurrence_limit
-        return torch.stack(cache, dim=1)[:, indices]
+        full = (
+            cache.storage[:, : len(cache)]
+            if isinstance(cache, model_module._LayerKVCache)
+            else torch.stack(cache, dim=1)
+        )
+        return full[:, indices]
 
     monkeypatch.setattr(model_module, "_gather_cache_occurrences", legacy_gather)
     materialized = reader_factory().execute(
@@ -348,7 +354,7 @@ def test_dense_bootstrap_parity_and_activation_boundary() -> None:
         "dense_bridge",
         "dense_bridge",
     ]
-    assert all(score.phase == "qkvs" for score in scores[6:])
+    assert all(score.phase == "post_transition" for score in scores[6:])
     assert {(position, layer) for position, layer, *_ in policy.calls} == {
         (position, layer) for position in range(6, 11) for layer in range(2)
     }
@@ -373,9 +379,7 @@ def test_dense_prefill_persistence_and_cached_continuation_equivalence(tmp_path)
         device=device,
         ownership="evaluation",
     )
-    cache_before = tuple(
-        value.clone() for layer_cache in snapshot.key_cache for value in layer_cache
-    )
+    cache_before = tuple(layer_cache.clone() for layer_cache in snapshot.key_cache)
     path = tmp_path / "dense.pt"
     reader.save_dense_prefill(snapshot, path)
     restored = reader.load_dense_prefill(
@@ -435,7 +439,7 @@ def test_dense_prefill_persistence_and_cached_continuation_equivalence(tmp_path)
         torch.equal(before, after)
         for before, after in zip(
             cache_before,
-            (value for layer_cache in snapshot.key_cache for value in layer_cache),
+            snapshot.key_cache,
             strict=True,
         )
     )
@@ -458,6 +462,53 @@ def test_dense_prefill_persistence_and_cached_continuation_equivalence(tmp_path)
             device=device,
             ownership="train",
         )
+
+
+def test_full_qkv_continuation_reuses_prefill_and_matches_dense_reference() -> None:
+    reader = _qwen_reader()
+    stream = _stream(tuple(index % 32 for index in range(14)))
+    device = torch.device("cpu")
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=4,
+        activation_tokens=6,
+        device=device,
+        ownership="evaluation",
+        prefill_chunk_tokens=3,
+    )
+    scores = reader.execute(
+        stream,
+        FullQKVPolicy(),
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=device,
+        dense_snapshot=snapshot,
+        snapshot_ownership="evaluation",
+        prefill_chunk_tokens=3,
+    )
+    with torch.inference_mode():
+        logits = reader.model(
+            input_ids=torch.tensor([stream.tokens]),
+            use_cache=False,
+            logits_to_keep=0,
+        ).logits[0, :-1]
+    losses = torch.nn.functional.cross_entropy(
+        logits,
+        torch.tensor(stream.tokens[1:]),
+        reduction="none",
+    )
+    assert torch.allclose(
+        torch.tensor([score.loss for score in scores]), losses, atol=2e-5, rtol=2e-5
+    )
+    assert all(
+        access.attention_mode == "full_qkv"
+        and access.gathered_key_occurrences == score.position + 1
+        and access.gathered_value_occurrences == score.position + 1
+        for score in scores[6:]
+        for access in score.accesses
+    )
 
 
 def test_qwen2_adapter_rejects_position_variant_outside_validated_support() -> None:
@@ -494,6 +545,7 @@ def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
         historical_token_budget=1,
         window_width=1,
         device=torch.device("cpu"),
+        proposal_trace_interval=3,
     )
     late = scores[-1].accesses
     assert late[0].historical_indices != late[1].historical_indices
@@ -502,6 +554,8 @@ def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
             assert access.cache_length == score.position + 1
             assert all(index < access.history_end for index in access.historical_indices)
             assert access.rolling_overlap_occurrences == 0
+            if score.phase == "post_transition":
+                assert bool(access.proposal_weights) == (score.position % 3 == 0)
 
 
 def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
@@ -707,6 +761,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
             },
             "conditions": [
                 {"name": "rolling", "policy": "rolling"},
+                {"name": "full_qkv", "policy": "full_qkv"},
                 {"name": "untrained_s", "policy": "heatfield_untrained"},
                 {"name": "heatfield", "policy": "heatfield"},
             ],
@@ -718,12 +773,15 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
             "coverage_weight": 1.0,
             "utility_weight": 0.1,
             "checkpoint_interval": 1,
-            "position_schedule": "cyclic",
+            "rollout_tokens": 4,
+            "targets_per_rollout": 3,
+            "position_schedule": "streaming_stratified",
             "layer_schedule": "round_robin",
         },
         "evaluation": {
             "metric": "next_token_cross_entropy",
             "paired_conditions": True,
+            "proposal_trace_interval": 1,
             "baseline": "rolling",
             "comparisons": [
                 {
@@ -734,7 +792,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
             ],
             "bootstrap_samples": 20,
         },
-        "execution": {"allowed_devices": ["cpu"], "output_root": str(tmp_path)},
+        "execution": {
+            "allowed_devices": ["cpu"],
+            "output_root": str(tmp_path),
+            "prefill_chunk_tokens": 2,
+        },
     }
     assert validate_config(specification)["runnable"]
     overlapping = json.loads(json.dumps(specification))
@@ -757,6 +819,29 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         return original_dense_prefill(*args, **kwargs)
 
     monkeypatch.setattr(reader, "dense_prefill", counted_dense_prefill)
+    original_rollout = reader.heatfield_training_rollout
+    rollout_calls = 0
+
+    def interrupted_rollout(*args, **kwargs):
+        nonlocal rollout_calls
+        rollout_calls += 1
+        if rollout_calls == 2:
+            raise RuntimeError("test interruption after an atomic rollout checkpoint")
+        return original_rollout(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "heatfield_training_rollout", interrupted_rollout)
+    with pytest.raises(RuntimeError, match="test interruption"):
+        run_experiment(
+            config,
+            device="cpu",
+            output_root=tmp_path / "results",
+            allow_dirty_source=True,
+        )
+    partial_output = tmp_path / "results" / "learned-heatfield-smoke" / "result.json"
+    partial = json.loads(partial_output.read_text())
+    assert partial["training"]["completed_steps"] == 1
+    assert partial["training"]["streaming"]["next_positions"] == {"train": 8}
+    monkeypatch.setattr(reader, "heatfield_training_rollout", original_rollout)
     output, first = run_experiment(
         config,
         device="cpu",
@@ -771,6 +856,18 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
     )
     assert first["training"]["completed_steps"] == 2
     assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
+    assert [record["position"] for record in first["training"]["history"]] == [
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+    ]
+    assert all(
+        record["selector_weights_fixed_within_rollout"] for record in first["training"]["history"]
+    )
+    assert first["training"]["streaming"]["next_positions"] == {"train": 11}
     assert {record["stream_id"] for record in first["training"]["history"]} == {
         "train",
     }
@@ -790,19 +887,23 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         "dense_bridge",
     ]
     assert all(
-        not score["accesses"] for score in heatfield["token_scores"] if score["phase"] != "qkvs"
+        not score["accesses"]
+        for score in heatfield["token_scores"]
+        if score["phase"] != "post_transition"
     )
     assert {measurement["stream_id"] for measurement in first["measurements"]} == {"evaluation"}
     assert {measurement["condition"] for measurement in first["measurements"]} == {
         "rolling",
+        "full_qkv",
         "untrained_s",
         "heatfield",
     }
-    assert first["training"]["soft_hard_alignment"]["paired_steps"] == 2
+    assert first["training"]["soft_hard_alignment"]["paired_steps"] == 6
     assert first["training"]["soft_hard_alignment"]["soft_hard_utility_correlation"] is not None
     assert 0.0 <= first["training"]["soft_hard_alignment"]["utility_sign_agreement"] <= 1.0
     assert set(first["summary"]["conditions"]) == {
         "rolling",
+        "full_qkv",
         "untrained_s",
         "heatfield",
     }
@@ -813,6 +914,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         "historical_budget_utilization" in condition["retrieval"]
         for condition in first["summary"]["conditions"].values()
     )
+    assert (
+        first["summary"]["conditions"]["full_qkv"]["retrieval"]["historical_budget_utilization"]
+        is None
+    )
+    assert first["summary"]["conditions"]["heatfield"]["post_transition"]["scored_tokens"]
 
     _, resumed = run_experiment(
         config,
@@ -822,6 +928,21 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
     )
     assert resumed == first
     assert prefill_calls == 2
+
+    uninterrupted_output, uninterrupted = run_experiment(
+        config,
+        device="cpu",
+        output_root=tmp_path / "uninterrupted-results",
+        allow_dirty_source=True,
+    )
+    assert uninterrupted["training"]["history"] == first["training"]["history"]
+    resumed_policy = torch.load(output.parent / "selector.pt", weights_only=True)["policy"]
+    uninterrupted_policy = torch.load(
+        uninterrupted_output.parent / "selector.pt", weights_only=True
+    )["policy"]
+    assert all(
+        torch.equal(resumed_policy[name], uninterrupted_policy[name]) for name in resumed_policy
+    )
 
 
 @pytest.mark.skipif(
@@ -999,10 +1120,15 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
                 "evaluation": {
                     "metric": "next_token_cross_entropy",
                     "paired_conditions": True,
+                    "proposal_trace_interval": 1,
                     "baseline": "rolling",
                     "bootstrap_samples": 20,
                 },
-                "execution": {"allowed_devices": ["cpu"], "output_root": str(tmp_path)},
+                "execution": {
+                    "allowed_devices": ["cpu"],
+                    "output_root": str(tmp_path),
+                    "prefill_chunk_tokens": 2,
+                },
             }
         ),
         encoding="utf-8",
@@ -1038,12 +1164,8 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         config_path=study_path,
         tokenizer=tokenizer,
     )
-    assert [stream["split"] for stream in study_streams] == [
-        "train",
-        "train",
-        "evaluation",
-        "evaluation",
-    ]
+    assert [stream["split"] for stream in study_streams] == ["train", "evaluation"]
+    assert all(len(stream["tokens"]) == 16384 for stream in study_streams)
     assert study_identity["source_sha256"] == study_specification["data"]["source"]["sha256"]
 
     print(

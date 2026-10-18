@@ -60,10 +60,12 @@
   "evaluation": {
     "metric": "next_token_cross_entropy",
     "paired_conditions": true,
+    "proposal_trace_interval": 64,
     "baseline": "rolling",
     "bootstrap_samples": 2000
   },
   "execution": {
+    "prefill_chunk_tokens": 128,
     "allowed_devices": [
       "cuda"
     ],

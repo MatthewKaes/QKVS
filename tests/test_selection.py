@@ -138,9 +138,10 @@ def test_gamma_controls_bounded_temporal_persistence_and_absolute_anchoring() ->
     )
     responsive_second = responsive.propose(second_context, first.state)
     persistent_second = persistent.propose(second_context, first_persistent.state)
-    prior_centers = first.state.recurrent[:, 0]
-    assert torch.linalg.vector_norm(persistent_second.state.recurrent[:, 0] - prior_centers) < (
-        torch.linalg.vector_norm(responsive_second.state.recurrent[:, 0] - prior_centers)
+    assert torch.allclose(first_persistent.state.recurrent, 0.1 * first.state.recurrent)
+    assert torch.allclose(
+        persistent_second.state.recurrent,
+        0.9 * first_persistent.state.recurrent + 0.1 * responsive_second.state.recurrent,
     )
     assert persistent_second.state.recurrent.shape == (2, 4)
 

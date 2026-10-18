@@ -53,10 +53,12 @@
   "evaluation": {
     "metric": "next_token_cross_entropy",
     "paired_conditions": true,
+    "proposal_trace_interval": 1,
     "baseline": "rolling",
     "bootstrap_samples": 200
   },
   "execution": {
+    "prefill_chunk_tokens": 4,
     "allowed_devices": [
       "cpu"
     ],

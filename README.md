@@ -172,7 +172,8 @@ synthetic transformer. The same reader interface also supports frozen Hugging Fa
 `Qwen2ForCausalLM` full-attention checkpoints, including grouped-query attention and the
 checkpoint's positional and normalization modules. A pretrained run additionally requires a
 pinned model and tokenizer revision, an explicit execution dtype, a SHA-256-pinned UTF-8 source,
-and fixed token boundaries. No result-bearing pretrained protocol is checked in or authorized.
+and fixed token boundaries. The checked-in long-context study is a draft protocol only and remains
+non-runnable until arbiter authorization.
 
 The Qwen2 adapter writes each layer's position-rotated K/V once, then gathers only the actual
 historical occurrences and mandatory rolling window used by that layer's ordinary Q/K/V
@@ -194,6 +195,9 @@ threshold `T` (`W=4096`, `T=6144` in the initial long-context configuration):
    eligible for at most `R` S-directed historical occurrences. `J`, spatial resolution, and `R`
    remain independent.
 
+The zero state participates in the same recurrence as every later state: the first update is
+`z_T = gamma * 0 + (1 - gamma) * u_T`. It is not a special case that bypasses gamma.
+
 Training and evaluation use this same boundary and absolute position accounting. The dense prefix
 is independent of S, so Qwen2 can persist an immutable prefill snapshot containing its per-layer
 rotated K/V, dense-score metadata, final boundary logits, and next absolute position. Snapshots are
@@ -201,6 +205,16 @@ keyed and validated by exact prefix tokens, frozen model identity and weight dig
 configuration, numerical settings, `W`, `T`, and train/evaluation ownership. Identical trajectories
 within one owner can share a snapshot; restoration copies cache containers before appending, and no
 post-transition K/V or S state is persisted or shared between trajectories.
+
+Dense prefill uses a fixed-capacity Hugging Face cache in bounded query chunks, then stores one
+contiguous K/V tensor per layer. Post-transition Qwen2 caches are preallocated and selected with
+direct tensor gathers, avoiding per-token full-cache stacking and repeated cache concatenation.
+Continuation losses and predictions transfer to the host in one batch rather than synchronizing
+once per scalar token result; learned proposal parameters use one bounded transfer per layer update.
+Access artifacts encode exact rolling ranges and selected windows with compact varints rather than
+expanding thousands of contiguous token indices into JSON. Proposal parameters used for temporal
+heat-field plots are sampled at a configured interval (64 tokens in the long study); access counts,
+overlap, and exact executed windows remain recorded at every continuation token and layer.
 
 The first learned-S implementation uses an independent per-layer MLP over the causal hidden state
 and the bounded current lower-layer proposal state. It emits center, spread, importance, and gate
@@ -217,11 +231,18 @@ gathers do not transmit address gradients. Fixed gamma and beta are the delibera
 implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
 ignored settings.
 
-After dense activation, training-prefix K/V is constructed by the current learned hard-S trajectory,
-matching inference. Those prior hard decisions and recurrent states are detached: gradients apply
-only to the selected target token/layer, so this is explicit truncated credit assignment rather
-than full temporal backpropagation. Artifacts pair soft-surrogate and actual hard-window utility at
-every training step to expose agreement or mismatch.
+After dense activation, training advances each stream once through coherent causal rollout
+segments. K/V and recurrent S continue across target positions and optimizer updates; selector
+weights stay fixed within a segment and change only at its boundary. Target positions are
+stratified across each segment and rotate through layers. Prior hard decisions and recurrent states
+remain detached, so gradients apply only to selected target token/layers rather than providing full
+temporal credit assignment. Atomic checkpoints include the exact post-transition training K/V, S
+state, position, optimizer, and policy, and may resume only the same identified trajectory.
+
+`full_qkv` is an explicit reference continuation: it restores the same dense prefill at `T`, then
+reads the complete causal cache on the same ground-truth stream. It is deliberately unbounded and
+is never reported as an `R`-matched control. Its next-token loss is a reference measurement, not a
+logit target or presumed quality ceiling.
 
 ```text
 configuration
@@ -242,7 +263,7 @@ python -m qkvs status --run artifacts/results/harness-smoke
 python -m qkvs summarize --run artifacts/results/harness-smoke
 ```
 
-The proposed human-started interface for the small held-out learning study is:
+The proposed human-started interface for the long-context held-out learning study is:
 
 ```bash
 python -m qkvs run \
@@ -251,11 +272,13 @@ python -m qkvs run \
 ```
 
 The study configuration is complete but remains `draft_not_authorized`; the command refuses to run
-until an independent arbiter changes that status. It compares rolling-only, fixed offsets,
-identically initialized untrained S, and trained S on two held-out token ranges never exposed to
-the optimizer. `heatfield_initial.json` remains an incomplete earlier design draft. Codex must not
-run CUDA workloads. Configuration validation, status, and summarization do not import the model
-runtime or initialize CUDA.
+until an independent arbiter changes that status. It uses independent 16,384-token training and
+held-out spans from a SHA-256-pinned Project Gutenberg source, with `W=4096`, `T=6144`, `J=64`,
+spatial resolution 8, and `R=512`. A missing local source is fetched atomically from its pinned HTTPS
+origin and rejected unless byte count and digest match. Conditions are rolling-only, fixed offsets,
+identically initialized untrained S, trained S, and full QKV. `heatfield_initial.json` remains an
+incomplete earlier design draft. Codex must not run CUDA workloads. Configuration validation,
+status, and summarization do not import the model runtime or initialize CUDA.
 
 ## Configuration and artifacts
 
@@ -265,9 +288,12 @@ data identity, nonoverlapping train/evaluation token boundaries, device authoriz
 Unsupported combinations fail validation.
 
 Each run writes `artifacts/results/<run-id>/result.json`. The artifact contains source and config
-hashes, raw per-token losses, actual K/V access indices, overlap and coverage measurements, paired
-utility, deterministic bootstrap uncertainty, progress, and completion state. Writes are atomic;
-rerunning the same command resumes without duplicating completed condition/stream pairs.
+hashes, raw per-token losses, compact exact K/V access ranges, overlap and coverage measurements,
+paired utility, deterministic bootstrap uncertainty, progress, and completion state. Common-prefix
+and post-transition quality are summarized separately, including early/middle/late continuation
+loss. Wall time covers snapshot restoration plus continuation; accelerator peak memory is recorded
+when available. These are implementation measurements, not theoretical speedup claims. Writes are
+atomic; rerunning the same command resumes without duplicating completed condition/stream pairs.
 
 `configs/heatfield_learning_study.json` is the sole prepared learning study and remains unapproved.
 Passing CPU smoke tests or pretrained adapter diagnostics does not authorize it or establish that

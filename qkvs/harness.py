@@ -195,6 +195,12 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         source_hash = source.get("sha256")
         if not isinstance(source_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
             errors.append("data.source.sha256 must be a 64-character lowercase digest")
+        if "url" in source and (
+            not isinstance(source["url"], str) or not source["url"].startswith("https://")
+        ):
+            errors.append("data.source.url must be an HTTPS URL")
+        if "bytes" in source and not _positive_integer(source["bytes"]):
+            errors.append("data.source.bytes must be a positive integer")
         boundaries = data.get("boundaries")
         if not isinstance(boundaries, list) or not boundaries:
             errors.append("data.boundaries must be a nonempty list")
@@ -290,7 +296,13 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"selection.conditions[{index}].name must be nonempty")
         else:
             names.append(name)
-        if policy not in {"rolling", "fixed_offsets", "heatfield", "heatfield_untrained"}:
+        if policy not in {
+            "rolling",
+            "fixed_offsets",
+            "full_qkv",
+            "heatfield",
+            "heatfield_untrained",
+        }:
             errors.append(f"selection.conditions[{index}].policy is unsupported")
         if policy == "fixed_offsets":
             offsets = condition.get("offsets")
@@ -327,6 +339,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("evaluation.baseline must name a configured condition")
     if not _positive_integer(evaluation.get("bootstrap_samples")):
         errors.append("evaluation.bootstrap_samples must be positive")
+    if not _positive_integer(evaluation.get("proposal_trace_interval")):
+        errors.append("evaluation.proposal_trace_interval must be a positive integer")
     comparisons = evaluation.get("comparisons", [])
     comparison_names: list[str] = []
     if not isinstance(comparisons, list):
@@ -358,6 +372,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("execution.allowed_devices must contain cpu and/or cuda")
     if not isinstance(execution.get("output_root"), str):
         errors.append("execution.output_root must be a string")
+    if not _positive_integer(execution.get("prefill_chunk_tokens")):
+        errors.append("execution.prefill_chunk_tokens must be a positive integer")
 
     reasons: list[str] = []
     if status not in {"harness_verification", "approved"}:
@@ -383,6 +399,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             reasons.append("learned heat-field study requires a trained heatfield condition")
         if "heatfield_untrained" not in policies:
             reasons.append("learned heat-field study requires an untrained heatfield control")
+        if "full_qkv" not in policies:
+            reasons.append("learned heat-field study requires an explicit full_qkv reference")
         if data_kind == "tokenized_text":
             boundaries = data.get("boundaries", [])
             train_boundaries = [
@@ -442,6 +460,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         training_fields = (
             "steps",
             "checkpoint_interval",
+            "rollout_tokens",
+            "targets_per_rollout",
         )
         if (
             not isinstance(training, dict)
@@ -454,10 +474,27 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(training.get("utility_weight"), (int, float))
             or training.get("utility_weight", -1) < 0
             or training.get("coverage_weight", 0) + training.get("utility_weight", 0) <= 0
-            or training.get("position_schedule") != "cyclic"
+            or training.get("position_schedule") != "streaming_stratified"
             or training.get("layer_schedule") != "round_robin"
         ):
             reasons.append("learned heat-field training configuration is incomplete")
+        elif data_kind == "tokenized_text" and _positive_integer(activation_tokens):
+            train_lengths = [
+                boundary["stop_token"] - boundary["start_token"]
+                for boundary in data.get("boundaries", [])
+                if isinstance(boundary, dict)
+                and boundary.get("split") == "train"
+                and isinstance(boundary.get("start_token"), int)
+                and isinstance(boundary.get("stop_token"), int)
+                and boundary["stop_token"] - boundary["start_token"] > activation_tokens
+            ]
+            required_steps = sum(
+                (length - 1 - activation_tokens + training["rollout_tokens"] - 1)
+                // training["rollout_tokens"]
+                for length in train_lengths
+            )
+            if required_steps and training["steps"] != required_steps:
+                reasons.append("training.steps must cover each post-transition stream exactly once")
     elif any(
         selection.get(control_name, {}).get("mode") != "disabled"
         for control_name in ("gamma", "beta")
@@ -573,6 +610,32 @@ def _tokenized_text_streams(
         if configured_path.is_absolute()
         else (config_path.parent / configured_path).resolve()
     )
+    if not source_path.exists():
+        source_url = data["source"].get("url")
+        expected_bytes = data["source"].get("bytes")
+        if source_url is None or expected_bytes is None:
+            raise ValueError("tokenized text source is missing and has no pinned download")
+        import urllib.request
+
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = source_path.with_suffix(source_path.suffix + ".tmp")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with urllib.request.urlopen(source_url, timeout=60) as response:
+                with temporary.open("wb") as destination:
+                    while chunk := response.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > expected_bytes:
+                            raise ValueError("pinned tokenized text download exceeds expected size")
+                        digest.update(chunk)
+                        destination.write(chunk)
+            if size != expected_bytes or digest.hexdigest() != data["source"]["sha256"]:
+                raise ValueError("pinned tokenized text download identity does not match")
+            temporary.replace(source_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
     actual_sha256 = _sha256(source_path)
     expected_sha256 = data["source"]["sha256"]
     if actual_sha256 != expected_sha256:
@@ -599,6 +662,8 @@ def _tokenized_text_streams(
         "kind": "tokenized_text",
         "source_path": data["source"]["path"],
         "source_sha256": actual_sha256,
+        "source_url": data["source"].get("url"),
+        "source_bytes": source_path.stat().st_size,
         "encoding": "utf-8",
         "add_special_tokens": False,
         "full_source_tokens": len(all_tokens),
@@ -653,6 +718,7 @@ def _prepare_dense_prefills(
 
     rolling_tokens = specification["attention"]["rolling_tokens"]
     activation_tokens = specification["attention"]["activation_tokens"]
+    prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
     snapshots: dict[str, Any] = {}
     shared: dict[tuple[str, tuple[int, ...]], tuple[Any, Path]] = {}
     records: dict[str, Any] = {}
@@ -690,6 +756,7 @@ def _prepare_dense_prefills(
                     activation_tokens=activation_tokens,
                     device=device,
                     ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
                 )
             else:
                 snapshot = reader.dense_prefill(
@@ -698,6 +765,7 @@ def _prepare_dense_prefills(
                     activation_tokens=activation_tokens,
                     device=device,
                     ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
                 )
                 reader.save_dense_prefill(snapshot, path)
             shared[key] = (snapshot, path)
@@ -761,19 +829,6 @@ def _train_learned_policy(
     }
     policy.to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=float(training["learning_rate"]))
-    step = 0
-    history: list[dict[str, Any]] = []
-    if checkpoint.exists():
-        saved = torch.load(checkpoint, map_location=device, weights_only=True)
-        if saved.get("identity") != checkpoint_identity:
-            raise ValueError("learned selector checkpoint identity does not match this run")
-        policy.load_state_dict(saved["policy"])
-        optimizer.load_state_dict(saved["optimizer"])
-        step = saved["step"]
-        history = saved["history"]
-    elif result.get("training", {}).get("completed_steps", 0):
-        raise ValueError("learned selector checkpoint is missing")
-
     token_streams = [
         TokenStream(
             stream_id=stream["stream_id"],
@@ -785,36 +840,96 @@ def _train_learned_policy(
     ]
     if not token_streams:
         raise ValueError("learned heat-field training has no training streams")
-    maximum_positions = max(len(stream.tokens) - 1 for stream in token_streams)
-    eligible = [
-        (stream, position)
-        for position in range(attention["activation_tokens"], maximum_positions)
-        for stream in token_streams
-        if position < len(stream.tokens) - 1
-    ]
-    if not eligible:
-        raise ValueError("learned heat-field training has no eligible historical positions")
+    prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
+    step = 0
+    target_count = 0
+    next_stream_index = 0
+    history: list[dict[str, Any]] = []
+    states: dict[str, Any] = {}
+    if checkpoint.exists():
+        saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        if saved.get("identity") != checkpoint_identity:
+            raise ValueError("learned selector checkpoint identity does not match this run")
+        policy.load_state_dict(saved["policy"])
+        optimizer.load_state_dict(saved["optimizer"])
+        step = saved["step"]
+        target_count = saved["target_count"]
+        next_stream_index = saved["next_stream_index"]
+        history = saved["history"]
+        for stream in token_streams:
+            states[stream.stream_id] = reader.restore_heatfield_rollout_state(
+                saved["rollout_states"][stream.stream_id],
+                stream,
+                dense_prefills[stream.stream_id],
+                rolling_tokens=attention["rolling_tokens"],
+                activation_tokens=attention["activation_tokens"],
+                device=device,
+                ownership="train",
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
+    else:
+        if result.get("training", {}).get("completed_steps", 0):
+            raise ValueError("learned selector checkpoint is missing")
+        for stream in token_streams:
+            states[stream.stream_id] = reader.new_heatfield_rollout_state(
+                stream,
+                dense_prefills[stream.stream_id],
+                rolling_tokens=attention["rolling_tokens"],
+                activation_tokens=attention["activation_tokens"],
+                device=device,
+                ownership="train",
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
 
     policy.train()
     while step < training["steps"]:
-        stream, position = eligible[step % len(eligible)]
-        layer_index = step % reader.model.config.num_hidden_layers
+        selected_stream_index = None
+        for offset in range(len(token_streams)):
+            candidate_index = (next_stream_index + offset) % len(token_streams)
+            candidate = token_streams[candidate_index]
+            if states[candidate.stream_id].next_position < len(candidate.tokens) - 1:
+                selected_stream_index = candidate_index
+                break
+        if selected_stream_index is None:
+            raise ValueError("streaming training exhausted all causal continuations")
+        stream = token_streams[selected_stream_index]
+        state = states[stream.stream_id]
+        next_stream_index = (selected_stream_index + 1) % len(token_streams)
+        start_position = state.next_position
+        stop_position = min(
+            len(stream.tokens) - 1,
+            start_position + training["rollout_tokens"],
+        )
+        rollout_length = stop_position - start_position
+        target_total = min(training["targets_per_rollout"], rollout_length)
+        if target_total == 1:
+            target_positions = [start_position + rollout_length // 2]
+        else:
+            target_positions = [
+                start_position + round(index * (rollout_length - 1) / (target_total - 1))
+                for index in range(target_total)
+            ]
+        target_layers = {
+            position: (target_count + index) % reader.model.config.num_hidden_layers
+            for index, position in enumerate(target_positions)
+        }
         optimizer.zero_grad(set_to_none=True)
-        objective, metrics = reader.heatfield_training_objective(
+        objectives, rollout_metrics = reader.heatfield_training_rollout(
             stream,
             policy,
-            position=position,
-            layer_index=layer_index,
+            state,
+            stop_position=stop_position,
+            target_layers=target_layers,
             rolling_tokens=attention["rolling_tokens"],
             historical_token_budget=attention["historical_token_budget"],
             window_width=selection["window_width"],
             coverage_weight=float(training["coverage_weight"]),
             utility_weight=float(training["utility_weight"]),
             device=device,
-            activation_tokens=attention["activation_tokens"],
-            dense_snapshot=dense_prefills.get(stream.stream_id),
-            snapshot_ownership="train",
         )
+        if not objectives:
+            raise RuntimeError("streaming training rollout produced no target objectives")
+        objective = torch.stack(objectives).mean()
         objective.backward()
         gradient_norm = torch.sqrt(
             sum(
@@ -825,13 +940,18 @@ def _train_learned_policy(
         )
         optimizer.step()
         step += 1
-        history.append(
+        target_count += len(rollout_metrics)
+        denominator = max(1, len(stream.tokens) - 1 - attention["activation_tokens"])
+        history.extend(
             {
                 "step": step,
                 "stream_id": stream.stream_id,
                 "gradient_norm": float(gradient_norm),
+                "context_fraction": (metrics["position"] - attention["activation_tokens"])
+                / denominator,
                 **metrics,
             }
+            for metrics in rollout_metrics
         )
         if step % training["checkpoint_interval"] == 0 or step == training["steps"]:
             temporary = checkpoint.with_suffix(".pt.tmp")
@@ -842,6 +962,12 @@ def _train_learned_policy(
                     "policy": policy.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "history": history,
+                    "target_count": target_count,
+                    "next_stream_index": next_stream_index,
+                    "rollout_states": {
+                        stream_id: reader.serialize_heatfield_rollout_state(state)
+                        for stream_id, state in states.items()
+                    },
                 },
                 temporary,
             )
@@ -852,8 +978,20 @@ def _train_learned_policy(
                 "checkpoint_sha256": _sha256(checkpoint),
                 "history": history,
                 "soft_hard_alignment": summarize_training_alignment(history),
+                "streaming": {
+                    "rollout_tokens": training["rollout_tokens"],
+                    "targets_per_rollout": training["targets_per_rollout"],
+                    "next_positions": {
+                        stream_id: state.next_position for stream_id, state in states.items()
+                    },
+                    "selector_updates_only_at_rollout_boundaries": True,
+                },
             }
             _write_json(output, result)
+    if any(
+        states[stream.stream_id].next_position != len(stream.tokens) - 1 for stream in token_streams
+    ):
+        raise ValueError("training steps do not cover every post-transition continuation")
     policy.eval()
 
 
@@ -989,6 +1127,10 @@ def run_experiment(
                 tokens=tuple(stream_record["tokens"]),
                 support_positions=tuple(stream_record["support_positions"]),
             )
+            if torch_device.type == "cuda":
+                torch.cuda.synchronize(torch_device)
+                torch.cuda.reset_peak_memory_stats(torch_device)
+            execution_started = time.perf_counter()
             token_scores = reader.execute(
                 stream,
                 policy,
@@ -999,6 +1141,14 @@ def run_experiment(
                 activation_tokens=specification["attention"]["activation_tokens"],
                 dense_snapshot=dense_prefills.get(stream.stream_id),
                 snapshot_ownership="evaluation",
+                prefill_chunk_tokens=specification["execution"]["prefill_chunk_tokens"],
+                proposal_trace_interval=specification["evaluation"]["proposal_trace_interval"],
+            )
+            if torch_device.type == "cuda":
+                torch.cuda.synchronize(torch_device)
+            wall_seconds = time.perf_counter() - execution_started
+            continuation_tokens = sum(
+                score.phase in {"post_transition", "qkvs"} for score in token_scores
             )
             result["measurements"].append(
                 {
@@ -1006,6 +1156,20 @@ def run_experiment(
                     "policy": condition["policy"],
                     "stream_id": stream.stream_id,
                     "token_scores": [score.as_dict() for score in token_scores],
+                    "performance": {
+                        "scope": "snapshot_restore_plus_autoregressive_continuation",
+                        "wall_seconds_including_snapshot_restore": wall_seconds,
+                        "post_transition_tokens": continuation_tokens,
+                        "post_transition_tokens_per_second": (
+                            continuation_tokens / wall_seconds if wall_seconds else 0.0
+                        ),
+                        "peak_accelerator_bytes": (
+                            torch.cuda.max_memory_allocated(torch_device)
+                            if torch_device.type == "cuda"
+                            else None
+                        ),
+                        "theoretical_speedup_claimed": False,
+                    },
                 }
             )
             result["measurements"].sort(
@@ -1089,11 +1253,15 @@ def print_summary(result: dict[str, Any]) -> None:
         )
     for name, condition in result["summary"].get("conditions", {}).items():
         retrieval = condition["retrieval"]
+        budget = retrieval.get("historical_budget_utilization")
+        budget_text = f"{budget:.3f}" if budget is not None else "unbounded"
+        post = condition.get("post_transition", {})
         print(
             f"{name}: loss={condition['mean_next_token_cross_entropy']:.6f}, "
+            f"post_transition_loss={post.get('mean_next_token_cross_entropy', 0.0):.6f}, "
             f"accuracy={condition['accuracy']:.3f}, "
             f"historical_reads={retrieval['historical_token_occurrences']}, "
-            f"budget_utilization={retrieval.get('historical_budget_utilization', 0.0):.3f}, "
+            f"budget_utilization={budget_text}, "
             f"overlap={retrieval['overlap_occurrences']}, "
             f"temporal_stability={retrieval['temporal_stability']:.3f}"
         )

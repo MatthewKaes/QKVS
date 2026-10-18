@@ -1,4 +1,5 @@
 .venv/
+data/project_gutenberg_1661.txt
 .python/
 __pycache__/
 *.py[cod]
