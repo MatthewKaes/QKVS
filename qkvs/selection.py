@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import torch
+from torch import Tensor, nn
+
 
 @dataclass(frozen=True)
 class SelectionContext:
@@ -12,11 +15,12 @@ class SelectionContext:
     layer: int
     history_end: int
     hidden: Any
+    lower_layer: Any = None
 
 
 @dataclass(frozen=True)
 class HeatFieldProposal:
-    """One bounded proposal; spread is reserved and must be 1 in this milestone."""
+    """One bounded proposal with normalized center and resolution-relative spread."""
 
     center: float
     spread: float
@@ -29,12 +33,15 @@ class PolicyState:
     """Bounded recurrent state retained for one policy layer."""
 
     centers: tuple[float, ...] = ()
+    recurrent: Any = None
 
 
 @dataclass(frozen=True)
 class ProposalSet:
     proposals: tuple[HeatFieldProposal, ...]
     state: PolicyState
+    soft_parameters: Any = None
+    beta: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,7 @@ class HistoricalSelection:
 
     indices: tuple[int, ...]
     proposals: tuple[HeatFieldProposal, ...]
+    windows: tuple[tuple[int, ...], ...] = ()
 
     @property
     def occurrence_count(self) -> int:
@@ -96,12 +104,143 @@ class FixedOffsetPolicy:
         return ProposalSet(tuple(proposals), PolicyState(tuple(centers)))
 
 
+class LearnedHeatFieldPolicy(nn.Module):
+    """Independent bounded recurrent S pathway with per-layer proposal decoders."""
+
+    def __init__(
+        self,
+        *,
+        hidden_size: int,
+        layers: int,
+        proposal_count: int,
+        latent_size: int,
+        gamma: float,
+        beta: float,
+        minimum_spread: float,
+        maximum_spread: float,
+        gate_threshold: float,
+    ) -> None:
+        super().__init__()
+        if hidden_size <= 0 or layers <= 0 or proposal_count <= 0 or latent_size <= 0:
+            raise ValueError("learned heat-field dimensions must be positive")
+        if not 0.0 <= gamma < 1.0:
+            raise ValueError("gamma must lie in [0, 1)")
+        if beta <= 0.0:
+            raise ValueError("beta must be positive")
+        if minimum_spread <= 0.0 or maximum_spread < minimum_spread:
+            raise ValueError("learned spread bounds are invalid")
+        if not 0.0 <= gate_threshold <= 1.0:
+            raise ValueError("gate threshold must lie in [0, 1]")
+        self.hidden_size = hidden_size
+        self.layer_count = layers
+        self.proposal_count = proposal_count
+        self.gamma = gamma
+        self.beta = beta
+        self.minimum_spread = minimum_spread
+        self.maximum_spread = maximum_spread
+        self.gate_threshold = gate_threshold
+        cross_layer_width = proposal_count * 4
+        self.decoders = nn.ModuleList(
+            nn.Sequential(
+                nn.Linear(hidden_size + cross_layer_width, latent_size),
+                nn.Tanh(),
+                nn.Linear(latent_size, cross_layer_width),
+            )
+            for _ in range(layers)
+        )
+
+    def _normalized_state(self, state: Tensor, history_end: int) -> Tensor:
+        scale = float(max(1, history_end))
+        normalized = state.clone()
+        normalized[:, 0] = normalized[:, 0] / scale
+        normalized[:, 1] = normalized[:, 1] / self.maximum_spread
+        normalized[:, 2] = normalized[:, 2] / (1.0 + normalized[:, 2])
+        return normalized
+
+    def propose(self, context: SelectionContext, state: PolicyState) -> ProposalSet:
+        if context.layer < 0 or context.layer >= self.layer_count:
+            raise ValueError("selection layer is outside the learned policy")
+        decoder = self.decoders[context.layer]
+        parameter = next(decoder.parameters())
+        hidden = context.hidden.reshape(-1).to(device=parameter.device, dtype=parameter.dtype)
+        if hidden.numel() != self.hidden_size:
+            raise ValueError("selection hidden state does not match the learned policy")
+        if context.lower_layer is None:
+            lower = torch.zeros(
+                self.proposal_count,
+                4,
+                device=hidden.device,
+                dtype=hidden.dtype,
+            )
+        else:
+            lower = context.lower_layer.to(device=hidden.device, dtype=hidden.dtype)
+            if lower.shape != (self.proposal_count, 4):
+                raise ValueError("cross-layer selection state has the wrong shape")
+            lower = self._normalized_state(lower, context.history_end)
+        raw = decoder(torch.cat((hidden, lower.reshape(-1)))).view(self.proposal_count, 4)
+        history_scale = float(max(0, context.history_end - 1))
+        candidate = torch.stack(
+            (
+                torch.sigmoid(raw[:, 0]) * history_scale,
+                self.minimum_spread
+                + torch.sigmoid(raw[:, 1]) * (self.maximum_spread - self.minimum_spread),
+                torch.nn.functional.softplus(raw[:, 2]),
+                torch.sigmoid(raw[:, 3]),
+            ),
+            dim=-1,
+        )
+        previous = state.recurrent
+        if previous is not None:
+            previous = previous.to(device=candidate.device, dtype=candidate.dtype)
+            if previous.shape != candidate.shape:
+                raise ValueError("temporal selection state has the wrong shape")
+            current = self.gamma * previous + (1.0 - self.gamma) * candidate
+            current = torch.stack(
+                (
+                    current[:, 0].clamp(0.0, history_scale),
+                    current[:, 1],
+                    current[:, 2],
+                    current[:, 3],
+                ),
+                dim=-1,
+            )
+        else:
+            current = candidate
+
+        proposals = []
+        normalized_centers = []
+        for proposal in current:
+            center = (
+                float(((proposal[0] + 0.5) / context.history_end).detach())
+                if context.history_end > 0
+                else 0.0
+            )
+            center = min(max(center, 0.0), 1.0)
+            normalized_centers.append(center)
+            proposals.append(
+                HeatFieldProposal(
+                    center=center,
+                    spread=float(proposal[1].detach()),
+                    weight=float(proposal[2].detach()),
+                    active=context.history_end > 0
+                    and float(proposal[3].detach()) >= self.gate_threshold,
+                )
+            )
+        return ProposalSet(
+            tuple(proposals),
+            PolicyState(tuple(normalized_centers), current),
+            soft_parameters=current,
+            beta=self.beta,
+        )
+
+
 def resolve_proposals(
     proposals: tuple[HeatFieldProposal, ...],
     *,
     history_end: int,
     window_width: int,
     historical_token_budget: int,
+    beta: float = 1.0,
 ) -> HistoricalSelection:
     """Resolve J proposals directly in O(J * width), counting overlap occurrences."""
 
@@ -111,11 +250,14 @@ def resolve_proposals(
         raise ValueError("window width must be positive")
     if historical_token_budget < 0:
         raise ValueError("historical token budget cannot be negative")
+    if beta <= 0.0:
+        raise ValueError("spatial beta must be positive")
     ordered = sorted(
         enumerate(proposals),
         key=lambda item: (-item[1].weight, item[0]),
     )
     indices: list[int] = []
+    windows: list[tuple[int, ...]] = []
     for _, proposal in ordered:
         if not proposal.active or history_end == 0:
             continue
@@ -123,16 +265,18 @@ def resolve_proposals(
             raise ValueError("proposal centers must lie in [0, 1]")
         if proposal.spread <= 0.0 or proposal.weight < 0.0:
             raise ValueError("proposal spread must be positive and weight nonnegative")
-        if proposal.spread != 1.0:
-            raise ValueError("proposal spread and spatial beta are not implemented")
-        if len(indices) + window_width > historical_token_budget:
-            break
+        proposal_width = max(1, round(window_width * proposal.spread / beta))
+        proposal_width = min(proposal_width, history_end)
+        if len(indices) + proposal_width > historical_token_budget:
+            continue
         center_token = min(history_end - 1, int(proposal.center * history_end))
-        start = center_token - window_width // 2
-        start = min(max(0, start), max(0, history_end - window_width))
-        end = min(history_end, start + window_width)
-        indices.extend(range(start, end))
-    selection = HistoricalSelection(tuple(indices), proposals)
+        start = center_token - proposal_width // 2
+        start = min(max(0, start), max(0, history_end - proposal_width))
+        end = min(history_end, start + proposal_width)
+        window = tuple(range(start, end))
+        windows.append(window)
+        indices.extend(window)
+    selection = HistoricalSelection(tuple(indices), proposals, tuple(windows))
     validate_historical_selection(
         selection,
         history_end=history_end,
@@ -153,7 +297,11 @@ def validate_historical_selection(
         raise ValueError("historical selection is noncausal or enters the rolling window")
 
 
-def build_policy(condition: dict[str, Any], controls: dict[str, Any]) -> SelectionPolicy:
+def build_policy(
+    condition: dict[str, Any],
+    controls: dict[str, Any],
+    learned_policy: SelectionPolicy | None = None,
+) -> SelectionPolicy:
     policy = condition["policy"]
     if policy == "rolling":
         return RollingOnlyPolicy()
@@ -162,5 +310,7 @@ def build_policy(condition: dict[str, Any], controls: dict[str, Any]) -> Selecti
             raise ValueError("fixed offsets exceed proposal capacity")
         return FixedOffsetPolicy(tuple(condition["offsets"]))
     if policy == "heatfield":
-        raise ValueError("learned heat-field policy is not implemented or authorized")
+        if learned_policy is None:
+            raise ValueError("learned heat-field policy requires a trained checkpoint")
+        return learned_policy
     raise ValueError(f"unsupported selection policy: {policy}")

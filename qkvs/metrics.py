@@ -40,7 +40,31 @@ def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
         sum(index in set(access["rolling_indices"]) for index in access["historical_indices"])
         for access in accesses
     )
-    proposal_centers = [center for access in accesses for center in access["proposal_centers"]]
+    proposal_centers = [
+        center
+        for access in accesses
+        for center, active in zip(
+            access["proposal_centers"],
+            access.get("proposal_active", (True,) * len(access["proposal_centers"])),
+            strict=True,
+        )
+        if active
+    ]
+    proposal_spreads = [
+        spread
+        for access in accesses
+        for spread, active in zip(
+            access.get("proposal_spreads", ()),
+            access.get("proposal_active", (True,) * len(access.get("proposal_spreads", ()))),
+            strict=True,
+        )
+        if active
+    ]
+    active_proposals = sum(sum(access.get("proposal_active", ())) for access in accesses)
+    inactive_proposals = sum(
+        len(access.get("proposal_active", ())) - sum(access.get("proposal_active", ()))
+        for access in accesses
+    )
     normalized_historical_positions = [
         index / access["history_end"]
         for access in accesses
@@ -99,6 +123,9 @@ def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
         "actual_token_occurrences": historical_occurrences + rolling_occurrences,
         "per_layer": per_layer,
         "mean_proposal_center": _mean(proposal_centers),
+        "mean_proposal_spread": _mean(proposal_spreads),
+        "active_proposals": active_proposals,
+        "inactive_proposals": inactive_proposals,
         "mean_normalized_historical_position": _mean(normalized_historical_positions),
         "support_coverage": support_hits / len(support_trials) if support_trials else None,
         "support_trials": len(support_trials),

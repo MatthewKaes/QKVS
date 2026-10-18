@@ -326,11 +326,65 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             "long_context_reading is a draft data description, not an implemented loader"
         )
     policies = {condition.get("policy") for condition in condition_objects}
-    if not policies <= {"rolling", "fixed_offsets"}:
-        reasons.append("learned heat-field selection is not implemented")
-    for control_name in ("gamma", "beta"):
-        if selection.get(control_name, {}).get("mode") != "disabled":
-            reasons.append(f"selection.{control_name} is not implemented")
+    has_heatfield = "heatfield" in policies
+    learned = selection.get("learned")
+    training = specification.get("training")
+    if has_heatfield:
+        if backend != "huggingface":
+            reasons.append("learned heat-field training requires the Hugging Face Qwen2 reader")
+        if selection.get("gamma", {}).get("mode") != "fixed":
+            reasons.append("learned heat-field execution currently requires fixed gamma")
+        if selection.get("beta", {}).get("mode") != "fixed":
+            reasons.append("learned heat-field execution currently requires fixed beta")
+        learned_fields = {
+            "latent_size": _positive_integer,
+            "minimum_spread": lambda value: isinstance(value, (int, float)) and value > 0,
+            "maximum_spread": lambda value: isinstance(value, (int, float)) and value > 0,
+            "gate_threshold": lambda value: isinstance(value, (int, float)) and 0.0 <= value < 1.0,
+        }
+        if not isinstance(learned, dict) or any(
+            not predicate(learned.get(field)) for field, predicate in learned_fields.items()
+        ):
+            reasons.append("learned heat-field policy dimensions and bounds are incomplete")
+        elif learned["maximum_spread"] < learned["minimum_spread"]:
+            reasons.append("learned heat-field maximum_spread is below minimum_spread")
+        elif (
+            selection.get("beta", {}).get("mode") == "fixed"
+            and isinstance(selection["beta"].get("value"), (int, float))
+            and selection["beta"]["value"] > 0
+            and _positive_integer(window_width)
+            and _positive_integer(historical_token_budget)
+            and max(
+                1,
+                round(window_width * learned["minimum_spread"] / selection["beta"]["value"]),
+            )
+            > historical_token_budget
+        ):
+            reasons.append("minimum learned window cannot fit the historical token budget")
+        training_fields = (
+            "steps",
+            "checkpoint_interval",
+        )
+        if (
+            not isinstance(training, dict)
+            or training.get("enabled") is not True
+            or any(not _positive_integer(training.get(field)) for field in training_fields)
+            or not isinstance(training.get("learning_rate"), (int, float))
+            or training.get("learning_rate", 0) <= 0
+            or not isinstance(training.get("coverage_weight"), (int, float))
+            or training.get("coverage_weight", -1) < 0
+            or not isinstance(training.get("utility_weight"), (int, float))
+            or training.get("utility_weight", -1) < 0
+            or training.get("coverage_weight", 0) + training.get("utility_weight", 0) <= 0
+            or training.get("position_schedule") != "cyclic"
+            or training.get("layer_schedule") != "round_robin"
+        ):
+            reasons.append("learned heat-field training configuration is incomplete")
+    elif any(
+        selection.get(control_name, {}).get("mode") != "disabled"
+        for control_name in ("gamma", "beta")
+    ):
+        reasons.append("gamma and beta require a learned heat-field condition")
     return {
         "valid": not errors,
         "runnable": not errors and not reasons,
@@ -500,6 +554,139 @@ def _result_path(
     return root / specification["run"]["id"] / "result.json"
 
 
+def _build_learned_policy(reader: Any, specification: dict[str, Any], torch: Any) -> Any:
+    from qkvs.selection import LearnedHeatFieldPolicy
+
+    selection = specification["selection"]
+    learned = selection["learned"]
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(specification["run"]["seed"])
+        policy = LearnedHeatFieldPolicy(
+            hidden_size=reader.model.config.hidden_size,
+            layers=reader.model.config.num_hidden_layers,
+            proposal_count=selection["proposal_count"],
+            latent_size=learned["latent_size"],
+            gamma=float(selection["gamma"]["value"]),
+            beta=float(selection["beta"]["value"]),
+            minimum_spread=float(learned["minimum_spread"]),
+            maximum_spread=float(learned["maximum_spread"]),
+            gate_threshold=float(learned["gate_threshold"]),
+        )
+    return policy
+
+
+def _train_learned_policy(
+    *,
+    reader: Any,
+    policy: Any,
+    streams: list[dict[str, Any]],
+    specification: dict[str, Any],
+    result: dict[str, Any],
+    output: Path,
+    device: Any,
+    torch: Any,
+) -> None:
+    from qkvs.model import TokenStream
+
+    training = specification["training"]
+    attention = specification["attention"]
+    selection = specification["selection"]
+    checkpoint = output.parent / "selector.pt"
+    checkpoint_identity = {
+        "config_sha256": result["config_sha256"],
+        "source_identity": result["source_identity"],
+        "model_identity": result["model_identity"],
+        "data_identity": result["data_identity"],
+    }
+    policy.to(device)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=float(training["learning_rate"]))
+    step = 0
+    history: list[dict[str, Any]] = []
+    if checkpoint.exists():
+        saved = torch.load(checkpoint, map_location=device, weights_only=True)
+        if saved.get("identity") != checkpoint_identity:
+            raise ValueError("learned selector checkpoint identity does not match this run")
+        policy.load_state_dict(saved["policy"])
+        optimizer.load_state_dict(saved["optimizer"])
+        step = saved["step"]
+        history = saved["history"]
+    elif result.get("training", {}).get("completed_steps", 0):
+        raise ValueError("learned selector checkpoint is missing")
+
+    token_streams = [
+        TokenStream(
+            stream_id=stream["stream_id"],
+            tokens=tuple(stream["tokens"]),
+            support_positions=tuple(stream["support_positions"]),
+        )
+        for stream in streams
+    ]
+    eligible = [
+        (stream, position)
+        for stream in token_streams
+        for position in range(attention["rolling_tokens"], len(stream.tokens) - 1)
+    ]
+    if not eligible:
+        raise ValueError("learned heat-field training has no eligible historical positions")
+
+    policy.train()
+    while step < training["steps"]:
+        stream, position = eligible[step % len(eligible)]
+        layer_index = step % reader.model.config.num_hidden_layers
+        optimizer.zero_grad(set_to_none=True)
+        objective, metrics = reader.heatfield_training_objective(
+            stream,
+            policy,
+            position=position,
+            layer_index=layer_index,
+            rolling_tokens=attention["rolling_tokens"],
+            historical_token_budget=attention["historical_token_budget"],
+            window_width=selection["window_width"],
+            coverage_weight=float(training["coverage_weight"]),
+            utility_weight=float(training["utility_weight"]),
+            device=device,
+        )
+        objective.backward()
+        gradient_norm = torch.sqrt(
+            sum(
+                parameter.grad.detach().float().square().sum()
+                for parameter in policy.parameters()
+                if parameter.grad is not None
+            )
+        )
+        optimizer.step()
+        step += 1
+        history.append(
+            {
+                "step": step,
+                "stream_id": stream.stream_id,
+                "gradient_norm": float(gradient_norm),
+                **metrics,
+            }
+        )
+        if step % training["checkpoint_interval"] == 0 or step == training["steps"]:
+            temporary = checkpoint.with_suffix(".pt.tmp")
+            torch.save(
+                {
+                    "identity": checkpoint_identity,
+                    "step": step,
+                    "policy": policy.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "history": history,
+                },
+                temporary,
+            )
+            temporary.replace(checkpoint)
+            result["training"] = {
+                "completed_steps": step,
+                "target_steps": training["steps"],
+                "checkpoint_sha256": _sha256(checkpoint),
+                "history": history,
+            }
+            _write_json(output, result)
+    policy.eval()
+
+
 def run_experiment(
     config_path: str | Path,
     *,
@@ -563,6 +750,7 @@ def run_experiment(
             },
             "streams": streams,
             "measurements": [],
+            "training": {},
             "summary": {},
             "complete": False,
         }
@@ -575,6 +763,21 @@ def run_experiment(
             "cuda_initialized_after_reader": torch.cuda.is_initialized(),
         }
     )
+    learned_policy = None
+    if any(
+        condition["policy"] == "heatfield" for condition in specification["selection"]["conditions"]
+    ):
+        learned_policy = _build_learned_policy(reader, specification, torch)
+        _train_learned_policy(
+            reader=reader,
+            policy=learned_policy,
+            streams=streams,
+            specification=specification,
+            result=result,
+            output=output,
+            device=torch_device,
+            torch=torch,
+        )
     completed = {
         (measurement["condition"], measurement["stream_id"])
         for measurement in result["measurements"]
@@ -592,7 +795,11 @@ def run_experiment(
             if unit in completed:
                 continue
             progress.start_job(f"{condition['name']} / {stream_record['stream_id']}")
-            policy = build_policy(condition, specification["selection"])
+            policy = build_policy(
+                condition,
+                specification["selection"],
+                learned_policy=learned_policy,
+            )
             stream = TokenStream(
                 stream_id=stream_record["stream_id"],
                 tokens=tuple(stream_record["tokens"]),

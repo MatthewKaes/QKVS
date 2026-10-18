@@ -14,6 +14,7 @@ from qkvs.model import FrozenCausalReader, HuggingFaceQwen2Reader, TokenStream
 from qkvs.selection import (
     FixedOffsetPolicy,
     HeatFieldProposal,
+    LearnedHeatFieldPolicy,
     PolicyState,
     ProposalSet,
     RollingOnlyPolicy,
@@ -344,6 +345,201 @@ def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
     assert [score.as_dict() for score in first_scores[:6]] == [
         score.as_dict() for score in second_scores[:6]
     ]
+
+
+def _heatfield_policy() -> LearnedHeatFieldPolicy:
+    torch.manual_seed(53)
+    return LearnedHeatFieldPolicy(
+        hidden_size=32,
+        layers=2,
+        proposal_count=2,
+        latent_size=16,
+        gamma=0.5,
+        beta=1.25,
+        minimum_spread=0.5,
+        maximum_spread=2.0,
+        gate_threshold=0.4,
+    )
+
+
+def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> None:
+    reader = _qwen_reader()
+    policy = _heatfield_policy()
+    stream = _stream(tuple(index % 32 for index in range(14)))
+    reader_before = [parameter.detach().clone() for parameter in reader.model.parameters()]
+    policy_before = [parameter.detach().clone() for parameter in policy.parameters()]
+    optimizer = torch.optim.Adam(policy.parameters(), lr=1e-2)
+    training_metrics = []
+    for position, layer_index in ((8, 0), (9, 1), (10, 0)):
+        optimizer.zero_grad(set_to_none=True)
+        objective, metrics = reader.heatfield_training_objective(
+            stream,
+            policy,
+            position=position,
+            layer_index=layer_index,
+            rolling_tokens=2,
+            historical_token_budget=4,
+            window_width=2,
+            coverage_weight=1.0,
+            utility_weight=0.1,
+            device=torch.device("cpu"),
+        )
+        assert torch.isfinite(objective)
+        objective.backward()
+        assert any(
+            parameter.grad is not None and torch.count_nonzero(parameter.grad)
+            for parameter in policy.parameters()
+        )
+        assert all(parameter.grad is None for parameter in reader.model.parameters())
+        optimizer.step()
+        training_metrics.append(metrics)
+
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(policy_before, policy.parameters(), strict=True)
+    )
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(reader_before, reader.model.parameters(), strict=True)
+    )
+    assert all(metric["historical_occurrences"] <= 4 for metric in training_metrics)
+    assert all(metric["coverage_overlap_alpha"] == 0.0 for metric in training_metrics)
+    assert any(metric["historical_occurrences"] > 0 for metric in training_metrics)
+    assert any(metric["hard_utility"] != 0.0 for metric in training_metrics)
+
+    checkpoint = tmp_path / "selector.pt"
+    torch.save(policy.state_dict(), checkpoint)
+    restored = _heatfield_policy()
+    restored.load_state_dict(torch.load(checkpoint, weights_only=True))
+    original_scores = reader.execute(
+        stream,
+        policy,
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    restored_scores = reader.execute(
+        stream,
+        restored,
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    assert [score.as_dict() for score in original_scores] == [
+        score.as_dict() for score in restored_scores
+    ]
+    assert all(
+        len(access.historical_indices) <= 4
+        and all(index < access.history_end for index in access.historical_indices)
+        for score in restored_scores
+        for access in score.accesses
+    )
+
+
+def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) -> None:
+    from qkvs.harness import run_experiment, validate_config
+
+    class ByteTokenizer:
+        init_kwargs = {"_commit_hash": "1" * 40}
+
+        def encode(self, text, *, add_special_tokens):
+            assert not add_special_tokens
+            return [byte % 64 for byte in text.encode()]
+
+        def get_vocab(self):
+            return {str(index): index for index in range(64)}
+
+    reader = _qwen_reader()
+    reader.tokenizer = ByteTokenizer()
+    source = tmp_path / "source.txt"
+    source.write_text("bounded heat field smoke", encoding="utf-8")
+    specification = {
+        "schema_version": 1,
+        "experiment": "learned_heatfield_smoke",
+        "status": "harness_verification",
+        "run": {"id": "learned-heatfield-smoke", "seed": 71},
+        "model": {
+            "backend": "huggingface",
+            "id": "test/tiny-qwen2",
+            "revision": "1" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+        "data": {
+            "kind": "tokenized_text",
+            "source": {
+                "path": str(source),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+            "boundaries": [{"id": "smoke", "start_token": 0, "stop_token": 12}],
+        },
+        "attention": {"rolling_tokens": 2, "historical_token_budget": 4},
+        "selection": {
+            "proposal_count": 2,
+            "window_width": 2,
+            "gamma": {"mode": "fixed", "value": 0.5},
+            "beta": {"mode": "fixed", "value": 1.25},
+            "learned": {
+                "latent_size": 16,
+                "minimum_spread": 0.5,
+                "maximum_spread": 2.0,
+                "gate_threshold": 0.4,
+            },
+            "conditions": [
+                {"name": "rolling", "policy": "rolling"},
+                {"name": "heatfield", "policy": "heatfield"},
+            ],
+        },
+        "training": {
+            "enabled": True,
+            "steps": 2,
+            "learning_rate": 0.01,
+            "coverage_weight": 1.0,
+            "utility_weight": 0.1,
+            "checkpoint_interval": 1,
+            "position_schedule": "cyclic",
+            "layer_schedule": "round_robin",
+        },
+        "evaluation": {
+            "metric": "next_token_cross_entropy",
+            "paired_conditions": True,
+            "baseline": "rolling",
+            "bootstrap_samples": 20,
+        },
+        "execution": {"allowed_devices": ["cpu"], "output_root": str(tmp_path)},
+    }
+    assert validate_config(specification)["runnable"]
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(specification), encoding="utf-8")
+    monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
+    output, first = run_experiment(
+        config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    assert first["complete"]
+    assert first["training"]["completed_steps"] == 2
+    assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
+    assert (output.parent / "selector.pt").exists()
+    heatfield = next(
+        measurement for measurement in first["measurements"] if measurement["policy"] == "heatfield"
+    )
+    assert any(
+        access["proposal_weights"]
+        for score in heatfield["token_scores"]
+        for access in score["accesses"]
+    )
+
+    _, resumed = run_experiment(
+        config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    assert resumed == first
 
 
 @pytest.mark.skipif(

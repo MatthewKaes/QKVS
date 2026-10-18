@@ -179,8 +179,22 @@ historical occurrences and mandatory rolling window used by that layer's ordinar
 attention. Its full-history mode is an explicitly unbounded, short-sequence diagnostic for
 comparison with standard Hugging Face execution; it is not a deployable selection policy.
 Architectures other than Qwen2, Qwen2 checkpoints with sliding-attention layers, and Qwen2
-checkpoints with nondefault RoPE scaling are currently unsupported. Gamma, beta, learned spread,
-and learned heat-field selection also remain unimplemented and fail execution validation.
+checkpoints with nondefault RoPE scaling are currently unsupported.
+
+The first learned-S implementation uses an independent per-layer MLP over the causal hidden state
+and the bounded current lower-layer proposal state. It emits center, spread, importance, and gate
+for each of `J` proposals. Recurrent state stores absolute token centers so fixed gamma persistence
+does not drift as the eligible context grows. Effective hard window width is the configured spatial
+resolution multiplied by learned spread and divided by fixed beta; every resulting occurrence,
+including overlap, consumes `R`. Inactive gates produce no hard read.
+
+Training keeps Q/K/V frozen. A dense offline teacher supplies historical attention coverage, using
+the differentiable collective occupancy `1 - product(1 - q)` with alpha zero so redundant soft
+overlap earns no additional coverage. A dense causal soft-occupancy attention pass supplies the
+next-token utility gradient; actual hard-window utility is measured separately because integer
+gathers do not transmit address gradients. Fixed gamma and beta are the deliberately narrow first
+implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
+ignored settings.
 
 ```text
 configuration
@@ -210,9 +224,10 @@ python -m qkvs run \
 ```
 
 That command currently refuses to run because `heatfield_initial.json` is
-`draft_not_authorized`; it also lacks frozen data and dtype choices and requests the unimplemented
-learned policy, gamma, and beta modes. Codex must not run CUDA workloads. Configuration validation,
-status, and summarization do not import the model runtime or initialize CUDA.
+`draft_not_authorized`; it also lacks frozen data, dtype, policy dimensions, and training choices,
+and requests unsupported learned gamma and beta modes. Codex must not run CUDA workloads.
+Configuration validation, status, and summarization do not import the model runtime or initialize
+CUDA.
 
 ## Configuration and artifacts
 
