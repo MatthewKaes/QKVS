@@ -19,7 +19,8 @@
     "seed": 20261102
   },
   "attention": {
-    "rolling_tokens": 256,
+    "rolling_tokens": 4096,
+    "activation_tokens": 6144,
     "historical_token_budget": 256
   },
   "selection": {

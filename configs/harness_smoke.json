@@ -23,6 +23,7 @@
   },
   "attention": {
     "rolling_tokens": 4,
+    "activation_tokens": 6,
     "historical_token_budget": 4
   },
   "selection": {

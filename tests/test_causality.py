@@ -48,6 +48,7 @@ def test_reader_instruments_actual_causal_kv_accesses() -> None:
         _stream(tuple(index % 8 for index in range(20))),
         FixedOffsetPolicy((8, 12)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -82,6 +83,7 @@ def test_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
         first,
         policy,
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -90,6 +92,7 @@ def test_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
         second,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -105,6 +108,7 @@ def test_same_reader_engine_accepts_rolling_and_bounded_policies() -> None:
         stream,
         RollingOnlyPolicy(),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -113,6 +117,7 @@ def test_same_reader_engine_accepts_rolling_and_bounded_policies() -> None:
         stream,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -184,6 +189,7 @@ def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_facto
         _stream(tuple(index % 16 for index in range(48))),
         FixedOffsetPolicy((8, 16, 24)),
         rolling_tokens=2,
+        activation_tokens=2,
         historical_token_budget=3,
         window_width=1,
         device=torch.device("cpu"),
@@ -200,6 +206,7 @@ def test_direct_gather_matches_legacy_materialized_scores(monkeypatch, reader_fa
         stream,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=3,
+        activation_tokens=3,
         historical_token_budget=5,
         window_width=2,
         device=torch.device("cpu"),
@@ -214,6 +221,7 @@ def test_direct_gather_matches_legacy_materialized_scores(monkeypatch, reader_fa
         stream,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=3,
+        activation_tokens=3,
         historical_token_budget=5,
         window_width=2,
         device=torch.device("cpu"),
@@ -239,6 +247,7 @@ def test_bounded_gathers_cover_early_overlap_and_independent_limits(
         _stream(tuple(index % 8 for index in range(24))),
         FixedOffsetPolicy(offsets),
         rolling_tokens=rolling_tokens,
+        activation_tokens=rolling_tokens,
         historical_token_budget=historical_budget,
         window_width=window_width,
         device=torch.device("cpu"),
@@ -279,6 +288,178 @@ def test_qwen2_incremental_full_history_matches_standard_cpu_reference() -> None
     assert len(diagnostic["per_position_abs_loss_error"]) == 7
 
 
+def test_dense_bootstrap_parity_and_activation_boundary() -> None:
+    class RecordingPolicy:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def propose(self, context, state: PolicyState) -> ProposalSet:
+            self.calls.append(
+                (
+                    context.position,
+                    context.layer,
+                    context.history_end,
+                    state.centers,
+                    state.recurrent,
+                )
+            )
+            return ProposalSet((), PolicyState((float(context.position),)))
+
+    reader = _qwen_reader()
+    stream = _stream(tuple(index % 32 for index in range(12)))
+    device = torch.device("cpu")
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=4,
+        activation_tokens=6,
+        device=device,
+        ownership="evaluation",
+    )
+    with torch.inference_mode():
+        reference = reader.model(
+            input_ids=torch.tensor([stream.tokens[:6]]),
+            use_cache=False,
+            logits_to_keep=0,
+        ).logits[0]
+    targets = torch.tensor(stream.tokens[1:6])
+    reference_losses = torch.nn.functional.cross_entropy(reference[:-1], targets, reduction="none")
+    assert torch.allclose(
+        torch.tensor(snapshot.dense_losses), reference_losses, atol=2e-5, rtol=2e-5
+    )
+    assert torch.allclose(snapshot.boundary_logits, reference[-1], atol=2e-5, rtol=2e-5)
+
+    policy = RecordingPolicy()
+    scores = reader.execute(
+        stream,
+        policy,
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=device,
+        dense_snapshot=snapshot,
+        snapshot_ownership="evaluation",
+    )
+    assert [score.phase for score in scores[:6]] == [
+        "dense_bootstrap",
+        "dense_bootstrap",
+        "dense_bootstrap",
+        "dense_bootstrap",
+        "dense_bridge",
+        "dense_bridge",
+    ]
+    assert all(score.phase == "qkvs" for score in scores[6:])
+    assert {(position, layer) for position, layer, *_ in policy.calls} == {
+        (position, layer) for position in range(6, 11) for layer in range(2)
+    }
+    first_calls = [call for call in policy.calls if call[0] == 6]
+    assert all(history_end == 3 for _, _, history_end, _, _ in first_calls)
+    assert all(centers == () and recurrent is None for _, _, _, centers, recurrent in first_calls)
+    assert all(
+        access.history_end == max(0, score.position - 4 + 1) and len(access.actual_indices) <= 6
+        for score in scores[6:]
+        for access in score.accesses
+    )
+
+
+def test_dense_prefill_persistence_and_cached_continuation_equivalence(tmp_path) -> None:
+    reader = _qwen_reader()
+    stream = _stream(tuple(index % 32 for index in range(14)))
+    device = torch.device("cpu")
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=4,
+        activation_tokens=6,
+        device=device,
+        ownership="evaluation",
+    )
+    cache_before = tuple(
+        value.clone() for layer_cache in snapshot.key_cache for value in layer_cache
+    )
+    path = tmp_path / "dense.pt"
+    reader.save_dense_prefill(snapshot, path)
+    restored = reader.load_dense_prefill(
+        path,
+        stream,
+        rolling_tokens=4,
+        activation_tokens=6,
+        device=device,
+        ownership="evaluation",
+    )
+    cached = reader.execute(
+        stream,
+        FixedOffsetPolicy((6, 9)),
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=device,
+        dense_snapshot=restored,
+        snapshot_ownership="evaluation",
+    )
+    uncached = reader.execute(
+        stream,
+        FixedOffsetPolicy((6, 9)),
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=device,
+        snapshot_ownership="evaluation",
+    )
+    assert [score.as_dict() for score in cached] == [score.as_dict() for score in uncached]
+    branch = _stream((*stream.tokens[:6], 31, 30, 29, 28))
+    shared = reader.load_dense_prefill(
+        path,
+        branch,
+        rolling_tokens=4,
+        activation_tokens=6,
+        device=device,
+        ownership="evaluation",
+    )
+    branch_scores = reader.execute(
+        branch,
+        FixedOffsetPolicy((6, 9)),
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=device,
+        dense_snapshot=shared,
+        snapshot_ownership="evaluation",
+    )
+    assert [score.as_dict() for score in branch_scores[:5]] == [
+        score.as_dict() for score in cached[:5]
+    ]
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(
+            cache_before,
+            (value for layer_cache in snapshot.key_cache for value in layer_cache),
+            strict=True,
+        )
+    )
+    changed_prefix = _stream((63, *stream.tokens[1:]))
+    with pytest.raises(ValueError, match="identity does not match"):
+        reader.load_dense_prefill(
+            path,
+            changed_prefix,
+            rolling_tokens=4,
+            activation_tokens=6,
+            device=device,
+            ownership="evaluation",
+        )
+    with pytest.raises(ValueError, match="identity does not match"):
+        reader.load_dense_prefill(
+            path,
+            stream,
+            rolling_tokens=4,
+            activation_tokens=6,
+            device=device,
+            ownership="train",
+        )
+
+
 def test_qwen2_adapter_rejects_position_variant_outside_validated_support() -> None:
     model = _qwen_reader().model
     model.config.rope_scaling = {"rope_type": "linear", "factor": 2.0}
@@ -309,6 +490,7 @@ def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
         _stream(tokens),
         LayerPolicy(),
         rolling_tokens=2,
+        activation_tokens=2,
         historical_token_budget=1,
         window_width=1,
         device=torch.device("cpu"),
@@ -330,6 +512,7 @@ def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
         first,
         FixedOffsetPolicy((4,)),
         rolling_tokens=2,
+        activation_tokens=2,
         historical_token_budget=1,
         window_width=1,
         device=torch.device("cpu"),
@@ -338,6 +521,7 @@ def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
         second,
         FixedOffsetPolicy((4,)),
         rolling_tokens=2,
+        activation_tokens=2,
         historical_token_budget=1,
         window_width=1,
         device=torch.device("cpu"),
@@ -368,6 +552,13 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     stream = _stream(tuple(index % 32 for index in range(14)))
     reader_before = [parameter.detach().clone() for parameter in reader.model.parameters()]
     policy_before = [parameter.detach().clone() for parameter in policy.parameters()]
+    dense_snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
     optimizer = torch.optim.Adam(policy.parameters(), lr=1e-2)
     training_metrics = []
     for position, layer_index in ((8, 0), (9, 1), (10, 0)):
@@ -383,6 +574,9 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
             coverage_weight=1.0,
             utility_weight=0.1,
             device=torch.device("cpu"),
+            activation_tokens=6,
+            dense_snapshot=dense_snapshot,
+            snapshot_ownership="train",
         )
         assert torch.isfinite(objective)
         objective.backward()
@@ -411,6 +605,7 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
         metric["temporal_credit_assignment"] == "target_step_only" for metric in training_metrics
     )
     assert any(metric["trajectory_historical_occurrences"] > 0 for metric in training_metrics)
+    assert all(metric["dense_prefix_reused"] for metric in training_metrics)
 
     checkpoint = tmp_path / "selector.pt"
     torch.save(policy.state_dict(), checkpoint)
@@ -423,6 +618,9 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
+        activation_tokens=6,
+        dense_snapshot=dense_snapshot,
+        snapshot_ownership="train",
     )
     restored_scores = reader.execute(
         stream,
@@ -431,6 +629,9 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
+        activation_tokens=6,
+        dense_snapshot=dense_snapshot,
+        snapshot_ownership="train",
     )
     assert [score.as_dict() for score in original_scores] == [
         score.as_dict() for score in restored_scores
@@ -488,7 +689,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
                 },
             ],
         },
-        "attention": {"rolling_tokens": 2, "historical_token_budget": 4},
+        "attention": {
+            "rolling_tokens": 2,
+            "activation_tokens": 4,
+            "historical_token_budget": 4,
+        },
         "selection": {
             "proposal_count": 2,
             "window_width": 2,
@@ -543,6 +748,15 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
     config = tmp_path / "config.json"
     config.write_text(json.dumps(specification), encoding="utf-8")
     monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
+    original_dense_prefill = reader.dense_prefill
+    prefill_calls = 0
+
+    def counted_dense_prefill(*args, **kwargs):
+        nonlocal prefill_calls
+        prefill_calls += 1
+        return original_dense_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "dense_prefill", counted_dense_prefill)
     output, first = run_experiment(
         config,
         device="cpu",
@@ -550,6 +764,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         allow_dirty_source=True,
     )
     assert first["complete"]
+    assert prefill_calls == 2
+    assert set(first["dense_prefill"]) == {"train", "evaluation"}
+    assert all(
+        (output.parent / record["path"]).exists() for record in first["dense_prefill"].values()
+    )
     assert first["training"]["completed_steps"] == 2
     assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
     assert {record["stream_id"] for record in first["training"]["history"]} == {
@@ -563,6 +782,15 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         access["proposal_weights"]
         for score in heatfield["token_scores"]
         for access in score["accesses"]
+    )
+    assert [score["phase"] for score in heatfield["token_scores"][:4]] == [
+        "dense_bootstrap",
+        "dense_bootstrap",
+        "dense_bridge",
+        "dense_bridge",
+    ]
+    assert all(
+        not score["accesses"] for score in heatfield["token_scores"] if score["phase"] != "qkvs"
     )
     assert {measurement["stream_id"] for measurement in first["measurements"]} == {"evaluation"}
     assert {measurement["condition"] for measurement in first["measurements"]} == {
@@ -593,6 +821,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         allow_dirty_source=True,
     )
     assert resumed == first
+    assert prefill_calls == 2
 
 
 @pytest.mark.skipif(
@@ -658,6 +887,7 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         streams[0],
         RollingOnlyPolicy(),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -666,6 +896,7 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         streams[0],
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -703,6 +934,7 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         first,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -711,6 +943,7 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         second,
         FixedOffsetPolicy((6, 10)),
         rolling_tokens=4,
+        activation_tokens=4,
         historical_token_budget=4,
         window_width=2,
         device=torch.device("cpu"),
@@ -744,7 +977,11 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
                     "source": {"path": str(source_path), "sha256": source_sha256},
                     "boundaries": [{"id": "qualification", "start_token": 0, "stop_token": 8}],
                 },
-                "attention": {"rolling_tokens": 2, "historical_token_budget": 2},
+                "attention": {
+                    "rolling_tokens": 2,
+                    "activation_tokens": 4,
+                    "historical_token_budget": 2,
+                },
                 "selection": {
                     "proposal_count": 2,
                     "window_width": 1,

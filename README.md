@@ -181,6 +181,27 @@ comparison with standard Hugging Face execution; it is not a deployable selectio
 Architectures other than Qwen2, Qwen2 checkpoints with sliding-attention layers, and Qwen2
 checkpoints with nondefault RoPE scaling are currently unsupported.
 
+### Dense bootstrap and QKVS activation
+
+Execution has three explicit phases, controlled by working-memory width `W` and activation
+threshold `T` (`W=4096`, `T=6144` in the initial long-context configuration):
+
+1. Positions `0..W-1` use ordinary full causal Q/K/V attention. S is neither invoked nor advanced.
+2. Positions `W..T-1` remain full causal Q/K/V attention. This dense bridge creates history that
+   becomes eligible after the working window starts sliding; eligibility is not a retrieved read.
+3. At position `T`, S starts from a zero recurrent state. The newest `W` cache positions, including
+   the current position's newly written K/V, are mandatory working memory. Only older positions are
+   eligible for at most `R` S-directed historical occurrences. `J`, spatial resolution, and `R`
+   remain independent.
+
+Training and evaluation use this same boundary and absolute position accounting. The dense prefix
+is independent of S, so Qwen2 can persist an immutable prefill snapshot containing its per-layer
+rotated K/V, dense-score metadata, final boundary logits, and next absolute position. Snapshots are
+keyed and validated by exact prefix tokens, frozen model identity and weight digest, RoPE/position
+configuration, numerical settings, `W`, `T`, and train/evaluation ownership. Identical trajectories
+within one owner can share a snapshot; restoration copies cache containers before appending, and no
+post-transition K/V or S state is persisted or shared between trajectories.
+
 The first learned-S implementation uses an independent per-layer MLP over the causal hidden state
 and the bounded current lower-layer proposal state. It emits center, spread, importance, and gate
 for each of `J` proposals. Recurrent state stores absolute token centers so fixed gamma persistence
@@ -196,11 +217,11 @@ gathers do not transmit address gradients. Fixed gamma and beta are the delibera
 implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
 ignored settings.
 
-Training-prefix K/V is constructed by the current learned hard-S trajectory, matching inference.
-Those prior hard decisions and recurrent states are detached: gradients apply only to the selected
-target token/layer, so this is explicit truncated credit assignment rather than full temporal
-backpropagation. Artifacts pair soft-surrogate and actual hard-window utility at every training
-step to expose agreement or mismatch.
+After dense activation, training-prefix K/V is constructed by the current learned hard-S trajectory,
+matching inference. Those prior hard decisions and recurrent states are detached: gradients apply
+only to the selected target token/layer, so this is explicit truncated credit assignment rather
+than full temporal backpropagation. Artifacts pair soft-surrogate and actual hard-window utility at
+every training step to expose agreement or mismatch.
 
 ```text
 configuration

@@ -225,9 +225,34 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("data.kind is unsupported")
 
     attention = specification.get("attention", {})
-    for field in ("rolling_tokens", "historical_token_budget"):
+    for field in ("rolling_tokens", "activation_tokens", "historical_token_budget"):
         if not _positive_integer(attention.get(field)):
             errors.append(f"attention.{field} must be a positive integer")
+    if (
+        _positive_integer(attention.get("rolling_tokens"))
+        and _positive_integer(attention.get("activation_tokens"))
+        and attention["activation_tokens"] < attention["rolling_tokens"]
+    ):
+        errors.append("attention.activation_tokens must be at least rolling_tokens")
+    activation_tokens = attention.get("activation_tokens")
+    if _positive_integer(activation_tokens):
+        if data_kind in {"synthetic", "long_context_reading"} and _positive_integer(
+            data.get("sequence_tokens")
+        ):
+            if data["sequence_tokens"] <= activation_tokens:
+                errors.append("data.sequence_tokens must extend beyond attention.activation_tokens")
+        elif data_kind == "tokenized_text":
+            for index, boundary in enumerate(data.get("boundaries", [])):
+                if not isinstance(boundary, dict):
+                    continue
+                start = boundary.get("start_token")
+                stop = boundary.get("stop_token")
+                if isinstance(start, int) and isinstance(stop, int):
+                    if stop - start <= activation_tokens:
+                        errors.append(
+                            f"data.boundaries[{index}] must extend beyond "
+                            "attention.activation_tokens"
+                        )
 
     selection = specification.get("selection", {})
     proposal_count = selection.get("proposal_count")
@@ -609,6 +634,86 @@ def _result_path(
     return root / specification["run"]["id"] / "result.json"
 
 
+def _prepare_dense_prefills(
+    *,
+    reader: Any,
+    streams: list[dict[str, Any]],
+    specification: dict[str, Any],
+    result: dict[str, Any],
+    output: Path,
+    device: Any,
+) -> dict[str, Any]:
+    """Load or atomically create one S-independent prefix per owner and token prefix."""
+
+    if specification["model"]["backend"] != "huggingface":
+        result["dense_prefill"] = {}
+        return {}
+
+    from qkvs.model import TokenStream
+
+    rolling_tokens = specification["attention"]["rolling_tokens"]
+    activation_tokens = specification["attention"]["activation_tokens"]
+    snapshots: dict[str, Any] = {}
+    shared: dict[tuple[str, tuple[int, ...]], tuple[Any, Path]] = {}
+    records: dict[str, Any] = {}
+    for record in streams:
+        stream = TokenStream(
+            stream_id=record["stream_id"],
+            tokens=tuple(record["tokens"]),
+            support_positions=tuple(record["support_positions"]),
+        )
+        ownership = record.get("split", "evaluation")
+        if len(stream.tokens) < activation_tokens:
+            raise ValueError(
+                f"stream {stream.stream_id} is shorter than attention.activation_tokens"
+            )
+        prefix = stream.tokens[:activation_tokens]
+        key = (ownership, prefix)
+        if key not in shared:
+            prefix_sha256 = hashlib.sha256(
+                json.dumps(prefix, separators=(",", ":")).encode()
+            ).hexdigest()
+            path = output.parent / "dense_prefill" / f"{ownership}-{prefix_sha256}.pt"
+            prior = result.get("dense_prefill", {}).get(stream.stream_id)
+            if prior is not None:
+                if (
+                    not path.exists()
+                    or prior.get("path") != str(path.relative_to(output.parent))
+                    or prior.get("artifact_sha256") != _sha256(path)
+                ):
+                    raise ValueError("dense prefill artifact does not match the saved run")
+            if path.exists():
+                snapshot = reader.load_dense_prefill(
+                    path,
+                    stream,
+                    rolling_tokens=rolling_tokens,
+                    activation_tokens=activation_tokens,
+                    device=device,
+                    ownership=ownership,
+                )
+            else:
+                snapshot = reader.dense_prefill(
+                    stream,
+                    rolling_tokens=rolling_tokens,
+                    activation_tokens=activation_tokens,
+                    device=device,
+                    ownership=ownership,
+                )
+                reader.save_dense_prefill(snapshot, path)
+            shared[key] = (snapshot, path)
+        snapshot, path = shared[key]
+        snapshots[stream.stream_id] = snapshot
+        records[stream.stream_id] = {
+            "ownership": ownership,
+            "path": str(path.relative_to(output.parent)),
+            "artifact_sha256": _sha256(path),
+            "identity": snapshot.identity,
+        }
+    result["dense_prefill"] = records
+    _write_json(output, result)
+    return snapshots
+
+
 def _build_learned_policy(reader: Any, specification: dict[str, Any], torch: Any) -> Any:
     from qkvs.selection import LearnedHeatFieldPolicy
 
@@ -640,6 +745,7 @@ def _train_learned_policy(
     output: Path,
     device: Any,
     torch: Any,
+    dense_prefills: dict[str, Any],
 ) -> None:
     from qkvs.model import TokenStream
 
@@ -682,7 +788,7 @@ def _train_learned_policy(
     maximum_positions = max(len(stream.tokens) - 1 for stream in token_streams)
     eligible = [
         (stream, position)
-        for position in range(attention["rolling_tokens"], maximum_positions)
+        for position in range(attention["activation_tokens"], maximum_positions)
         for stream in token_streams
         if position < len(stream.tokens) - 1
     ]
@@ -705,6 +811,9 @@ def _train_learned_policy(
             coverage_weight=float(training["coverage_weight"]),
             utility_weight=float(training["utility_weight"]),
             device=device,
+            activation_tokens=attention["activation_tokens"],
+            dense_snapshot=dense_prefills.get(stream.stream_id),
+            snapshot_ownership="train",
         )
         objective.backward()
         gradient_norm = torch.sqrt(
@@ -810,6 +919,7 @@ def run_experiment(
                 "pid": os.getpid(),
             },
             "streams": streams,
+            "dense_prefill": {},
             "measurements": [],
             "training": {},
             "summary": {},
@@ -823,6 +933,14 @@ def run_experiment(
             "cuda_initialized_before_reader": cuda_initialized_before_reader,
             "cuda_initialized_after_reader": torch.cuda.is_initialized(),
         }
+    )
+    dense_prefills = _prepare_dense_prefills(
+        reader=reader,
+        streams=streams,
+        specification=specification,
+        result=result,
+        output=output,
+        device=torch_device,
     )
     learned_policy = None
     untrained_policy = None
@@ -840,6 +958,7 @@ def run_experiment(
             output=output,
             device=torch_device,
             torch=torch,
+            dense_prefills=dense_prefills,
         )
     completed = {
         (measurement["condition"], measurement["stream_id"])
@@ -877,6 +996,9 @@ def run_experiment(
                 historical_token_budget=specification["attention"]["historical_token_budget"],
                 window_width=specification["selection"]["window_width"],
                 device=torch_device,
+                activation_tokens=specification["attention"]["activation_tokens"],
+                dense_snapshot=dense_prefills.get(stream.stream_id),
+                snapshot_ownership="evaluation",
             )
             result["measurements"].append(
                 {

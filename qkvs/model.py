@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -29,6 +30,20 @@ class TokenStream:
             raise ValueError("token streams need at least two tokens")
         if len(self.support_positions) != len(self.tokens) - 1:
             raise ValueError("support positions must align with next-token scores")
+
+
+@dataclass(frozen=True)
+class DensePrefillSnapshot:
+    """Immutable continuation state after the dense prefix [0, activation_tokens)."""
+
+    identity: dict[str, Any]
+    prefix_tokens: tuple[int, ...]
+    next_position: int
+    key_cache: tuple[tuple[Tensor, ...], ...]
+    value_cache: tuple[tuple[Tensor, ...], ...]
+    dense_losses: tuple[float, ...]
+    dense_predictions: tuple[int, ...]
+    boundary_logits: Tensor
 
 
 @dataclass(frozen=True)
@@ -63,6 +78,7 @@ class TokenScore:
     loss: float
     prediction: int
     accesses: tuple[AccessRecord, ...]
+    phase: str = "qkvs"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +87,7 @@ class TokenScore:
             "loss": self.loss,
             "prediction": self.prediction,
             "accesses": [access.as_dict() for access in self.accesses],
+            "phase": self.phase,
         }
 
 
@@ -131,6 +148,15 @@ def _gather_cache_occurrences(
     if not selected:
         raise ValueError("actual K/V gather must include the rolling window")
     return torch.stack(selected, dim=1)
+
+
+def _validate_transition(rolling_tokens: int, activation_tokens: int) -> None:
+    if rolling_tokens <= 0:
+        raise ValueError("rolling attention is mandatory")
+    if activation_tokens < 0:
+        raise ValueError("activation threshold cannot be negative")
+    if activation_tokens and activation_tokens < rolling_tokens:
+        raise ValueError("activation threshold must be at least the working-memory width")
 
 
 class _ReaderLayer(nn.Module):
@@ -210,9 +236,16 @@ class FrozenCausalReader(nn.Module):
         historical_token_budget: int,
         window_width: int,
         device: torch.device,
+        activation_tokens: int,
+        dense_snapshot: DensePrefillSnapshot | None = None,
+        snapshot_ownership: str = "evaluation",
     ) -> list[TokenScore]:
-        if rolling_tokens <= 0:
-            raise ValueError("rolling attention is mandatory")
+        del snapshot_ownership
+        if dense_snapshot is not None:
+            raise ValueError("synthetic reader does not accept Qwen2 dense prefill snapshots")
+        _validate_transition(rolling_tokens, activation_tokens)
+        if activation_tokens == 0:
+            raise ValueError("bounded execution requires a positive activation threshold")
         self.to(device)
         key_cache: list[list[Tensor]] = [[] for _ in self.layers]
         value_cache: list[list[Tensor]] = [[] for _ in self.layers]
@@ -229,29 +262,44 @@ class FrozenCausalReader(nn.Module):
                     key_cache[layer_index].append(self._heads(layer.key(normalized)))
                     value_cache[layer_index].append(self._heads(layer.value(normalized)))
 
-                    rolling_start = max(0, position - rolling_tokens + 1)
-                    proposal_set = policy.propose(
-                        SelectionContext(
-                            position=position,
-                            layer=layer_index,
+                    if position < activation_tokens:
+                        rolling_start = 0
+                        rolling = tuple(range(position + 1))
+                        historical: tuple[int, ...] = ()
+                        centers: tuple[float, ...] = ()
+                        spreads: tuple[float, ...] = ()
+                        weights: tuple[float, ...] = ()
+                        active: tuple[bool, ...] = ()
+                        occurrence_limit = None
+                    else:
+                        rolling_start = max(0, position - rolling_tokens + 1)
+                        proposal_set = policy.propose(
+                            SelectionContext(
+                                position=position,
+                                layer=layer_index,
+                                history_end=rolling_start,
+                                hidden=normalized,
+                                lower_layer=lower_layer_selection,
+                            ),
+                            policy_states[layer_index],
+                        )
+                        policy_states[layer_index] = proposal_set.state
+                        lower_layer_selection = proposal_set.soft_parameters
+                        selection = resolve_proposals(
+                            proposal_set.proposals,
                             history_end=rolling_start,
-                            hidden=normalized,
-                            lower_layer=lower_layer_selection,
-                        ),
-                        policy_states[layer_index],
-                    )
-                    policy_states[layer_index] = proposal_set.state
-                    lower_layer_selection = proposal_set.soft_parameters
-                    selection = resolve_proposals(
-                        proposal_set.proposals,
-                        history_end=rolling_start,
-                        window_width=window_width,
-                        historical_token_budget=historical_token_budget,
-                        beta=proposal_set.beta,
-                    )
-                    rolling = tuple(range(rolling_start, position + 1))
-                    actual_indices = (*selection.indices, *rolling)
-                    occurrence_limit = rolling_tokens + historical_token_budget
+                            window_width=window_width,
+                            historical_token_budget=historical_token_budget,
+                            beta=proposal_set.beta,
+                        )
+                        rolling = tuple(range(rolling_start, position + 1))
+                        historical = selection.indices
+                        centers = tuple(proposal.center for proposal in proposal_set.proposals)
+                        spreads = tuple(proposal.spread for proposal in proposal_set.proposals)
+                        weights = tuple(proposal.weight for proposal in proposal_set.proposals)
+                        active = tuple(proposal.active for proposal in proposal_set.proposals)
+                        occurrence_limit = rolling_tokens + historical_token_budget
+                    actual_indices = (*historical, *rolling)
                     keys = _gather_cache_occurrences(
                         key_cache[layer_index],
                         actual_indices,
@@ -266,19 +314,11 @@ class FrozenCausalReader(nn.Module):
                         position=position,
                         layer=layer_index,
                         rolling=rolling,
-                        historical=selection.indices,
-                        proposal_centers=tuple(
-                            proposal.center for proposal in proposal_set.proposals
-                        ),
-                        proposal_spreads=tuple(
-                            proposal.spread for proposal in proposal_set.proposals
-                        ),
-                        proposal_weights=tuple(
-                            proposal.weight for proposal in proposal_set.proposals
-                        ),
-                        proposal_active=tuple(
-                            proposal.active for proposal in proposal_set.proposals
-                        ),
+                        historical=historical,
+                        proposal_centers=centers,
+                        proposal_spreads=spreads,
+                        proposal_weights=weights,
+                        proposal_active=active,
                         support_position=stream.support_positions[position],
                         history_end=rolling_start,
                         cache_length=len(key_cache[layer_index]),
@@ -305,6 +345,13 @@ class FrozenCausalReader(nn.Module):
                         loss=float(loss.item()),
                         prediction=int(output.argmax().item()),
                         accesses=tuple(token_accesses),
+                        phase=(
+                            "dense_bootstrap"
+                            if position < min(rolling_tokens, activation_tokens)
+                            else "dense_bridge"
+                            if position < activation_tokens
+                            else "qkvs"
+                        ),
                     )
                 )
         return scores
@@ -324,6 +371,9 @@ class HuggingFaceQwen2Reader:
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.specification = specification
+        self._model_weights_digest: str | None = None
+        self._model_weights_signature: tuple[tuple[str, int], ...] | None = None
+        self._identity_cache: dict[str, Any] | None = None
         for parameter in self.model.parameters():
             parameter.requires_grad_(False)
 
@@ -334,6 +384,9 @@ class HuggingFaceQwen2Reader:
 
     def identity(self) -> dict[str, Any]:
         import transformers
+
+        if self._identity_cache is not None:
+            return json.loads(json.dumps(self._identity_cache))
 
         config = self.model.config
         config_sha256 = hashlib.sha256(
@@ -352,7 +405,7 @@ class HuggingFaceQwen2Reader:
         tokenizer_revision = self.specification.get(
             "tokenizer_revision", self.specification["revision"]
         )
-        return {
+        self._identity_cache = {
             "backend": "huggingface",
             "model_id": self.specification["id"],
             "model_revision": self.specification["revision"],
@@ -376,6 +429,7 @@ class HuggingFaceQwen2Reader:
             "tokenizer_vocabulary_sha256": tokenizer_vocabulary_sha256,
             "transformers": transformers.__version__,
         }
+        return json.loads(json.dumps(self._identity_cache))
 
     def _append_layer_kv(
         self,
@@ -503,6 +557,285 @@ class HuggingFaceQwen2Reader:
             )
         return self.model.lm_head(backbone.norm(hidden))[0, 0]
 
+    def _model_weights_sha256(self) -> str:
+        state = sorted(self.model.state_dict().items())
+        signature = tuple((name, value._version) for name, value in state)
+        if self._model_weights_digest is None or signature != self._model_weights_signature:
+            digest = hashlib.sha256()
+            for name, value in state:
+                contiguous = value.detach().cpu().contiguous()
+                digest.update(name.encode())
+                digest.update(str(tuple(contiguous.shape)).encode())
+                digest.update(str(contiguous.dtype).encode())
+                digest.update(contiguous.view(torch.uint8).numpy())
+            self._model_weights_digest = digest.hexdigest()
+            self._model_weights_signature = signature
+        return self._model_weights_digest
+
+    @staticmethod
+    def _prefix_sha256(tokens: tuple[int, ...]) -> str:
+        encoded = json.dumps(tokens, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _dense_prefill_identity(
+        self,
+        prefix_tokens: tuple[int, ...],
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+    ) -> dict[str, Any]:
+        config = self.model.config
+        return {
+            "format": "qkvs-dense-prefill-v1",
+            "ownership": ownership,
+            "prefix_tokens_sha256": self._prefix_sha256(prefix_tokens),
+            "prefix_length": len(prefix_tokens),
+            "working_memory_tokens": rolling_tokens,
+            "activation_tokens": activation_tokens,
+            "model": self.identity(),
+            "model_weights_sha256": self._model_weights_sha256(),
+            "position": {
+                "max_position_embeddings": config.max_position_embeddings,
+                "rope_theta": config.rope_theta,
+                "rope_scaling": config.rope_scaling,
+            },
+            "numerical": {
+                "torch": str(torch.__version__),
+                "dtype": str(next(self.model.parameters()).dtype),
+                "device": str(device),
+                "attention_implementation": "eager",
+                "default_dtype": str(torch.get_default_dtype()),
+                "float32_matmul_precision": torch.get_float32_matmul_precision(),
+                "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+                "threads": torch.get_num_threads(),
+                "interop_threads": torch.get_num_interop_threads(),
+            },
+        }
+
+    def _validate_dense_prefill(
+        self,
+        snapshot: DensePrefillSnapshot,
+        stream: TokenStream,
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+    ) -> None:
+        _validate_transition(rolling_tokens, activation_tokens)
+        if activation_tokens == 0:
+            raise ValueError("a dense prefill snapshot requires a positive activation threshold")
+        if len(stream.tokens) < activation_tokens:
+            raise ValueError("token stream is shorter than the dense prefill")
+        prefix = stream.tokens[:activation_tokens]
+        expected = self._dense_prefill_identity(
+            prefix,
+            rolling_tokens=rolling_tokens,
+            activation_tokens=activation_tokens,
+            device=device,
+            ownership=ownership,
+        )
+        if snapshot.identity != expected or snapshot.prefix_tokens != prefix:
+            raise ValueError("dense prefill snapshot identity does not match this continuation")
+        if snapshot.next_position != activation_tokens:
+            raise ValueError("dense prefill continuation position is invalid")
+        layer_count = len(self.model.model.layers)
+        if len(snapshot.key_cache) != layer_count or len(snapshot.value_cache) != layer_count:
+            raise ValueError("dense prefill layer cache count is invalid")
+        if any(len(cache) != activation_tokens for cache in snapshot.key_cache):
+            raise ValueError("dense prefill key cache length is invalid")
+        if any(len(cache) != activation_tokens for cache in snapshot.value_cache):
+            raise ValueError("dense prefill value cache length is invalid")
+        if len(snapshot.dense_losses) != max(0, activation_tokens - 1):
+            raise ValueError("dense prefill loss metadata is invalid")
+        if len(snapshot.dense_predictions) != activation_tokens:
+            raise ValueError("dense prefill prediction metadata is invalid")
+
+    def dense_prefill(
+        self,
+        stream: TokenStream,
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+    ) -> DensePrefillSnapshot:
+        """Run the S-independent dense prefix once and retain continuation state."""
+
+        _validate_transition(rolling_tokens, activation_tokens)
+        if activation_tokens == 0:
+            raise ValueError("dense prefill requires a positive activation threshold")
+        if len(stream.tokens) < activation_tokens:
+            raise ValueError("token stream is shorter than the dense prefill")
+        if activation_tokens > self.model.config.max_position_embeddings:
+            raise ValueError("dense prefill exceeds the model's supported position range")
+        self.model.to(device)
+        backbone = self.model.model
+        key_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
+        value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
+        dense_losses: list[float] = []
+        dense_predictions: list[int] = []
+        boundary_logits: Tensor | None = None
+
+        with torch.inference_mode():
+            for position, token in enumerate(stream.tokens[:activation_tokens]):
+                token_id = torch.tensor([[token]], device=device)
+                hidden = backbone.embed_tokens(token_id)
+                position_ids = torch.tensor([[position]], device=device)
+                position_embeddings = backbone.rotary_emb(hidden, position_ids)
+                dense_indices = tuple(range(position + 1))
+                for layer_index, layer in enumerate(backbone.layers):
+                    residual, _, query = self._append_layer_kv(
+                        layer,
+                        hidden,
+                        position_embeddings,
+                        key_cache[layer_index],
+                        value_cache[layer_index],
+                    )
+                    hidden, _, _ = self._finish_layer(
+                        layer,
+                        residual,
+                        query,
+                        key_cache[layer_index],
+                        value_cache[layer_index],
+                        dense_indices,
+                        occurrence_limit=None,
+                    )
+                logits = self.model.lm_head(backbone.norm(hidden))[0, 0]
+                dense_predictions.append(int(logits.argmax().item()))
+                if position + 1 < activation_tokens:
+                    target = torch.tensor([stream.tokens[position + 1]], device=device)
+                    dense_losses.append(
+                        float(torch.nn.functional.cross_entropy(logits.unsqueeze(0), target))
+                    )
+                boundary_logits = logits.detach().cpu().clone()
+
+        if boundary_logits is None:
+            raise RuntimeError("dense prefill did not execute any tokens")
+        prefix = stream.tokens[:activation_tokens]
+        snapshot = DensePrefillSnapshot(
+            identity=self._dense_prefill_identity(
+                prefix,
+                rolling_tokens=rolling_tokens,
+                activation_tokens=activation_tokens,
+                device=device,
+                ownership=ownership,
+            ),
+            prefix_tokens=prefix,
+            next_position=activation_tokens,
+            key_cache=tuple(
+                tuple(value.detach().cpu().clone() for value in layer_cache)
+                for layer_cache in key_cache
+            ),
+            value_cache=tuple(
+                tuple(value.detach().cpu().clone() for value in layer_cache)
+                for layer_cache in value_cache
+            ),
+            dense_losses=tuple(dense_losses),
+            dense_predictions=tuple(dense_predictions),
+            boundary_logits=boundary_logits,
+        )
+        self._validate_dense_prefill(
+            snapshot,
+            stream,
+            rolling_tokens=rolling_tokens,
+            activation_tokens=activation_tokens,
+            device=device,
+            ownership=ownership,
+        )
+        return snapshot
+
+    def save_dense_prefill(self, snapshot: DensePrefillSnapshot, path: str | Path) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        torch.save(
+            {
+                "identity": snapshot.identity,
+                "prefix_tokens": snapshot.prefix_tokens,
+                "next_position": snapshot.next_position,
+                "key_cache": snapshot.key_cache,
+                "value_cache": snapshot.value_cache,
+                "dense_losses": snapshot.dense_losses,
+                "dense_predictions": snapshot.dense_predictions,
+                "boundary_logits": snapshot.boundary_logits,
+            },
+            temporary,
+        )
+        temporary.replace(destination)
+
+    def load_dense_prefill(
+        self,
+        path: str | Path,
+        stream: TokenStream,
+        *,
+        rolling_tokens: int,
+        activation_tokens: int,
+        device: torch.device,
+        ownership: str,
+    ) -> DensePrefillSnapshot:
+        saved = torch.load(Path(path), map_location="cpu", weights_only=True)
+        snapshot = DensePrefillSnapshot(
+            identity=saved["identity"],
+            prefix_tokens=tuple(saved["prefix_tokens"]),
+            next_position=int(saved["next_position"]),
+            key_cache=tuple(tuple(cache) for cache in saved["key_cache"]),
+            value_cache=tuple(tuple(cache) for cache in saved["value_cache"]),
+            dense_losses=tuple(saved["dense_losses"]),
+            dense_predictions=tuple(saved["dense_predictions"]),
+            boundary_logits=saved["boundary_logits"],
+        )
+        self._validate_dense_prefill(
+            snapshot,
+            stream,
+            rolling_tokens=rolling_tokens,
+            activation_tokens=activation_tokens,
+            device=device,
+            ownership=ownership,
+        )
+        return snapshot
+
+    def _scores_from_dense_prefill(
+        self,
+        snapshot: DensePrefillSnapshot,
+        stream: TokenStream,
+        *,
+        rolling_tokens: int,
+        device: torch.device,
+    ) -> list[TokenScore]:
+        score_count = min(snapshot.next_position, len(stream.tokens) - 1)
+        scores = [
+            TokenScore(
+                position=position,
+                target=stream.tokens[position + 1],
+                loss=snapshot.dense_losses[position],
+                prediction=snapshot.dense_predictions[position],
+                accesses=(),
+                phase=("dense_bootstrap" if position < rolling_tokens else "dense_bridge"),
+            )
+            for position in range(min(score_count, snapshot.next_position - 1))
+        ]
+        boundary_position = snapshot.next_position - 1
+        if boundary_position < score_count:
+            target = torch.tensor([stream.tokens[boundary_position + 1]], device=device)
+            logits = snapshot.boundary_logits.to(device)
+            loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), target)
+            scores.append(
+                TokenScore(
+                    position=boundary_position,
+                    target=int(target.item()),
+                    loss=float(loss),
+                    prediction=snapshot.dense_predictions[boundary_position],
+                    accesses=(),
+                    phase=(
+                        "dense_bootstrap" if boundary_position < rolling_tokens else "dense_bridge"
+                    ),
+                )
+            )
+        return scores
+
     def _execute(
         self,
         stream: TokenStream,
@@ -513,21 +846,62 @@ class HuggingFaceQwen2Reader:
         window_width: int,
         device: torch.device,
         diagnostic_full_history: bool,
+        activation_tokens: int = 0,
+        dense_snapshot: DensePrefillSnapshot | None = None,
+        snapshot_ownership: str = "evaluation",
     ) -> tuple[list[TokenScore], Tensor | None]:
-        if rolling_tokens <= 0:
-            raise ValueError("rolling attention is mandatory")
+        _validate_transition(rolling_tokens, activation_tokens)
         if len(stream.tokens) > self.model.config.max_position_embeddings:
             raise ValueError("token stream exceeds the model's supported position range")
+        if diagnostic_full_history and (activation_tokens or dense_snapshot is not None):
+            raise ValueError("full-history diagnostics do not use activation snapshots")
+        if dense_snapshot is not None and activation_tokens == 0:
+            raise ValueError("dense prefill snapshot supplied without an activation threshold")
         self.model.to(device)
         backbone = self.model.model
-        key_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
-        value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
+        if activation_tokens:
+            if dense_snapshot is None:
+                dense_snapshot = self.dense_prefill(
+                    stream,
+                    rolling_tokens=rolling_tokens,
+                    activation_tokens=activation_tokens,
+                    device=device,
+                    ownership=snapshot_ownership,
+                )
+            self._validate_dense_prefill(
+                dense_snapshot,
+                stream,
+                rolling_tokens=rolling_tokens,
+                activation_tokens=activation_tokens,
+                device=device,
+                ownership=snapshot_ownership,
+            )
+            key_cache = [
+                [value.to(device) for value in layer_cache]
+                for layer_cache in dense_snapshot.key_cache
+            ]
+            value_cache = [
+                [value.to(device) for value in layer_cache]
+                for layer_cache in dense_snapshot.value_cache
+            ]
+            scores = self._scores_from_dense_prefill(
+                dense_snapshot,
+                stream,
+                rolling_tokens=rolling_tokens,
+                device=device,
+            )
+            start_position = activation_tokens
+        else:
+            key_cache = [[] for _ in backbone.layers]
+            value_cache = [[] for _ in backbone.layers]
+            scores = []
+            start_position = 0
         policy_states = [PolicyState() for _ in backbone.layers]
-        scores: list[TokenScore] = []
         output_logits: list[Tensor] | None = [] if diagnostic_full_history else None
 
         with torch.inference_mode():
-            for position, token in enumerate(stream.tokens[:-1]):
+            for position in range(start_position, len(stream.tokens) - 1):
+                token = stream.tokens[position]
                 token_id = torch.tensor([[token]], device=device)
                 hidden = backbone.embed_tokens(token_id)
                 position_ids = torch.tensor([[position]], device=device)
@@ -623,6 +997,7 @@ class HuggingFaceQwen2Reader:
                         loss=float(loss.item()),
                         prediction=int(logits.argmax().item()),
                         accesses=tuple(token_accesses),
+                        phase="qkvs",
                     )
                 )
         return scores, torch.stack(output_logits) if output_logits is not None else None
@@ -636,7 +1011,12 @@ class HuggingFaceQwen2Reader:
         historical_token_budget: int,
         window_width: int,
         device: torch.device,
+        activation_tokens: int,
+        dense_snapshot: DensePrefillSnapshot | None = None,
+        snapshot_ownership: str = "evaluation",
     ) -> list[TokenScore]:
+        if activation_tokens == 0:
+            raise ValueError("bounded execution requires a positive activation threshold")
         scores, _ = self._execute(
             stream,
             policy,
@@ -645,6 +1025,9 @@ class HuggingFaceQwen2Reader:
             window_width=window_width,
             device=device,
             diagnostic_full_history=False,
+            activation_tokens=activation_tokens,
+            dense_snapshot=dense_snapshot,
+            snapshot_ownership=snapshot_ownership,
         )
         return scores
 
@@ -661,27 +1044,62 @@ class HuggingFaceQwen2Reader:
         coverage_weight: float,
         utility_weight: float,
         device: torch.device,
+        activation_tokens: int,
+        dense_snapshot: DensePrefillSnapshot | None = None,
+        snapshot_ownership: str = "train",
     ) -> tuple[Tensor, dict[str, Any]]:
         """Build one truncated causal S objective while the reader remains frozen."""
 
-        if position < rolling_tokens or position >= len(stream.tokens) - 1:
+        _validate_transition(rolling_tokens, activation_tokens)
+        if activation_tokens == 0:
+            raise ValueError("heat-field training requires a positive activation threshold")
+        if position < activation_tokens or position >= len(stream.tokens) - 1:
             raise ValueError("training position needs eligible history and a next-token target")
         if layer_index < 0 or layer_index >= len(self.model.model.layers):
             raise ValueError("training layer is outside the reader")
         if coverage_weight < 0.0 or utility_weight < 0.0:
             raise ValueError("training signal weights must be nonnegative")
+        reused_dense_snapshot = dense_snapshot is not None
         self.model.to(device)
         policy.to(device)
         backbone = self.model.model
-        key_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
-        value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
+        if activation_tokens:
+            if dense_snapshot is None:
+                dense_snapshot = self.dense_prefill(
+                    stream,
+                    rolling_tokens=rolling_tokens,
+                    activation_tokens=activation_tokens,
+                    device=device,
+                    ownership=snapshot_ownership,
+                )
+            self._validate_dense_prefill(
+                dense_snapshot,
+                stream,
+                rolling_tokens=rolling_tokens,
+                activation_tokens=activation_tokens,
+                device=device,
+                ownership=snapshot_ownership,
+            )
+            key_cache = [
+                [value.to(device) for value in layer_cache]
+                for layer_cache in dense_snapshot.key_cache
+            ]
+            value_cache = [
+                [value.to(device) for value in layer_cache]
+                for layer_cache in dense_snapshot.value_cache
+            ]
+            trajectory_start = activation_tokens
+        else:
+            key_cache = [[] for _ in backbone.layers]
+            value_cache = [[] for _ in backbone.layers]
+            trajectory_start = 0
         policy_states = [PolicyState() for _ in backbone.layers]
         trajectory_historical_occurrences = 0
         trajectory_unique_tokens = 0
         trajectory_overlap_occurrences = 0
 
         with torch.no_grad():
-            for prior_position in range(position):
+            for prior_position in range(trajectory_start, position):
                 token_id = torch.tensor([[stream.tokens[prior_position]]], device=device)
                 hidden = backbone.embed_tokens(token_id)
                 position_ids = torch.tensor([[prior_position]], device=device)
@@ -940,6 +1358,8 @@ class HuggingFaceQwen2Reader:
             "proposal_parameters": soft.detach().cpu().tolist(),
             "coverage_overlap_alpha": 0.0,
             "trajectory": "learned_hard_detached",
+            "activation_tokens": activation_tokens,
+            "dense_prefix_reused": reused_dense_snapshot,
             "trajectory_historical_occurrences": trajectory_historical_occurrences,
             "trajectory_unique_tokens": trajectory_unique_tokens,
             "trajectory_overlap_occurrences": trajectory_overlap_occurrences,

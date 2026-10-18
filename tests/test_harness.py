@@ -132,6 +132,17 @@ def test_configuration_rejects_a_historical_window_that_cannot_execute() -> None
     )
 
 
+def test_configuration_rejects_invalid_or_unreached_activation() -> None:
+    specification = json.loads(Path("configs/harness_smoke.json").read_text())
+    specification["attention"]["activation_tokens"] = 3
+    report = validate_config(specification)
+    assert "attention.activation_tokens must be at least rolling_tokens" in report["errors"]
+
+    specification["attention"]["activation_tokens"] = specification["data"]["sequence_tokens"]
+    report = validate_config(specification)
+    assert "data.sequence_tokens must extend beyond attention.activation_tokens" in report["errors"]
+
+
 def test_tokenized_text_streams_have_fixed_boundaries_and_source_identity(tmp_path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("deterministic real token stream", encoding="utf-8")
