@@ -280,6 +280,16 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
     condition_objects = [condition for condition in conditions if isinstance(condition, dict)]
     if not any(condition.get("policy") == "rolling" for condition in condition_objects):
         errors.append("a rolling-only condition is mandatory")
+    historical_token_budget = attention.get("historical_token_budget")
+    if (
+        any(condition.get("policy") == "fixed_offsets" for condition in condition_objects)
+        and _positive_integer(window_width)
+        and _positive_integer(historical_token_budget)
+        and window_width > historical_token_budget
+    ):
+        errors.append(
+            "selection.window_width cannot exceed the historical token budget for fixed_offsets"
+        )
 
     evaluation = specification.get("evaluation", {})
     if evaluation.get("metric") != "next_token_cross_entropy":

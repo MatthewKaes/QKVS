@@ -6,6 +6,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config, Qwen2ForCausalLM
 
+import qkvs.model as model_module
 from qkvs.model import FrozenCausalReader, HuggingFaceQwen2Reader, TokenStream
 from qkvs.selection import (
     FixedOffsetPolicy,
@@ -56,6 +57,8 @@ def test_reader_instruments_actual_causal_kv_accesses() -> None:
                 len(access.historical_indices) - len(set(access.historical_indices))
             )
             assert access.rolling_overlap_occurrences == 0
+            assert access.gathered_key_occurrences == len(access.actual_indices)
+            assert access.gathered_value_occurrences == len(access.actual_indices)
 
 
 def test_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
@@ -132,6 +135,120 @@ def _qwen_reader() -> HuggingFaceQwen2Reader:
             "frozen": True,
         },
     )
+
+
+def test_direct_cache_gather_reads_real_occurrences_in_order() -> None:
+    cache = [torch.full((2, 3), float(index)) for index in range(8)]
+    gathered = model_module._gather_cache_occurrences(
+        cache,
+        (5, 2, 5, 7),
+        occurrence_limit=4,
+    )
+    assert gathered.shape == (2, 4, 3)
+    assert gathered[0, :, 0].tolist() == [5.0, 2.0, 5.0, 7.0]
+    with pytest.raises(ValueError, match="bounded occurrence limit"):
+        model_module._gather_cache_occurrences(
+            cache,
+            (0, 1, 2),
+            occurrence_limit=2,
+        )
+
+
+@pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))
+def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_factory) -> None:
+    reader = reader_factory()
+    original_stack = torch.stack
+    stacked_widths: list[int] = []
+
+    def guarded_stack(tensors, *args, **kwargs):
+        dim = kwargs.get("dim", args[0] if args else 0)
+        if dim == 1:
+            stacked_widths.append(len(tensors))
+            assert len(tensors) <= 5
+        return original_stack(tensors, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "stack", guarded_stack)
+    scores = reader.execute(
+        _stream(tuple(index % 16 for index in range(48))),
+        FixedOffsetPolicy((8, 16, 24)),
+        rolling_tokens=2,
+        historical_token_budget=3,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    assert stacked_widths
+    assert max(access.cache_length for score in scores for access in score.accesses) == 47
+    assert max(stacked_widths) == 5
+
+
+@pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))
+def test_direct_gather_matches_legacy_materialized_scores(monkeypatch, reader_factory) -> None:
+    stream = _stream(tuple(index % 16 for index in range(24)))
+    direct = reader_factory().execute(
+        stream,
+        FixedOffsetPolicy((6, 10)),
+        rolling_tokens=3,
+        historical_token_budget=5,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+
+    def legacy_gather(cache, indices, *, occurrence_limit):
+        assert occurrence_limit is None or len(indices) <= occurrence_limit
+        return torch.stack(cache, dim=1)[:, indices]
+
+    monkeypatch.setattr(model_module, "_gather_cache_occurrences", legacy_gather)
+    materialized = reader_factory().execute(
+        stream,
+        FixedOffsetPolicy((6, 10)),
+        rolling_tokens=3,
+        historical_token_budget=5,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    assert [score.as_dict() for score in direct] == [score.as_dict() for score in materialized]
+
+
+@pytest.mark.parametrize(
+    ("offsets", "rolling_tokens", "historical_budget", "window_width"),
+    (
+        ((5,), 4, 1, 1),
+        ((5, 5), 2, 4, 2),
+        ((5, 9, 13), 3, 5, 2),
+    ),
+)
+def test_bounded_gathers_cover_early_overlap_and_independent_limits(
+    offsets,
+    rolling_tokens,
+    historical_budget,
+    window_width,
+) -> None:
+    scores = _reader().execute(
+        _stream(tuple(index % 8 for index in range(24))),
+        FixedOffsetPolicy(offsets),
+        rolling_tokens=rolling_tokens,
+        historical_token_budget=historical_budget,
+        window_width=window_width,
+        device=torch.device("cpu"),
+    )
+    assert all(access.actual_indices == (0,) for access in scores[0].accesses)
+    assert all(
+        access.gathered_key_occurrences
+        == access.gathered_value_occurrences
+        == len(access.actual_indices)
+        <= rolling_tokens + historical_budget
+        for score in scores
+        for access in score.accesses
+    )
+    if len(set(offsets)) != len(offsets):
+        assert any(
+            access.duplicate_historical_occurrences for score in scores for access in score.accesses
+        )
+    if historical_budget % window_width:
+        assert (
+            max(access.historical_occurrences for score in scores for access in score.accesses)
+            == historical_budget - historical_budget % window_width
+        )
 
 
 def test_qwen2_incremental_full_history_matches_standard_cpu_reference() -> None:

@@ -111,6 +111,18 @@ def test_configuration_keeps_budget_independent_and_rejects_missing_rolling() ->
     assert not any("proposal_count * window_width" in error for error in report["errors"])
 
 
+def test_configuration_rejects_a_historical_window_that_cannot_execute() -> None:
+    specification = json.loads(Path("configs/harness_smoke.json").read_text())
+    specification["attention"]["historical_token_budget"] = 1
+    specification["selection"]["window_width"] = 2
+    report = validate_config(specification)
+    assert not report["valid"]
+    assert (
+        "selection.window_width cannot exceed the historical token budget for fixed_offsets"
+        in report["errors"]
+    )
+
+
 def test_tokenized_text_streams_have_fixed_boundaries_and_source_identity(tmp_path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("deterministic real token stream", encoding="utf-8")

@@ -46,6 +46,8 @@ class AccessRecord:
     support_position: int | None
     history_end: int
     cache_length: int
+    gathered_key_occurrences: int
+    gathered_value_occurrences: int
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +82,8 @@ def _access_record(
     support_position: int | None,
     history_end: int,
     cache_length: int,
+    gathered_key_occurrences: int,
+    gathered_value_occurrences: int,
 ) -> AccessRecord:
     rolling_set = set(rolling)
     unique_historical = len(set(historical))
@@ -98,7 +102,28 @@ def _access_record(
         support_position=support_position,
         history_end=history_end,
         cache_length=cache_length,
+        gathered_key_occurrences=gathered_key_occurrences,
+        gathered_value_occurrences=gathered_value_occurrences,
     )
+
+
+def _gather_cache_occurrences(
+    cache: list[Tensor],
+    indices: tuple[int, ...],
+    *,
+    occurrence_limit: int | None,
+) -> Tensor:
+    """Stack only executed cache occurrences, preserving order and duplicates."""
+
+    if occurrence_limit is not None and len(indices) > occurrence_limit:
+        raise ValueError("actual K/V gather exceeds the bounded occurrence limit")
+    cache_length = len(cache)
+    if any(index < 0 or index >= cache_length for index in indices):
+        raise ValueError("actual K/V gather index is outside the layer cache")
+    selected = [cache[index] for index in indices]
+    if not selected:
+        raise ValueError("actual K/V gather must include the rolling window")
+    return torch.stack(selected, dim=1)
 
 
 class _ReaderLayer(nn.Module):
@@ -214,6 +239,18 @@ class FrozenCausalReader(nn.Module):
                         historical_token_budget=historical_token_budget,
                     )
                     rolling = tuple(range(rolling_start, position + 1))
+                    actual_indices = (*selection.indices, *rolling)
+                    occurrence_limit = rolling_tokens + historical_token_budget
+                    keys = _gather_cache_occurrences(
+                        key_cache[layer_index],
+                        actual_indices,
+                        occurrence_limit=occurrence_limit,
+                    )
+                    values = _gather_cache_occurrences(
+                        value_cache[layer_index],
+                        actual_indices,
+                        occurrence_limit=occurrence_limit,
+                    )
                     access = _access_record(
                         position=position,
                         layer=layer_index,
@@ -232,9 +269,9 @@ class FrozenCausalReader(nn.Module):
                         support_position=stream.support_positions[position],
                         history_end=rolling_start,
                         cache_length=len(key_cache[layer_index]),
+                        gathered_key_occurrences=keys.shape[1],
+                        gathered_value_occurrences=values.shape[1],
                     )
-                    keys = torch.stack(key_cache[layer_index], dim=1)[:, access.actual_indices]
-                    values = torch.stack(value_cache[layer_index], dim=1)[:, access.actual_indices]
                     logits = torch.einsum("hd,hnd->hn", query, keys) / math.sqrt(self.head_width)
                     weights = torch.softmax(logits, dim=-1, dtype=torch.float32).to(query.dtype)
                     context = torch.einsum("hn,hnd->hd", weights, values).reshape(self.width)
@@ -337,7 +374,7 @@ class HuggingFaceQwen2Reader:
         window_width: int,
         device: torch.device,
         diagnostic_full_history: bool,
-    ) -> tuple[list[TokenScore], Tensor]:
+    ) -> tuple[list[TokenScore], Tensor | None]:
         if rolling_tokens <= 0:
             raise ValueError("rolling attention is mandatory")
         if len(stream.tokens) > self.model.config.max_position_embeddings:
@@ -348,7 +385,7 @@ class HuggingFaceQwen2Reader:
         value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
         policy_states = [PolicyState() for _ in backbone.layers]
         scores: list[TokenScore] = []
-        output_logits: list[Tensor] = []
+        output_logits: list[Tensor] | None = [] if diagnostic_full_history else None
 
         with torch.inference_mode():
             for position, token in enumerate(stream.tokens[:-1]):
@@ -412,6 +449,22 @@ class HuggingFaceQwen2Reader:
                             for proposal in proposal_set.proposals
                             if proposal.active
                         )
+                    actual_indices = (*historical, *rolling)
+                    occurrence_limit = (
+                        None
+                        if diagnostic_full_history
+                        else rolling_tokens + historical_token_budget
+                    )
+                    keys = _gather_cache_occurrences(
+                        key_cache[layer_index],
+                        actual_indices,
+                        occurrence_limit=occurrence_limit,
+                    )
+                    values = _gather_cache_occurrences(
+                        value_cache[layer_index],
+                        actual_indices,
+                        occurrence_limit=occurrence_limit,
+                    )
                     access = _access_record(
                         position=position,
                         layer=layer_index,
@@ -422,10 +475,10 @@ class HuggingFaceQwen2Reader:
                         support_position=stream.support_positions[position],
                         history_end=rolling_start,
                         cache_length=len(key_cache[layer_index]),
+                        gathered_key_occurrences=keys.shape[1],
+                        gathered_value_occurrences=values.shape[1],
                     )
 
-                    keys = torch.stack(key_cache[layer_index], dim=1)[:, access.actual_indices]
-                    values = torch.stack(value_cache[layer_index], dim=1)[:, access.actual_indices]
                     keys = self._repeat_kv(
                         keys.unsqueeze(0), attention.num_key_value_groups
                     ).squeeze(0)
@@ -446,7 +499,8 @@ class HuggingFaceQwen2Reader:
                     token_accesses.append(access)
 
                 logits = self.model.lm_head(backbone.norm(hidden))[0, 0]
-                output_logits.append(logits.detach().cpu())
+                if output_logits is not None:
+                    output_logits.append(logits.detach().cpu())
                 target = stream.tokens[position + 1]
                 loss = torch.nn.functional.cross_entropy(
                     logits.unsqueeze(0), torch.tensor([target], device=device)
@@ -460,7 +514,7 @@ class HuggingFaceQwen2Reader:
                         accesses=tuple(token_accesses),
                     )
                 )
-        return scores, torch.stack(output_logits)
+        return scores, torch.stack(output_logits) if output_logits is not None else None
 
     def execute(
         self,
@@ -505,6 +559,8 @@ class HuggingFaceQwen2Reader:
             device=device,
             diagnostic_full_history=True,
         )
+        if incremental is None:
+            raise RuntimeError("full-history diagnostic did not retain incremental logits")
         token_ids = torch.tensor([tokens], device=device)
         with torch.inference_mode():
             reference = (
