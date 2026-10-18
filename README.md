@@ -256,17 +256,36 @@ configuration
 The public command surface is:
 
 ```bash
-python -m qkvs --help
-python -m qkvs validate --config configs/harness_smoke.json
-python -m qkvs run --config configs/harness_smoke.json --device cpu
-python -m qkvs status --run artifacts/results/harness-smoke
-python -m qkvs summarize --run artifacts/results/harness-smoke
+qkvs --help
+qkvs validate --config configs/harness_smoke.json
+qkvs run --config configs/harness_smoke.json --device cpu
+qkvs status --run artifacts/results/harness-smoke
+qkvs summarize --run artifacts/results/harness-smoke
 ```
+
+QKVS is installed as an application with `uv tool`; it does not use a repository `.venv` or modify
+the operating system's Python packages. The host Python may be newer than the versions supported by
+PyTorch, so `uv` supplies a compatible tool interpreter and exposes the `qkvs` command. The approved
+pilot has a repository-root helper:
+
+```bash
+./run_long_context_pilot.sh --setup-only  # one-time setup and CPU-safe validation
+./run_long_context_pilot.sh               # human-initiated GPU pilot or resume
+```
+
+The helper installs the current checkout as an editable `uv` tool using Python 3.13, validates the
+configuration, checks driver health before launch, and then invokes the existing CLI. Re-running it
+refreshes the installed command to the current checkout. The setup-only form never starts the
+experiment or probes CUDA.
+
+`uv` installs commands in its user tool bin directory. The helper calls that path directly. To use
+`qkvs` from any shell, run `uv tool update-shell` once and start a new shell if `uv tool install`
+reports that its bin directory is not already on `PATH`.
 
 The proposed human-started interface for the long-context held-out learning study is:
 
 ```bash
-python -m qkvs run \
+qkvs run \
   --config configs/heatfield_learning_study.json \
   --device cuda
 ```

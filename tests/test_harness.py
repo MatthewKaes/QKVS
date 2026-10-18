@@ -331,4 +331,5 @@ def test_module_help_exposes_one_common_interface() -> None:
         capture_output=True,
         text=True,
     )
+    assert completed.stdout.startswith("usage: qkvs ")
     assert "{run,validate,status,summarize}" in completed.stdout

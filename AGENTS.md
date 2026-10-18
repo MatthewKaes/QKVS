@@ -42,11 +42,11 @@ metric implementation.
 
 ## Workflow
 
-1. `python -m qkvs validate --config <config>` checks schema and execution readiness without
+1. `qkvs validate --config <config>` checks schema and execution readiness without
    importing the model runtime or initializing CUDA.
 2. CPU tests verify harness behavior, causality, access accounting, resumption, and source identity.
 3. An independent arbiter freezes a result-bearing protocol and explicitly authorizes it.
-4. The human owner invokes `python -m qkvs run ...` for any GPU execution.
+4. The human owner invokes `qkvs run ...` for any GPU execution.
 5. `status` and `summarize` read artifacts without model execution.
 
 Artifacts live under `artifacts/results/<run-id>/result.json` and record the source revision,

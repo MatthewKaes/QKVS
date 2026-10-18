@@ -15,7 +15,7 @@ from qkvs.harness import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m qkvs",
+        prog="qkvs",
         description="QKVS causal heat-field research harness",
     )
     commands = parser.add_subparsers(dest="command", required=True)

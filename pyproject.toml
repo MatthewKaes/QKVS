@@ -17,6 +17,9 @@ dependencies = [
   "transformers==4.57.1",
 ]
 
+[project.scripts]
+qkvs = "qkvs.__main__:main"
+
 [dependency-groups]
 dev = [
   "pytest==8.4.2",
