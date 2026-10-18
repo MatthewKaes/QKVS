@@ -3,7 +3,7 @@
 > **Research reset:** the v1-v5 exact-pointer progression is frozen. Current work first tests
 > whether a selected historical block has measurable downstream utility for a frozen pretrained
 > model. See [the retrieval-utility decision](docs/retrieval_utility_decision.md). Stage A V3 passes;
-> Stage B remains subject to arbitration, and no new router has been implemented.
+> Stage B stopped at its full-length causal-equivalence gate, before Gate 0 or router training.
 
 This repository is an independent research prototype for a decoder-only transformer with an
 independent `S` projection at every layer. `S` predicts normalized addresses of old KV-cache
@@ -149,24 +149,9 @@ or deployment-compatible routing.
 
 Stage B is preregistered separately in
 [docs/stage_b_preregistration.md](docs/stage_b_preregistration.md). Its strict single-pass causal
-reference and actual-checkpoint incremental audit are implemented and the protocol is approved. Run
-the full-length CUDA equivalence gate first:
-
-```bash
-HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
-  .venv/bin/python -m qkvs.stage_b_full_causal_audit \
-  --config configs/stage_b_semantic_directory.json \
-  --device cuda
-```
-
-Only if it passes, run the causal-oracle parity gate:
-
-```bash
-HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
-  .venv/bin/python -m qkvs.stage_b_oracle \
-  --config configs/stage_b_semantic_directory.json \
-  --device cuda \
-  --max-examples-this-run 1
-```
-
-S training remains blocked until Gate 0 passes. No directory model has been trained.
+reference and actual-checkpoint incremental audit are implemented and the protocol was approved.
+The required full-length BF16 CUDA audit failed its frozen hidden-state, logit, and cosine bounds at
+revision `43f510a`, although both modes retained the same top-1 token. See the
+[Stage B execution decision](docs/stage_b_execution_decision.md) and
+[raw audit](artifacts/results/stage_b_full_length_causal_equivalence.json). The protocol therefore
+stopped before causal-oracle Gate 0. No directory model has been constructed or trained.
