@@ -8,6 +8,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, TextIO
@@ -26,7 +27,9 @@ _SOURCE_FILES = (
     "qkvs/selection.py",
     "qkvs/metrics.py",
 )
-_PROGRESS_WIDTH = 40
+_PROGRESS_WIDTH = 24
+_SPINNER_FRAMES = ("|", "/", "-", "\\")
+_ERASE_LINE = "\r\x1b[2K"
 
 
 def _progress_bar(current: int, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -39,20 +42,35 @@ def _progress_bar(current: int, total: int, *, width: int = _PROGRESS_WIDTH) -> 
     return "#" * filled + " " * (width - filled)
 
 
-def _progress_line(current: int, total: int, job: str, elapsed_seconds: float) -> str:
+def _progress_line(
+    current: int,
+    total: int,
+    job: str,
+    elapsed_seconds: float,
+    *,
+    spinner: str = "|",
+    columns: int = 80,
+) -> str:
     counter_width = len(str(total)) + 1
     elapsed = max(0, int(elapsed_seconds))
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
-    return (
-        f"[{current:>{counter_width}} / {total} ] "
-        f"[{_progress_bar(current, total)}] {job} : "
-        f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    prefix = (
+        f"{spinner} [{current:>{counter_width}} / {total} ] "
+        f"[{_progress_bar(current, total)}] "
+        f"{hours:02d}:{minutes:02d}:{seconds:02d} "
     )
+    maximum = max(1, columns - 1)
+    available = maximum - len(prefix)
+    if available <= 0:
+        return prefix[:maximum]
+    if len(job) > available:
+        job = job[: max(0, available - 1)] + "~"
+    return prefix + job
 
 
 class _Progress:
-    """Report meaningful work transitions without background output."""
+    """Render a one-row spinner while preserving durable unit accounting."""
 
     def __init__(
         self,
@@ -60,49 +78,103 @@ class _Progress:
         completed: int,
         total: int,
         stream: TextIO | None = None,
+        interval_seconds: float = 1.0,
     ) -> None:
         self.completed = completed
         self.total = total
         self.stream = sys.stdout if stream is None else stream
+        self.interactive = bool(getattr(self.stream, "isatty", lambda: False)())
+        self.interval_seconds = interval_seconds
         self.active_job: str | None = None
         self.running = False
         self.advances = False
         self.started = time.monotonic()
+        self.frame = 0
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.thread = (
+            threading.Thread(target=self._heartbeat, daemon=True) if self.interactive else None
+        )
+        if self.thread is not None:
+            self.thread.start()
+
+    def _columns(self) -> int:
+        try:
+            return os.get_terminal_size(self.stream.fileno()).columns
+        except (AttributeError, OSError):
+            return 80
+
+    def _heartbeat(self) -> None:
+        while not self.stop.wait(self.interval_seconds):
+            self.render()
 
     def _current(self) -> int:
         if not self.running or not self.advances:
             return self.completed
         return min(self.completed + 1, self.total)
 
-    def start_job(self, job: str, *, advances: bool = True) -> None:
-        if self.running:
-            raise RuntimeError("cannot start progress while another job is active")
-        self.active_job = job
-        self.running = True
-        self.advances = advances
-        print(
-            _progress_line(
+    def render(self) -> None:
+        if not self.interactive:
+            return
+        with self.lock:
+            spinner = _SPINNER_FRAMES[self.frame % len(_SPINNER_FRAMES)]
+            self.frame += 1
+            line = _progress_line(
                 self._current(),
                 self.total,
-                job,
+                self.active_job or "complete",
                 time.monotonic() - self.started,
-            ),
-            file=self.stream,
-            flush=True,
-        )
+                spinner=spinner,
+                columns=self._columns(),
+            )
+            self.stream.write(_ERASE_LINE + line)
+            self.stream.flush()
+
+    def start_job(self, job: str, *, advances: bool = True) -> None:
+        with self.lock:
+            if self.running:
+                raise RuntimeError("cannot start progress while another job is active")
+            self.active_job = job
+            self.running = True
+            self.advances = advances
+        if self.interactive:
+            self.render()
+        else:
+            print(
+                _progress_line(
+                    self._current(),
+                    self.total,
+                    job,
+                    time.monotonic() - self.started,
+                    spinner=">",
+                    columns=self._columns(),
+                ),
+                file=self.stream,
+                flush=True,
+            )
 
     def complete_job(self) -> None:
-        if not self.running:
-            raise RuntimeError("cannot complete progress without an active job")
-        if self.advances:
-            self.completed += 1
-        self.running = False
-        self.advances = False
-        self.active_job = None
+        with self.lock:
+            if not self.running:
+                raise RuntimeError("cannot complete progress without an active job")
+            if self.advances:
+                self.completed += 1
+            self.running = False
+            self.advances = False
+            self.active_job = None
+        self.render()
 
     def close(self) -> None:
-        self.running = False
-        self.advances = False
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join()
+        with self.lock:
+            self.running = False
+            self.advances = False
+        if self.interactive:
+            self.render()
+            self.stream.write("\n")
+            self.stream.flush()
 
 
 def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:

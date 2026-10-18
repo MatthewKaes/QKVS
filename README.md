@@ -326,11 +326,12 @@ restoration plus continuation; accelerator peak memory is recorded when availabl
 implementation measurements, not theoretical speedup claims. Writes are atomic; rerunning the same
 command resumes without duplicating completed condition/stream pairs.
 
-Progress covers dense prefills, durable training-checkpoint ranges, and evaluation conditions. The
-harness prints one flushed line when each work unit starts; it has no background heartbeat and emits
-no carriage-return rewrites. Completed counts advance only after the corresponding artifact is
-written atomically. `qkvs status` reports the same phase breakdown for an interrupted or concurrent
-run.
+Progress covers dense prefills, durable training-checkpoint ranges, and evaluation conditions. In an
+interactive terminal, a short ASCII spinner and elapsed timer update once per second on one physical
+row; the line is clipped to the detected terminal width and erased before every redraw. Redirected
+output receives one line per work unit instead of heartbeat writes. Completed counts advance only
+after the corresponding artifact is written atomically. `qkvs status` reports the same phase
+breakdown for an interrupted or concurrent run.
 
 `configs/heatfield_learning_study.json` is the sole approved exploratory learning pilot. Passing
 CPU smoke tests, completing this pilot, or observing a favorable region does not establish that

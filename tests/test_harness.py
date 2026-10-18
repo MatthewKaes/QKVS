@@ -40,13 +40,40 @@ def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, mo
     assert completed.stderr == ""
 
 
-def test_live_progress_uses_fixed_counter_and_space_filled_bar() -> None:
-    line = _progress_line(3, 384, "heatfield / stream-002", 65)
-    assert line.startswith("[   3 / 384 ] [#")
+def test_progress_line_is_short_enough_to_never_wrap() -> None:
+    line = _progress_line(3, 384, "heatfield / stream-002", 65, spinner="/", columns=80)
+    assert line.startswith("/ [   3 / 384 ] [#")
     bar = line.split("] [", maxsplit=1)[1].split("]", maxsplit=1)[0]
-    assert len(bar) == 40
+    assert len(bar) == 24
     assert set(bar) <= {"#", " "}
-    assert line.endswith("heatfield / stream-002 : 00:01:05")
+    assert "00:01:05" in line
+    assert line.endswith("heatfield / stream-002")
+    assert len(line) <= 79
+
+    narrow = _progress_line(3, 384, "heatfield / stream-002", 65, columns=60)
+    assert "00:01:05" in narrow
+    assert len(narrow) <= 59
+
+
+def test_interactive_progress_spins_on_one_erased_terminal_row() -> None:
+    class InteractiveOutput(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = InteractiveOutput()
+    progress = _Progress(completed=2, total=12, stream=output, interval_seconds=60.0)
+    progress.start_job("fixed_offsets / synthetic-002")
+    progress.render()
+    progress.complete_job()
+    progress.close()
+
+    rendered = output.getvalue()
+    erase_line = "\r\x1b[2K"
+    frames = [frame.rstrip("\n") for frame in rendered.split(erase_line)[1:]]
+    assert frames[0].startswith("| ")
+    assert frames[1].startswith("/ ")
+    assert all(len(frame) <= 79 for frame in frames)
+    assert rendered.count("\n") == 1
 
 
 def test_progress_reports_each_job_once_without_carriage_returns() -> None:
