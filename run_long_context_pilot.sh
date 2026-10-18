@@ -18,7 +18,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "Installing the QKVS command with its pinned runtime dependencies..."
-uv tool install --force --editable --python 3.13 "${script_directory}"
+uv tool install --force --editable --python 3.14 "${script_directory}"
 
 qkvs_executable="$(uv tool dir --bin)/qkvs"
 if [[ ! -x "${qkvs_executable}" ]]; then

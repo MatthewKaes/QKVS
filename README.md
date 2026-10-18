@@ -264,16 +264,15 @@ qkvs summarize --run artifacts/results/harness-smoke
 ```
 
 QKVS is installed as an application with `uv tool`; it does not use a repository `.venv` or modify
-the operating system's Python packages. The host Python may be newer than the versions supported by
-PyTorch, so `uv` supplies a compatible tool interpreter and exposes the `qkvs` command. The approved
-pilot has a repository-root helper:
+the operating system's Python packages. The pinned stack supports Python 3.14, which `uv` uses for
+the installed `qkvs` command. The approved pilot has a repository-root helper:
 
 ```bash
 ./run_long_context_pilot.sh --setup-only  # one-time setup and CPU-safe validation
 ./run_long_context_pilot.sh               # human-initiated GPU pilot or resume
 ```
 
-The helper installs the current checkout as an editable `uv` tool using Python 3.13, validates the
+The helper installs the current checkout as an editable `uv` tool using Python 3.14, validates the
 configuration, checks driver health before launch, and then invokes the existing CLI. Re-running it
 refreshes the installed command to the current checkout. The setup-only form never starts the
 experiment or probes CUDA.
