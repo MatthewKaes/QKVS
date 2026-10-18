@@ -641,7 +641,7 @@ def _tokenized_text_streams(
     if actual_sha256 != expected_sha256:
         raise ValueError("tokenized text source does not match data.source.sha256")
     text = source_path.read_text(encoding="utf-8")
-    all_tokens = tuple(tokenizer.encode(text, add_special_tokens=False))
+    all_tokens = tuple(tokenizer.encode(text, add_special_tokens=False, verbose=False))
     streams: list[dict[str, Any]] = []
     for boundary in data["boundaries"]:
         start = boundary["start_token"]

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -379,6 +380,14 @@ def test_dense_prefill_persistence_and_cached_continuation_equivalence(tmp_path)
         device=device,
         ownership="evaluation",
     )
+    numerical = snapshot.identity["numerical"]
+    assert "float32_matmul_precision" not in numerical
+    assert numerical["fp32_precision"] == {
+        "global": torch.backends.fp32_precision,
+        "cuda_matmul": torch.backends.cuda.matmul.fp32_precision,
+        "cudnn": torch.backends.cudnn.fp32_precision,
+        "cudnn_conv": torch.backends.cudnn.conv.fp32_precision,
+    }
     cache_before = tuple(layer_cache.clone() for layer_cache in snapshot.key_cache)
     path = tmp_path / "dense.pt"
     reader.save_dense_prefill(snapshot, path)
@@ -524,6 +533,38 @@ def test_qwen2_adapter_rejects_position_variant_outside_validated_support() -> N
                 "frozen": True,
             },
         )
+
+
+def test_huggingface_reader_uses_current_dtype_keyword(monkeypatch) -> None:
+    tokenizer = object()
+    model = Mock()
+    model.to.return_value = model
+    tokenizer_loader = Mock(return_value=tokenizer)
+    model_loader = Mock(return_value=model)
+    sentinel = object()
+    reader_factory = Mock(return_value=sentinel)
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", tokenizer_loader)
+    monkeypatch.setattr(AutoModelForCausalLM, "from_pretrained", model_loader)
+    monkeypatch.setattr(model_module, "HuggingFaceQwen2Reader", reader_factory)
+    specification = {
+        "backend": "huggingface",
+        "id": "test/qwen2",
+        "revision": "1" * 40,
+        "dtype": "bfloat16",
+        "frozen": True,
+    }
+
+    loaded = model_module.load_reader(specification, torch.device("cpu"))
+
+    assert loaded is sentinel
+    model_loader.assert_called_once_with(
+        "test/qwen2",
+        revision="1" * 40,
+        dtype=torch.bfloat16,
+        attn_implementation="eager",
+        trust_remote_code=False,
+    )
+    reader_factory.assert_called_once_with(model, tokenizer, specification=specification)
 
 
 def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
@@ -704,8 +745,9 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     class ByteTokenizer:
         init_kwargs = {"_commit_hash": "1" * 40}
 
-        def encode(self, text, *, add_special_tokens):
+        def encode(self, text, *, add_special_tokens, verbose):
             assert not add_special_tokens
+            assert not verbose
             return [byte % 64 for byte in text.encode()]
 
         def get_vocab(self):

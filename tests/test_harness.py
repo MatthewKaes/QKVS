@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,23 @@ from qkvs.harness import (
     validate_config,
     validate_config_file,
 )
+
+
+def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "qkvs"
+    executable.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*"\n', encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+    completed = subprocess.run(
+        [Path("run.sh").resolve(), "configs/harness_smoke.json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == "run --config configs/harness_smoke.json --device cpu\n"
+    assert completed.stderr == ""
 
 
 def test_live_progress_uses_fixed_counter_and_space_filled_bar() -> None:
@@ -149,8 +167,9 @@ def test_tokenized_text_streams_have_fixed_boundaries_and_source_identity(tmp_pa
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
 
     class ByteTokenizer:
-        def encode(self, text, *, add_special_tokens):
+        def encode(self, text, *, add_special_tokens, verbose):
             assert not add_special_tokens
+            assert not verbose
             return list(text.encode())
 
     specification = {
@@ -217,8 +236,9 @@ def test_missing_pinned_text_is_downloaded_atomically(tmp_path, monkeypatch) -> 
     }
 
     class ByteTokenizer:
-        def encode(self, text, *, add_special_tokens):
+        def encode(self, text, *, add_special_tokens, verbose):
             assert not add_special_tokens
+            assert not verbose
             return list(text.encode())
 
     _, identity = _tokenized_text_streams(

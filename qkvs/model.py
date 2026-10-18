@@ -889,7 +889,12 @@ class HuggingFaceQwen2Reader:
                 "device": str(device),
                 "attention_implementation": "eager",
                 "default_dtype": str(torch.get_default_dtype()),
-                "float32_matmul_precision": torch.get_float32_matmul_precision(),
+                "fp32_precision": {
+                    "global": torch.backends.fp32_precision,
+                    "cuda_matmul": torch.backends.cuda.matmul.fp32_precision,
+                    "cudnn": torch.backends.cudnn.fp32_precision,
+                    "cudnn_conv": torch.backends.cudnn.conv.fp32_precision,
+                },
                 "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
                 "threads": torch.get_num_threads(),
                 "interop_threads": torch.get_num_interop_threads(),
@@ -2123,7 +2128,7 @@ def load_reader(specification: dict[str, Any], device: torch.device) -> Any:
     model = AutoModelForCausalLM.from_pretrained(
         specification["id"],
         revision=specification["revision"],
-        torch_dtype=dtype,
+        dtype=dtype,
         attn_implementation="eager",
         trust_remote_code=False,
     )
