@@ -544,6 +544,8 @@ class HuggingFaceQwen2Reader:
         device: torch.device,
         atol: float,
         rtol: float,
+        loss_atol: float | None = None,
+        loss_rtol: float | None = None,
     ) -> dict[str, Any]:
         """Compare unbounded incremental execution with the standard reader on a short stream."""
 
@@ -574,6 +576,20 @@ class HuggingFaceQwen2Reader:
                 .cpu()
             )
         difference = (incremental.float() - reference.float()).abs()
+        targets = torch.tensor(tokens[1:], dtype=torch.long)
+        incremental_losses = torch.nn.functional.cross_entropy(
+            incremental.float(),
+            targets,
+            reduction="none",
+        )
+        reference_losses = torch.nn.functional.cross_entropy(
+            reference.float(),
+            targets,
+            reduction="none",
+        )
+        loss_difference = (incremental_losses - reference_losses).abs()
+        effective_loss_atol = atol if loss_atol is None else loss_atol
+        effective_loss_rtol = rtol if loss_rtol is None else loss_rtol
         return {
             "diagnostic_only_unbounded": True,
             "positions": len(tokens) - 1,
@@ -585,6 +601,19 @@ class HuggingFaceQwen2Reader:
             "per_position_max_abs_error": difference.amax(dim=-1).tolist(),
             "allclose": bool(
                 torch.allclose(incremental.float(), reference.float(), atol=atol, rtol=rtol)
+            ),
+            "max_abs_loss_error": float(loss_difference.max().item()),
+            "mean_abs_loss_error": float(loss_difference.mean().item()),
+            "per_position_abs_loss_error": loss_difference.tolist(),
+            "loss_atol": effective_loss_atol,
+            "loss_rtol": effective_loss_rtol,
+            "loss_allclose": bool(
+                torch.allclose(
+                    incremental_losses,
+                    reference_losses,
+                    atol=effective_loss_atol,
+                    rtol=effective_loss_rtol,
+                )
             ),
         }
 

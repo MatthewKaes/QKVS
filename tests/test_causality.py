@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -15,6 +18,14 @@ from qkvs.selection import (
     ProposalSet,
     RollingOnlyPolicy,
 )
+
+_PINNED_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
+_PINNED_MODEL_REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
+_PINNED_FILE_SHA256 = {
+    "config.json": "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
+    "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe",
+    "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+}
 
 
 def _reader() -> FrozenCausalReader:
@@ -260,8 +271,11 @@ def test_qwen2_incremental_full_history_matches_standard_cpu_reference() -> None
     )
     assert diagnostic["diagnostic_only_unbounded"]
     assert diagnostic["allclose"], diagnostic
+    assert diagnostic["loss_allclose"], diagnostic
     assert diagnostic["max_abs_error"] < 2e-5
+    assert diagnostic["max_abs_loss_error"] < 2e-5
     assert len(diagnostic["per_position_max_abs_error"]) == 7
+    assert len(diagnostic["per_position_abs_loss_error"]) == 7
 
 
 def test_qwen2_adapter_rejects_position_variant_outside_validated_support() -> None:
@@ -336,30 +350,211 @@ def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
     "QKVS_PRETRAINED_MODEL" not in os.environ,
     reason="set QKVS_PRETRAINED_MODEL to a complete local Qwen2 checkpoint",
 )
-def test_local_pretrained_qwen2_full_history_reference() -> None:
-    checkpoint = os.environ["QKVS_PRETRAINED_MODEL"]
+def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) -> None:
+    checkpoint = Path(os.environ["QKVS_PRETRAINED_MODEL"])
+    for name, expected in _PINNED_FILE_SHA256.items():
+        actual = hashlib.sha256((checkpoint / name).read_bytes()).hexdigest()
+        assert actual == expected, f"unexpected {name} identity: {actual}"
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
         local_files_only=True,
         attn_implementation="eager",
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, local_files_only=True)
     reader = HuggingFaceQwen2Reader(
         model,
         tokenizer,
         specification={
-            "id": checkpoint,
-            "revision": "0" * 40,
+            "id": _PINNED_MODEL_ID,
+            "revision": _PINNED_MODEL_REVISION,
             "dtype": "float32",
             "frozen": True,
         },
     )
-    tokens = tuple(tokenizer.encode("A short deterministic reference.", add_special_tokens=False))
-    diagnostic = reader.full_history_diagnostic(
-        tokens[: min(len(tokens), 12)],
-        device=torch.device("cpu"),
-        atol=2e-4,
-        rtol=2e-4,
+    identity = reader.identity()
+    assert identity["model_id"] == _PINNED_MODEL_ID
+    assert identity["model_revision"] == _PINNED_MODEL_REVISION
+    assert identity["architecture"] == "Qwen2ForCausalLM"
+    assert identity["attention_heads"] == 14
+    assert identity["key_value_heads"] == 2
+    assert identity["rope_theta"] == 1_000_000.0
+    assert identity["tokenizer_vocabulary_sha256"]
+
+    texts = (
+        "The observatory clock marked midnight while every instrument continued recording.",
+        "A bounded cache preserves duplicate reads without scanning the complete history.",
+        "Numbers two, three, five, eight, and thirteen begin this deterministic sequence.",
     )
-    assert diagnostic["allclose"], diagnostic
+    diagnostics = []
+    streams = []
+    for index, text in enumerate(texts):
+        tokens = tuple(tokenizer.encode(text, add_special_tokens=False))
+        tokens = tokens[: min(len(tokens), 12)]
+        assert len(tokens) >= 6
+        diagnostic = reader.full_history_diagnostic(
+            tokens,
+            device=torch.device("cpu"),
+            atol=5e-4,
+            rtol=2e-4,
+            loss_atol=5e-5,
+            loss_rtol=2e-4,
+        )
+        assert diagnostic["allclose"], diagnostic
+        assert diagnostic["loss_allclose"], diagnostic
+        diagnostics.append(diagnostic)
+        streams.append(TokenStream(f"pretrained-{index}", tokens, (None,) * (len(tokens) - 1)))
+
+    rolling = reader.execute(
+        streams[0],
+        RollingOnlyPolicy(),
+        rolling_tokens=4,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    selected = reader.execute(
+        streams[0],
+        FixedOffsetPolicy((6, 10)),
+        rolling_tokens=4,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    selected_accesses = [access for score in selected for access in score.accesses]
+    assert any(access.historical_indices for access in selected_accesses)
+    assert all(len(access.actual_indices) <= 8 for access in selected_accesses)
+    assert all(
+        access.gathered_key_occurrences
+        == access.gathered_value_occurrences
+        == len(access.actual_indices)
+        for access in selected_accesses
+    )
+    loss_differences = [
+        selected_score.loss - rolling_score.loss
+        for rolling_score, selected_score in zip(rolling, selected, strict=True)
+    ]
+    assert any(difference != 0.0 for difference in loss_differences)
+
+    prefix = streams[0].tokens[:6]
+    first_suffix = tuple(tokenizer.encode(" first branch", add_special_tokens=False))[:3]
+    second_suffix = tuple(tokenizer.encode(" second branch", add_special_tokens=False))[:3]
+    assert first_suffix != second_suffix
+    first = TokenStream(
+        "pretrained-suffix-a",
+        (*prefix, *first_suffix),
+        (None,) * (len(prefix) + len(first_suffix) - 1),
+    )
+    second = TokenStream(
+        "pretrained-suffix-b",
+        (*prefix, *second_suffix),
+        (None,) * (len(prefix) + len(second_suffix) - 1),
+    )
+    first_scores = reader.execute(
+        first,
+        FixedOffsetPolicy((6, 10)),
+        rolling_tokens=4,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    second_scores = reader.execute(
+        second,
+        FixedOffsetPolicy((6, 10)),
+        rolling_tokens=4,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+    )
+    assert [score.as_dict() for score in first_scores[: len(prefix) - 1]] == [
+        score.as_dict() for score in second_scores[: len(prefix) - 1]
+    ]
+
+    from qkvs.harness import run_experiment, validate_config_file
+
+    source_path = tmp_path / "source.txt"
+    source_path.write_text(texts[0], encoding="utf-8")
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    config_path = tmp_path / "qualification.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "experiment": "pretrained_reader_qualification",
+                "status": "harness_verification",
+                "run": {"id": "pretrained-qualification", "seed": 20261018},
+                "model": {
+                    "backend": "huggingface",
+                    "id": _PINNED_MODEL_ID,
+                    "revision": _PINNED_MODEL_REVISION,
+                    "dtype": "float32",
+                    "frozen": True,
+                },
+                "data": {
+                    "kind": "tokenized_text",
+                    "source": {"path": str(source_path), "sha256": source_sha256},
+                    "boundaries": [{"id": "qualification", "start_token": 0, "stop_token": 8}],
+                },
+                "attention": {"rolling_tokens": 2, "historical_token_budget": 2},
+                "selection": {
+                    "proposal_count": 2,
+                    "window_width": 1,
+                    "gamma": {"mode": "disabled"},
+                    "beta": {"mode": "disabled"},
+                    "conditions": [
+                        {"name": "rolling", "policy": "rolling"},
+                        {
+                            "name": "fixed_offsets",
+                            "policy": "fixed_offsets",
+                            "offsets": [4, 6],
+                        },
+                    ],
+                },
+                "evaluation": {
+                    "metric": "next_token_cross_entropy",
+                    "paired_conditions": True,
+                    "baseline": "rolling",
+                    "bootstrap_samples": 20,
+                },
+                "execution": {"allowed_devices": ["cpu"], "output_root": str(tmp_path)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_module, "load_reader", lambda specification, device: reader)
+    output, first_result = run_experiment(
+        config_path,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    _, resumed_result = run_experiment(
+        config_path,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    assert resumed_result == first_result
+    assert first_result["complete"]
+    assert first_result["model_identity"] == identity
+    assert first_result["data_identity"]["source_sha256"] == source_sha256
+    assert first_result["source_identity"]["git_revision"]
+    assert not first_result["environment"]["cuda_initialized_before_reader"]
+    assert not first_result["environment"]["cuda_initialized_after_reader"]
+    assert not output.with_suffix(".json.tmp").exists()
+    draft = validate_config_file("configs/heatfield_initial.json")
+    assert draft["valid"]
+    assert not draft["runnable"]
+
+    print(
+        json.dumps(
+            {
+                "identity": identity,
+                "prefix_diagnostics": diagnostics,
+                "bounded_loss_differences": loss_differences,
+                "bounded_last_access": selected[-1].accesses[-1].as_dict(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
