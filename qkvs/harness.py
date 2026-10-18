@@ -53,7 +53,7 @@ def _progress_line(current: int, total: int, job: str, elapsed_seconds: float) -
 
 
 class _LiveProgress:
-    """Render one durable job counter with a transient one-second heartbeat."""
+    """Render one TTY heartbeat or one line per job in captured output."""
 
     def __init__(
         self,
@@ -66,6 +66,7 @@ class _LiveProgress:
         self.completed = completed
         self.total = total
         self.stream = sys.stdout if stream is None else stream
+        self.interactive = bool(getattr(self.stream, "isatty", lambda: False)())
         self.interval_seconds = interval_seconds
         self.active_job: str | None = None
         self.running = False
@@ -74,8 +75,11 @@ class _LiveProgress:
         self.last_width = 0
         self.lock = threading.Lock()
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
-        self.thread.start()
+        self.thread = (
+            threading.Thread(target=self._heartbeat, daemon=True) if self.interactive else None
+        )
+        if self.thread is not None:
+            self.thread.start()
 
     def _heartbeat(self) -> None:
         while not self.stop.wait(self.interval_seconds):
@@ -87,6 +91,8 @@ class _LiveProgress:
         return min(self.completed + 1, self.total)
 
     def render(self) -> None:
+        if not self.interactive:
+            return
         with self.lock:
             job = self.active_job or "complete"
             line = _progress_line(
@@ -107,7 +113,12 @@ class _LiveProgress:
             self.running = True
             self.advances = advances
             self.started = time.monotonic()
-        self.render()
+        if self.interactive:
+            self.render()
+        else:
+            line = _progress_line(self._current(), self.total, job, 0.0)
+            self.stream.write(line + "\n")
+            self.stream.flush()
 
     def complete_job(self) -> None:
         with self.lock:
@@ -118,17 +129,20 @@ class _LiveProgress:
             self.running = False
             self.advances = False
             self.active_job = None
-        self.render()
+        if self.interactive:
+            self.render()
 
     def close(self) -> None:
         self.stop.set()
-        self.thread.join()
+        if self.thread is not None:
+            self.thread.join()
         with self.lock:
             self.running = False
             self.advances = False
-        self.render()
-        self.stream.write("\n")
-        self.stream.flush()
+        if self.interactive:
+            self.render()
+            self.stream.write("\n")
+            self.stream.flush()
 
 
 def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:

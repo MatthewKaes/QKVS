@@ -50,7 +50,11 @@ def test_live_progress_uses_fixed_counter_and_space_filled_bar() -> None:
 
 
 def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
-    output = io.StringIO()
+    class InteractiveOutput(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = InteractiveOutput()
     progress = _LiveProgress(
         completed=2,
         total=12,
@@ -67,7 +71,11 @@ def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
 
 
 def test_live_progress_restore_does_not_advance_durable_count() -> None:
-    output = io.StringIO()
+    class InteractiveOutput(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = InteractiveOutput()
     progress = _LiveProgress(
         completed=2,
         total=12,
@@ -81,6 +89,26 @@ def test_live_progress_restore_does_not_advance_durable_count() -> None:
     rendered = output.getvalue()
     assert "[  2 / 12 ]" in rendered
     assert "[  3 / 12 ]" not in rendered
+
+
+def test_captured_progress_never_emits_heartbeat_updates() -> None:
+    output = io.StringIO()
+    progress = _LiveProgress(
+        completed=2,
+        total=12,
+        stream=output,
+        interval_seconds=0.001,
+    )
+    progress.start_job("fixed_offsets / synthetic-002")
+    progress.render()
+    progress.render()
+    progress.complete_job()
+    progress.close()
+
+    rendered = output.getvalue()
+    assert rendered.count("fixed_offsets / synthetic-002") == 1
+    assert rendered.count("\n") == 1
+    assert "\r" not in rendered
 
 
 def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
@@ -368,20 +396,39 @@ def test_draft_heatfield_run_is_refused_before_model_loading(tmp_path) -> None:
         )
 
 
-def test_validate_status_and_summary_paths_do_not_import_torch_or_execute_model() -> None:
+def test_validate_status_and_summary_paths_do_not_import_torch_or_execute_model(tmp_path) -> None:
     root = Path(__file__).resolve().parent.parent
+    artifact = tmp_path / "result.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "harness-smoke",
+                "config": json.loads(Path("configs/harness_smoke.json").read_text()),
+                "config_sha256": "0" * 64,
+                "source_identity": {"git_revision": "test"},
+                "streams": [{"stream_id": "synthetic-000", "split": "evaluation"}],
+                "dense_prefill": {},
+                "training": {},
+                "measurements": [{"condition": "rolling", "stream_id": "synthetic-000"}],
+                "summary": {},
+                "complete": False,
+            }
+        ),
+        encoding="utf-8",
+    )
     script = """
 import sys
 from qkvs.harness import load_run, print_summary, status, validate_config_file
 report = validate_config_file('configs/harness_smoke.json')
 assert report['valid']
-result = load_run('artifacts/results/harness-smoke')
+result = load_run(sys.argv[1])
 assert result['measurements']
-assert status('artifacts/results/harness-smoke')['run_id'] == 'harness-smoke'
+assert status(sys.argv[1])['run_id'] == 'harness-smoke'
 print_summary(result)
 assert 'torch' not in sys.modules
 """
-    subprocess.run([sys.executable, "-c", script], cwd=root, check=True)
+    subprocess.run([sys.executable, "-c", script, str(artifact)], cwd=root, check=True)
 
 
 def test_module_help_exposes_one_common_interface() -> None:
