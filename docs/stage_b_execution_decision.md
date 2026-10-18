@@ -54,9 +54,17 @@ substantive protocol change. Until then:
 ## Authorized numerical diagnostic
 
 The arbiter subsequently authorized one bounded diagnostic investigation without reopening Stage
-B or changing the failed artifact. Its frozen specification is
-[`stage_b_numerical_diagnostic.json`](../configs/stage_b_numerical_diagnostic.json). It uses the
-same example and input-token hash and records:
+B or changing the failed artifact. The first implementation is frozen in
+[`stage_b_numerical_diagnostic.json`](../configs/stage_b_numerical_diagnostic.json). It completed
+both BF16 conditions at revision `99e48cb`, then exceeded the 11.53 GiB device while constructing
+the FP32 trace. Its partial raw result and both OOM observations are preserved.
+
+The replacement
+[`stage_b_numerical_diagnostic_v2.json`](../configs/stage_b_numerical_diagnostic_v2.json) changes
+only trace storage: batched layer states stream directly to CPU, the incremental trace moves to CPU
+before subsequent replays, and the duplicate final trace stack is eliminated. It reruns all four
+conditions under one new source revision rather than importing the two earlier measurements. Both
+versions use the same example and input-token hash and record:
 
 - the earliest rolling batch/incremental divergence at every decoder layer and token scale;
 - BF16 default-SDPA, BF16 math-SDPA, FP32 math-SDPA, and FP32 eager conditions;
@@ -69,13 +77,15 @@ effects from cache or masking defects and, only if the evidence justifies it, su
 reviewed replacement numerical-validation protocol. Gate 0, `S`, and directory changes remain
 blocked.
 
+V2 reports its current phase, condition count, elapsed time, and checkpoint completion directly.
 Run one checkpointed condition per invocation. Repeating the same command advances to the next
-frozen condition and atomically extends the same raw artifact:
+frozen condition and atomically extends the same V2 raw artifact:
 
 ```bash
 HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  PYTORCH_ALLOC_CONF=expandable_segments:True \
   .venv/bin/python -m qkvs.stage_b_numerical_diagnostic \
-  --diagnostic-config configs/stage_b_numerical_diagnostic.json \
+  --diagnostic-config configs/stage_b_numerical_diagnostic_v2.json \
   --device cuda \
   --max-conditions-this-run 1
 ```

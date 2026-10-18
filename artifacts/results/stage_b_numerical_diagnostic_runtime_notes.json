@@ -1,0 +1,45 @@
+{
+  "diagnostic_source_revision": "99e48cb3974509e196c9bf4d1fb7113c87b1b68e",
+  "stage_b_status": "blocked",
+  "events": [
+    {
+      "event": "fp32_sdpa_math_out_of_memory_before_checkpoint",
+      "completed_conditions_before_attempt": [
+        "bf16_sdpa_default",
+        "bf16_sdpa_math"
+      ],
+      "error": {
+        "requested_bytes_gib": 2.71,
+        "gpu_capacity_gib": 11.53,
+        "gpu_free_gib": 0.713,
+        "process_memory_gib": 9.49,
+        "pytorch_allocated_gib": 6.90,
+        "pytorch_reserved_unallocated_gib": 2.39
+      },
+      "bounded_retry_environment": {
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
+      },
+      "reason": "Allow the allocator to reuse fragmented reserved memory without changing model, precision, backend, masks, inputs, or measured code. Stop for redesign if this single retry also fails."
+    },
+    {
+      "event": "fp32_sdpa_math_out_of_memory_after_allocator_retry",
+      "completed_conditions_before_attempt": [
+        "bf16_sdpa_default",
+        "bf16_sdpa_math"
+      ],
+      "error": {
+        "requested_bytes_mib": 694.0,
+        "gpu_capacity_gib": 11.53,
+        "gpu_free_mib": 403.5,
+        "process_memory_gib": 9.85,
+        "pytorch_allocated_gib": 9.60,
+        "pytorch_reserved_unallocated_mib": 55.46
+      },
+      "retry_environment": {
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
+      },
+      "decision": "stop_revision_99e48cb_and_replace_gpu_trace_duplication",
+      "diagnosis": "The 694 MiB allocation matches the full FP32 layer-trace stack. With only 55.46 MiB reserved but unused, the second failure is capacity pressure rather than allocator fragmentation."
+    }
+  ]
+}

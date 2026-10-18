@@ -4,6 +4,7 @@ import argparse
 import gc
 import hashlib
 import json
+import os
 import subprocess
 import time
 from contextlib import nullcontext
@@ -88,6 +89,37 @@ def _state_names(model: nn.Module) -> list[str]:
     ]
 
 
+class _Progress:
+    def __init__(
+        self,
+        condition: str,
+        *,
+        condition_index: int,
+        condition_count: int,
+        step_count: int,
+    ) -> None:
+        self.condition = condition
+        self.condition_index = condition_index
+        self.condition_count = condition_count
+        self.step_count = step_count
+        self.step = 0
+        self.started = time.perf_counter()
+
+    def report(self, phase: str, *, advance: bool = False) -> None:
+        if advance:
+            self.step += 1
+        width = 24
+        filled = width * self.step // self.step_count
+        bar = "#" * filled + "-" * (width - filled)
+        elapsed = int(time.perf_counter() - self.started)
+        print(
+            f"[condition {self.condition_index}/{self.condition_count}] "
+            f"[{bar}] {self.step}/{self.step_count} {self.condition}: {phase} "
+            f"({elapsed // 60:02d}:{elapsed % 60:02d})",
+            flush=True,
+        )
+
+
 def _forward_trace(
     model: nn.Module,
     input_ids: Tensor,
@@ -96,12 +128,25 @@ def _forward_trace(
     past_key_values: Cache | None = None,
     cache_position: Tensor | None = None,
     use_cache: bool = False,
+    trace_device: torch.device | None = None,
 ) -> tuple[Tensor, Cache | None, Tensor]:
     decoder = model.model
     if len(layer_masks) != decoder.config.num_hidden_layers:
         raise ValueError("one attention mask is required per decoder layer")
     hidden_states = decoder.embed_tokens(input_ids)
-    traces = [hidden_states]
+    if trace_device is None:
+        trace_device = hidden_states.device
+    trace = torch.empty(
+        (
+            decoder.config.num_hidden_layers + 2,
+            input_ids.shape[0],
+            input_ids.shape[1],
+            decoder.config.hidden_size,
+        ),
+        dtype=hidden_states.dtype,
+        device=trace_device,
+    )
+    trace[0].copy_(hidden_states)
     if use_cache and past_key_values is None:
         past_key_values = DynamicCache(config=decoder.config)
     if cache_position is None:
@@ -113,7 +158,10 @@ def _forward_trace(
         )
     position_ids = cache_position.unsqueeze(0)
     position_embeddings = decoder.rotary_emb(hidden_states, position_ids)
-    for layer, attention_mask in zip(decoder.layers, layer_masks, strict=True):
+    for layer_index, (layer, attention_mask) in enumerate(
+        zip(decoder.layers, layer_masks, strict=True),
+        start=1,
+    ):
         hidden_states = layer(
             hidden_states,
             attention_mask=attention_mask,
@@ -123,10 +171,10 @@ def _forward_trace(
             cache_position=cache_position,
             position_embeddings=position_embeddings,
         )
-        traces.append(hidden_states)
+        trace[layer_index].copy_(hidden_states)
     hidden_states = decoder.norm(hidden_states)
-    traces.append(hidden_states)
-    return hidden_states, past_key_values if use_cache else None, torch.stack(traces)
+    trace[-1].copy_(hidden_states)
+    return hidden_states, past_key_values if use_cache else None, trace
 
 
 def _incremental_trace(
@@ -165,8 +213,9 @@ def _incremental_trace(
                 "actual": cache.get_seq_length(),
             }
     layer_lengths = [cache.get_seq_length(index) for index in range(len(cache.layers))]
+    final_hidden_states = trace[-1].clone()
     return (
-        trace[-1],
+        final_hidden_states,
         cache,
         trace,
         {
@@ -549,8 +598,18 @@ def _run_condition(
     example: Any,
     *,
     device: torch.device,
+    condition_index: int,
+    condition_count: int,
 ) -> dict[str, Any]:
+    progress = _Progress(
+        condition["name"],
+        condition_index=condition_index,
+        condition_count=condition_count,
+        step_count=17,
+    )
+    progress.report("loading frozen model")
     model = _load_model(specification, condition, device)
+    progress.report("model loaded", advance=True)
     names = _state_names(model)
     input_ids = torch.tensor(example.input_ids, dtype=torch.long, device=device)[None]
     geometry = specification["geometry"]
@@ -575,6 +634,7 @@ def _run_condition(
         retrieval_layer=geometry["retrieval_layer"],
         selected_range=selected_range,
     )
+    progress.report("causal masks verified", advance=True)
     thresholds = [float(value) for value in diagnostic["absolute_error_thresholds"]]
     probes = [int(value) for value in diagnostic["prefix_probe_positions"]]
     cutoffs = [int(value) for value in diagnostic["future_invariance_cutoffs"]]
@@ -582,9 +642,15 @@ def _run_condition(
     with _backend_context(condition), torch.inference_mode():
         torch.cuda.synchronize(device)
         started = time.perf_counter()
-        rolling_batched, _, batched_trace = _forward_trace(model, input_ids, rolling_plan.masks)
+        rolling_batched, _, batched_trace = _forward_trace(
+            model,
+            input_ids,
+            rolling_plan.masks,
+            trace_device=torch.device("cpu"),
+        )
         torch.cuda.synchronize(device)
         batched_seconds = time.perf_counter() - started
+        progress.report("rolling batched trace captured", advance=True)
 
         started = time.perf_counter()
         rolling_incremental, cache, incremental_trace, cache_lengths = _incremental_trace(
@@ -592,15 +658,8 @@ def _run_condition(
         )
         torch.cuda.synchronize(device)
         incremental_seconds = time.perf_counter() - started
+        progress.report("rolling incremental trace captured", advance=True)
 
-        trace_summary = _trace_summary(
-            batched_trace,
-            incremental_trace,
-            names=names,
-            thresholds=thresholds,
-            probe_positions=probes,
-            top_count=int(diagnostic["top_divergences"]),
-        )
         batched_key, batched_value = _batched_layer_zero_kv(model, input_ids)
         cached_key = cache.layers[0].keys
         cached_value = cache.layers[0].values
@@ -610,13 +669,31 @@ def _run_condition(
             "lengths": cache_lengths,
         }
         del cache, batched_key, batched_value, cached_key, cached_value
+        incremental_trace_cpu = incremental_trace.cpu()
+        del incremental_trace
+        incremental_trace = incremental_trace_cpu
+        torch.cuda.empty_cache()
+        trace_summary = _trace_summary(
+            batched_trace,
+            incremental_trace,
+            names=names,
+            thresholds=thresholds,
+            probe_positions=probes,
+            top_count=int(diagnostic["top_divergences"]),
+        )
+        progress.report("divergence and layer-0 cache localized", advance=True)
 
         prefix_replays: dict[str, Any] = {}
-        for position in probes:
+        for probe_index, position in enumerate(probes, start=1):
             prefix_masks = tuple(
                 mask[:, :, : position + 1, : position + 1] for mask in rolling_plan.masks
             )
-            _, _, prefix_trace = _forward_trace(model, input_ids[:, : position + 1], prefix_masks)
+            _, _, prefix_trace = _forward_trace(
+                model,
+                input_ids[:, : position + 1],
+                prefix_masks,
+                trace_device=torch.device("cpu"),
+            )
             prefix_point = prefix_trace[:, 0, -1]
             full_point = batched_trace[:, 0, position]
             cached_point = incremental_trace[:, 0, position]
@@ -632,8 +709,17 @@ def _run_condition(
                 ),
             }
             del prefix_trace
+            progress.report(
+                f"uncached-prefix probe {probe_index}/{len(probes)} at token {position}",
+                advance=True,
+            )
 
-        _, _, repeat_trace = _forward_trace(model, input_ids, rolling_plan.masks)
+        _, _, repeat_trace = _forward_trace(
+            model,
+            input_ids,
+            rolling_plan.masks,
+            trace_device=torch.device("cpu"),
+        )
         repeatability = {
             str(cutoff): _prefix_summary(
                 batched_trace,
@@ -644,15 +730,21 @@ def _run_condition(
             for cutoff in cutoffs
         }
         del repeat_trace
+        progress.report("same-input repeatability measured", advance=True)
 
         future_counterfactuals: dict[str, Any] = {}
-        for cutoff in cutoffs:
+        for cutoff_index, cutoff in enumerate(cutoffs, start=1):
             changed_ids = input_ids.clone()
             suffix = changed_ids[:, cutoff + 1 :]
             changed_ids[:, cutoff + 1 :] = (suffix + 1) % model.config.vocab_size
             if torch.equal(changed_ids[:, cutoff + 1 :], input_ids[:, cutoff + 1 :]):
                 raise RuntimeError("future counterfactual did not change the suffix")
-            _, _, changed_trace = _forward_trace(model, changed_ids, rolling_plan.masks)
+            _, _, changed_trace = _forward_trace(
+                model,
+                changed_ids,
+                rolling_plan.masks,
+                trace_device=torch.device("cpu"),
+            )
             comparison = _prefix_summary(
                 batched_trace,
                 changed_trace,
@@ -667,6 +759,10 @@ def _run_condition(
             )
             future_counterfactuals[str(cutoff)] = comparison
             del changed_ids, changed_trace
+            progress.report(
+                f"future-invariance probe {cutoff_index}/{len(cutoffs)} at token {cutoff}",
+                advance=True,
+            )
 
         rolling_final = _final_comparison(
             model,
@@ -681,6 +777,7 @@ def _run_condition(
             oracle_plan.masks,
             device=device,
         )
+        progress.report("causal-oracle batch/incremental pair measured", advance=True)
         oracle_final = _final_comparison(
             model,
             oracle_batched,
@@ -730,6 +827,7 @@ def _run_condition(
         },
         "complete": True,
     }
+    progress.report("condition checkpoint ready", advance=True)
     del (
         model,
         input_ids,
@@ -762,6 +860,22 @@ def _validate_original_failure(diagnostic: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _validate_superseded_partial(diagnostic: dict[str, Any]) -> None:
+    partial = diagnostic.get("supersedes_partial_diagnostic")
+    if partial is None:
+        return
+    path = Path(partial["path"])
+    if _sha256(path) != partial["sha256"]:
+        raise ValueError("the superseded partial diagnostic changed")
+    result = load_json(path)
+    if result.get("complete") is not False:
+        raise ValueError("the superseded diagnostic is not an incomplete artifact")
+    if result["source_identity"]["git_revision"] != partial["source_revision"]:
+        raise ValueError("the superseded diagnostic source revision changed")
+    if list(result["conditions"]) != partial["completed_conditions"]:
+        raise ValueError("the superseded diagnostic condition set changed")
+
+
 def _validate_resume(result: dict[str, Any], expected: dict[str, Any]) -> None:
     actual = {key: result.get(key) for key in expected}
     if actual != expected:
@@ -785,6 +899,7 @@ def main() -> None:
         raise ValueError("diagnostic modes do not match the bounded implementation")
     specification = load_json(diagnostic["base_config_path"])
     original_failure = _validate_original_failure(diagnostic)
+    _validate_superseded_partial(diagnostic)
     dataset = specification["datasets"]["evaluation"]
     dataset_path = Path(dataset["cache_path"])
     _download(dataset["url"], dataset_path, dataset["sha256"])
@@ -855,8 +970,9 @@ def main() -> None:
             "environment": {
                 **environment(),
                 "transformers": transformers.__version__,
-                "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
-                "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+                "cuda_matmul_fp32_precision": torch.backends.cuda.matmul.fp32_precision,
+                "cudnn_conv_fp32_precision": torch.backends.cudnn.conv.fp32_precision,
+                "pytorch_alloc_conf": os.environ.get("PYTORCH_ALLOC_CONF"),
             },
             "preparation": preparation,
             "original_failure_summary": {
@@ -877,6 +993,10 @@ def main() -> None:
     if maximum is None:
         maximum = diagnostic["execution"]["default_max_conditions_per_invocation"]
     remaining = remaining[:maximum]
+    condition_positions = {
+        condition["name"]: index
+        for index, condition in enumerate(diagnostic["conditions"], start=1)
+    }
     for condition in remaining:
         measured = _run_condition(
             specification,
@@ -884,6 +1004,8 @@ def main() -> None:
             condition,
             example,
             device=device,
+            condition_index=condition_positions[condition["name"]],
+            condition_count=len(diagnostic["conditions"]),
         )
         result["conditions"][condition["name"]] = measured
         result["complete"] = len(result["conditions"]) == len(diagnostic["conditions"])

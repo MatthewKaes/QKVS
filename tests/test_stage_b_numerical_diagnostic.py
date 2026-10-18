@@ -129,3 +129,20 @@ def test_diagnostic_preserves_failed_artifact_and_has_no_gate_pass_decision() ->
         "fp32_sdpa_math",
         "fp32_eager",
     ]
+
+
+def test_memory_bounded_retry_preserves_partial_and_restarts_every_condition() -> None:
+    diagnostic = json.loads(Path("configs/stage_b_numerical_diagnostic_v2.json").read_text())
+    partial = diagnostic["supersedes_partial_diagnostic"]
+    assert _sha256(Path(partial["path"])) == partial["sha256"]
+    result = json.loads(Path(partial["path"]).read_text())
+    assert result["complete"] is False
+    assert list(result["conditions"]) == partial["completed_conditions"]
+    assert diagnostic["execution"]["trace_storage"] == ("batched_cpu_incremental_gpu_then_cpu")
+    assert diagnostic["output"].endswith("stage_b_numerical_diagnostic_v2.json")
+    assert [condition["name"] for condition in diagnostic["conditions"]] == [
+        "bf16_sdpa_default",
+        "bf16_sdpa_math",
+        "fp32_sdpa_math",
+        "fp32_eager",
+    ]
