@@ -31,7 +31,11 @@ def paired_bootstrap_interval(
     return [lower, upper]
 
 
-def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_accesses(
+    accesses: list[dict[str, Any]],
+    *,
+    historical_token_budget: int | None = None,
+) -> dict[str, Any]:
     historical_occurrences = sum(len(access["historical_indices"]) for access in accesses)
     historical_unique = sum(len(set(access["historical_indices"])) for access in accesses)
     duplicate_occurrences = historical_occurrences - historical_unique
@@ -113,7 +117,7 @@ def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
         for layer, layer_accesses in sorted(by_layer.items())
     }
 
-    return {
+    summary = {
         "historical_token_occurrences": historical_occurrences,
         "historical_unique_tokens": historical_unique,
         "duplicate_historical_occurrences": duplicate_occurrences,
@@ -133,6 +137,50 @@ def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
         "temporal_responsiveness": _mean(responsiveness),
         "responsiveness_trials": len(responsiveness),
     }
+    if historical_token_budget is not None:
+        maximum = len(accesses) * historical_token_budget
+        summary["historical_budget_utilization"] = (
+            historical_occurrences / maximum if maximum else 0.0
+        )
+    return summary
+
+
+def summarize_training_alignment(history: list[dict[str, Any]]) -> dict[str, Any]:
+    pairs = [
+        (float(record["soft_utility"]), float(record["hard_utility"]))
+        for record in history
+        if "soft_utility" in record and "hard_utility" in record
+    ]
+    if not pairs:
+        return {
+            "paired_steps": 0,
+            "soft_hard_utility_correlation": None,
+            "utility_sign_agreement": None,
+            "mean_absolute_utility_gap": None,
+        }
+    soft = [pair[0] for pair in pairs]
+    hard = [pair[1] for pair in pairs]
+    soft_mean = _mean(soft)
+    hard_mean = _mean(hard)
+    covariance = sum(
+        (soft_value - soft_mean) * (hard_value - hard_mean) for soft_value, hard_value in pairs
+    )
+    soft_variance = sum((value - soft_mean) ** 2 for value in soft)
+    hard_variance = sum((value - hard_mean) ** 2 for value in hard)
+    denominator = (soft_variance * hard_variance) ** 0.5
+    nonzero_pairs = [pair for pair in pairs if pair[0] != 0.0 and pair[1] != 0.0]
+    return {
+        "paired_steps": len(pairs),
+        "soft_hard_utility_correlation": covariance / denominator if denominator else None,
+        "utility_sign_agreement": (
+            _mean(float(soft_value * hard_value > 0.0) for soft_value, hard_value in nonzero_pairs)
+            if nonzero_pairs
+            else None
+        ),
+        "mean_absolute_utility_gap": _mean(
+            abs(soft_value - hard_value) for soft_value, hard_value in pairs
+        ),
+    }
 
 
 def summarize_measurements(
@@ -141,6 +189,8 @@ def summarize_measurements(
     baseline: str,
     bootstrap_samples: int,
     seed: int,
+    historical_token_budget: int | None = None,
+    paired_comparisons: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     by_condition: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for measurement in measurements:
@@ -169,7 +219,10 @@ def summarize_measurements(
                 for record in records
                 for score in record["token_scores"]
             ),
-            "retrieval": summarize_accesses(accesses),
+            "retrieval": summarize_accesses(
+                accesses,
+                historical_token_budget=historical_token_budget,
+            ),
         }
 
     if baseline not in sequence_losses:
@@ -182,6 +235,28 @@ def summarize_measurements(
         common = sorted(set(baseline_losses) & set(losses))
         differences = [baseline_losses[key] - losses[key] for key in common]
         paired[condition] = {
+            "paired_streams": len(common),
+            "mean_utility_nats": _mean(differences),
+            "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(
+                differences,
+                samples=bootstrap_samples,
+                seed=seed,
+            ),
+            "per_stream_utility_nats": dict(zip(common, differences, strict=True)),
+        }
+    for comparison in paired_comparisons or []:
+        if (
+            comparison["baseline"] not in sequence_losses
+            or comparison["condition"] not in sequence_losses
+        ):
+            continue
+        comparison_baseline = sequence_losses[comparison["baseline"]]
+        comparison_condition = sequence_losses[comparison["condition"]]
+        common = sorted(set(comparison_baseline) & set(comparison_condition))
+        differences = [comparison_baseline[key] - comparison_condition[key] for key in common]
+        paired[comparison["name"]] = {
+            "baseline": comparison["baseline"],
+            "condition": comparison["condition"],
             "paired_streams": len(common),
             "mean_utility_nats": _mean(differences),
             "paired_bootstrap_95_interval_nats": paired_bootstrap_interval(

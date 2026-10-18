@@ -196,6 +196,12 @@ gathers do not transmit address gradients. Fixed gamma and beta are the delibera
 implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
 ignored settings.
 
+Training-prefix K/V is constructed by the current learned hard-S trajectory, matching inference.
+Those prior hard decisions and recurrent states are detached: gradients apply only to the selected
+target token/layer, so this is explicit truncated credit assignment rather than full temporal
+backpropagation. Artifacts pair soft-surrogate and actual hard-window utility at every training
+step to expose agreement or mismatch.
+
 ```text
 configuration
     -> shared harness lifecycle
@@ -215,31 +221,33 @@ python -m qkvs status --run artifacts/results/harness-smoke
 python -m qkvs summarize --run artifacts/results/harness-smoke
 ```
 
-The intended human-started interface for an approved GPU experiment is:
+The proposed human-started interface for the small held-out learning study is:
 
 ```bash
 python -m qkvs run \
-  --config configs/heatfield_initial.json \
+  --config configs/heatfield_learning_study.json \
   --device cuda
 ```
 
-That command currently refuses to run because `heatfield_initial.json` is
-`draft_not_authorized`; it also lacks frozen data, dtype, policy dimensions, and training choices,
-and requests unsupported learned gamma and beta modes. Codex must not run CUDA workloads.
-Configuration validation, status, and summarization do not import the model runtime or initialize
-CUDA.
+The study configuration is complete but remains `draft_not_authorized`; the command refuses to run
+until an independent arbiter changes that status. It compares rolling-only, fixed offsets,
+identically initialized untrained S, and trained S on two held-out token ranges never exposed to
+the optimizer. `heatfield_initial.json` remains an incomplete earlier design draft. Codex must not
+run CUDA workloads. Configuration validation, status, and summarization do not import the model
+runtime or initialize CUDA.
 
 ## Configuration and artifacts
 
 Configurations keep proposal count, window width, and historical token-occurrence budget separate.
 They declare the rolling baseline, matched alternative policies, gamma and beta controls, scoring,
-data identity, device authorization, and run ID. Unsupported combinations fail validation.
+data identity, nonoverlapping train/evaluation token boundaries, device authorization, and run ID.
+Unsupported combinations fail validation.
 
 Each run writes `artifacts/results/<run-id>/result.json`. The artifact contains source and config
 hashes, raw per-token losses, actual K/V access indices, overlap and coverage measurements, paired
 utility, deterministic bootstrap uncertainty, progress, and completion state. Writes are atomic;
 rerunning the same command resumes without duplicating completed condition/stream pairs.
 
-`configs/heatfield_initial.json` is retained only as an unapproved design draft. Passing the CPU
-smoke run or the pretrained adapter's numerical diagnostics does not authorize or support that
-study.
+`configs/heatfield_learning_study.json` is the sole prepared learning study and remains unapproved.
+Passing CPU smoke tests or pretrained adapter diagnostics does not authorize it or establish that
+learned S improves hard next-token prediction.

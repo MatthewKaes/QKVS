@@ -50,6 +50,7 @@ def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
 def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
+    learning_study = validate_config_file("configs/heatfield_learning_study.json")
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -63,6 +64,14 @@ def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> Non
     assert (
         "configuration is not authorized for harness execution" in heatfield["not_runnable_reasons"]
     )
+    assert learning_study == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "heatfield_learning_study",
+        "status": "draft_not_authorized",
+    }
 
 
 def test_pinned_huggingface_text_configuration_is_runnable_in_schema() -> None:

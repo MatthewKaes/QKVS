@@ -676,6 +676,9 @@ class HuggingFaceQwen2Reader:
         key_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
         value_cache: list[list[Tensor]] = [[] for _ in backbone.layers]
         policy_states = [PolicyState() for _ in backbone.layers]
+        trajectory_historical_occurrences = 0
+        trajectory_unique_tokens = 0
+        trajectory_overlap_occurrences = 0
 
         with torch.no_grad():
             for prior_position in range(position):
@@ -714,14 +717,26 @@ class HuggingFaceQwen2Reader:
                         if proposal_set.soft_parameters is not None
                         else None
                     )
+                    trajectory_selection = resolve_proposals(
+                        proposal_set.proposals,
+                        history_end=rolling_start,
+                        window_width=window_width,
+                        historical_token_budget=historical_token_budget,
+                        beta=proposal_set.beta,
+                    )
+                    trajectory_historical_occurrences += trajectory_selection.occurrence_count
+                    trajectory_unique_tokens += trajectory_selection.unique_count
+                    trajectory_overlap_occurrences += (
+                        trajectory_selection.occurrence_count - trajectory_selection.unique_count
+                    )
                     hidden, _, _ = self._finish_layer(
                         layer,
                         residual,
                         query,
                         key_cache[current_layer],
                         value_cache[current_layer],
-                        rolling,
-                        occurrence_limit=rolling_tokens,
+                        (*trajectory_selection.indices, *rolling),
+                        occurrence_limit=rolling_tokens + historical_token_budget,
                     )
 
             token_id = torch.tensor([[stream.tokens[position]]], device=device)
@@ -760,14 +775,26 @@ class HuggingFaceQwen2Reader:
                     if proposal_set.soft_parameters is not None
                     else None
                 )
+                trajectory_selection = resolve_proposals(
+                    proposal_set.proposals,
+                    history_end=rolling_start,
+                    window_width=window_width,
+                    historical_token_budget=historical_token_budget,
+                    beta=proposal_set.beta,
+                )
+                trajectory_historical_occurrences += trajectory_selection.occurrence_count
+                trajectory_unique_tokens += trajectory_selection.unique_count
+                trajectory_overlap_occurrences += (
+                    trajectory_selection.occurrence_count - trajectory_selection.unique_count
+                )
                 hidden, _, _ = self._finish_layer(
                     layer,
                     residual,
                     query,
                     key_cache[current_layer],
                     value_cache[current_layer],
-                    rolling,
-                    occurrence_limit=rolling_tokens,
+                    (*trajectory_selection.indices, *rolling),
+                    occurrence_limit=rolling_tokens + historical_token_budget,
                 )
 
             target_layer = backbone.layers[layer_index]
@@ -903,6 +930,8 @@ class HuggingFaceQwen2Reader:
             "rolling_next_token_loss": float(rolling_loss),
             "hard_selected_next_token_loss": float(selected_loss),
             "hard_utility": float(rolling_loss - selected_loss),
+            "soft_utility": float(rolling_loss - soft_loss.detach()),
+            "soft_hard_utility_gap": float(selected_loss - soft_loss.detach()),
             "teacher_historical_attention_mass": float(teacher_weights[:rolling_start].sum()),
             "historical_indices": selection.indices,
             "historical_occurrences": selection.occurrence_count,
@@ -910,6 +939,11 @@ class HuggingFaceQwen2Reader:
             "overlap_occurrences": selection.occurrence_count - selection.unique_count,
             "proposal_parameters": soft.detach().cpu().tolist(),
             "coverage_overlap_alpha": 0.0,
+            "trajectory": "learned_hard_detached",
+            "trajectory_historical_occurrences": trajectory_historical_occurrences,
+            "trajectory_unique_tokens": trajectory_unique_tokens,
+            "trajectory_overlap_occurrences": trajectory_overlap_occurrences,
+            "temporal_credit_assignment": "target_step_only",
         }
         return objective, metrics
 

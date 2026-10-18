@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "experiment": "heatfield_learning_study",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "heatfield-learning-study",
+    "seed": 20261018
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "dtype": "bfloat16",
+    "frozen": true
+  },
+  "data": {
+    "kind": "tokenized_text",
+    "source": {
+      "path": "../data/heatfield_learning_study.txt",
+      "sha256": "36428d3ffbc0c2e091a5fb5d31640c4b850cdc2ccdec4ac03fd160fdceb1c4b1"
+    },
+    "boundaries": [
+      {
+        "id": "train-000",
+        "split": "train",
+        "start_token": 0,
+        "stop_token": 96
+      },
+      {
+        "id": "train-001",
+        "split": "train",
+        "start_token": 96,
+        "stop_token": 192
+      },
+      {
+        "id": "evaluation-000",
+        "split": "evaluation",
+        "start_token": 684,
+        "stop_token": 780
+      },
+      {
+        "id": "evaluation-001",
+        "split": "evaluation",
+        "start_token": 780,
+        "stop_token": 876
+      }
+    ]
+  },
+  "attention": {
+    "rolling_tokens": 16,
+    "historical_token_budget": 16
+  },
+  "selection": {
+    "proposal_count": 4,
+    "window_width": 4,
+    "gamma": {
+      "mode": "fixed",
+      "value": 0.75
+    },
+    "beta": {
+      "mode": "fixed",
+      "value": 1.0
+    },
+    "learned": {
+      "latent_size": 128,
+      "minimum_spread": 0.5,
+      "maximum_spread": 2.0,
+      "gate_threshold": 0.4
+    },
+    "conditions": [
+      {
+        "name": "rolling",
+        "policy": "rolling"
+      },
+      {
+        "name": "fixed_offsets",
+        "policy": "fixed_offsets",
+        "offsets": [
+          24,
+          40,
+          56,
+          72
+        ]
+      },
+      {
+        "name": "untrained_s",
+        "policy": "heatfield_untrained"
+      },
+      {
+        "name": "trained_s",
+        "policy": "heatfield"
+      }
+    ]
+  },
+  "training": {
+    "enabled": true,
+    "steps": 48,
+    "learning_rate": 0.0003,
+    "coverage_weight": 1.0,
+    "utility_weight": 1.0,
+    "checkpoint_interval": 8,
+    "position_schedule": "cyclic",
+    "layer_schedule": "round_robin"
+  },
+  "evaluation": {
+    "metric": "next_token_cross_entropy",
+    "paired_conditions": true,
+    "baseline": "rolling",
+    "comparisons": [
+      {
+        "name": "trained_s_vs_untrained_s",
+        "baseline": "untrained_s",
+        "condition": "trained_s"
+      }
+    ],
+    "bootstrap_samples": 500
+  },
+  "execution": {
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

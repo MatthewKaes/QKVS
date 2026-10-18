@@ -406,6 +406,11 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     assert all(metric["coverage_overlap_alpha"] == 0.0 for metric in training_metrics)
     assert any(metric["historical_occurrences"] > 0 for metric in training_metrics)
     assert any(metric["hard_utility"] != 0.0 for metric in training_metrics)
+    assert all(metric["trajectory"] == "learned_hard_detached" for metric in training_metrics)
+    assert all(
+        metric["temporal_credit_assignment"] == "target_step_only" for metric in training_metrics
+    )
+    assert any(metric["trajectory_historical_occurrences"] > 0 for metric in training_metrics)
 
     checkpoint = tmp_path / "selector.pt"
     torch.save(policy.state_dict(), checkpoint)
@@ -473,7 +478,15 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
                 "path": str(source),
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
             },
-            "boundaries": [{"id": "smoke", "start_token": 0, "stop_token": 12}],
+            "boundaries": [
+                {"id": "train", "split": "train", "start_token": 0, "stop_token": 12},
+                {
+                    "id": "evaluation",
+                    "split": "evaluation",
+                    "start_token": 12,
+                    "stop_token": 24,
+                },
+            ],
         },
         "attention": {"rolling_tokens": 2, "historical_token_budget": 4},
         "selection": {
@@ -489,6 +502,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
             },
             "conditions": [
                 {"name": "rolling", "policy": "rolling"},
+                {"name": "untrained_s", "policy": "heatfield_untrained"},
                 {"name": "heatfield", "policy": "heatfield"},
             ],
         },
@@ -506,11 +520,26 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
             "metric": "next_token_cross_entropy",
             "paired_conditions": True,
             "baseline": "rolling",
+            "comparisons": [
+                {
+                    "name": "trained_vs_untrained",
+                    "baseline": "untrained_s",
+                    "condition": "heatfield",
+                }
+            ],
             "bootstrap_samples": 20,
         },
         "execution": {"allowed_devices": ["cpu"], "output_root": str(tmp_path)},
     }
     assert validate_config(specification)["runnable"]
+    overlapping = json.loads(json.dumps(specification))
+    overlapping["data"]["boundaries"][1]["start_token"] = 10
+    overlap_report = validate_config(overlapping)
+    assert not overlap_report["runnable"]
+    assert (
+        "learned heat-field train and evaluation boundaries overlap"
+        in overlap_report["not_runnable_reasons"]
+    )
     config = tmp_path / "config.json"
     config.write_text(json.dumps(specification), encoding="utf-8")
     monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
@@ -523,6 +552,9 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
     assert first["complete"]
     assert first["training"]["completed_steps"] == 2
     assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
+    assert {record["stream_id"] for record in first["training"]["history"]} == {
+        "train",
+    }
     assert (output.parent / "selector.pt").exists()
     heatfield = next(
         measurement for measurement in first["measurements"] if measurement["policy"] == "heatfield"
@@ -531,6 +563,27 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch) ->
         access["proposal_weights"]
         for score in heatfield["token_scores"]
         for access in score["accesses"]
+    )
+    assert {measurement["stream_id"] for measurement in first["measurements"]} == {"evaluation"}
+    assert {measurement["condition"] for measurement in first["measurements"]} == {
+        "rolling",
+        "untrained_s",
+        "heatfield",
+    }
+    assert first["training"]["soft_hard_alignment"]["paired_steps"] == 2
+    assert first["training"]["soft_hard_alignment"]["soft_hard_utility_correlation"] is not None
+    assert 0.0 <= first["training"]["soft_hard_alignment"]["utility_sign_agreement"] <= 1.0
+    assert set(first["summary"]["conditions"]) == {
+        "rolling",
+        "untrained_s",
+        "heatfield",
+    }
+    assert "untrained_s" in first["summary"]["paired_utility"]
+    assert "heatfield" in first["summary"]["paired_utility"]
+    assert "trained_vs_untrained" in first["summary"]["paired_utility"]
+    assert all(
+        "historical_budget_utilization" in condition["retrieval"]
+        for condition in first["summary"]["conditions"].values()
     )
 
     _, resumed = run_experiment(
@@ -666,7 +719,7 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
         score.as_dict() for score in second_scores[: len(prefix) - 1]
     ]
 
-    from qkvs.harness import run_experiment, validate_config_file
+    from qkvs.harness import _tokenized_text_streams, run_experiment, validate_config_file
 
     source_path = tmp_path / "source.txt"
     source_path.write_text(texts[0], encoding="utf-8")
@@ -741,6 +794,20 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
     draft = validate_config_file("configs/heatfield_initial.json")
     assert draft["valid"]
     assert not draft["runnable"]
+    study_path = Path("configs/heatfield_learning_study.json")
+    study_specification = json.loads(study_path.read_text())
+    study_streams, study_identity = _tokenized_text_streams(
+        study_specification,
+        config_path=study_path,
+        tokenizer=tokenizer,
+    )
+    assert [stream["split"] for stream in study_streams] == [
+        "train",
+        "train",
+        "evaluation",
+        "evaluation",
+    ]
+    assert study_identity["source_sha256"] == study_specification["data"]["source"]["sha256"]
 
     print(
         json.dumps(

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from qkvs.metrics import summarize_measurements
+from qkvs.metrics import summarize_measurements, summarize_training_alignment
 
 _SOURCE_FILES = (
     "README.md",
@@ -217,6 +217,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
                 errors.append(f"data.boundaries[{index}].stop_token must be positive")
             if isinstance(start, int) and isinstance(stop, int) and stop - start < 2:
                 errors.append(f"data.boundaries[{index}] must contain at least two tokens")
+            if "split" in boundary and boundary["split"] not in {"train", "evaluation"}:
+                errors.append(f"data.boundaries[{index}].split must be train or evaluation")
         if len(boundary_ids) != len(set(boundary_ids)):
             errors.append("data boundary ids must be unique")
     else:
@@ -263,7 +265,7 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"selection.conditions[{index}].name must be nonempty")
         else:
             names.append(name)
-        if policy not in {"rolling", "fixed_offsets", "heatfield"}:
+        if policy not in {"rolling", "fixed_offsets", "heatfield", "heatfield_untrained"}:
             errors.append(f"selection.conditions[{index}].policy is unsupported")
         if policy == "fixed_offsets":
             offsets = condition.get("offsets")
@@ -300,6 +302,26 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("evaluation.baseline must name a configured condition")
     if not _positive_integer(evaluation.get("bootstrap_samples")):
         errors.append("evaluation.bootstrap_samples must be positive")
+    comparisons = evaluation.get("comparisons", [])
+    comparison_names: list[str] = []
+    if not isinstance(comparisons, list):
+        errors.append("evaluation.comparisons must be a list")
+        comparisons = []
+    for index, comparison in enumerate(comparisons):
+        if not isinstance(comparison, dict):
+            errors.append(f"evaluation.comparisons[{index}] must be an object")
+            continue
+        name = comparison.get("name")
+        if not isinstance(name, str) or not name:
+            errors.append(f"evaluation.comparisons[{index}].name must be nonempty")
+        else:
+            comparison_names.append(name)
+        if comparison.get("baseline") not in names or comparison.get("condition") not in names:
+            errors.append(f"evaluation.comparisons[{index}] must name configured conditions")
+    if len(comparison_names) != len(set(comparison_names)):
+        errors.append("evaluation comparison names must be unique")
+    if set(comparison_names) & set(names):
+        errors.append("evaluation comparison names must not shadow conditions")
 
     execution = specification.get("execution", {})
     devices = execution.get("allowed_devices")
@@ -326,12 +348,43 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             "long_context_reading is a draft data description, not an implemented loader"
         )
     policies = {condition.get("policy") for condition in condition_objects}
-    has_heatfield = "heatfield" in policies
+    has_heatfield = bool(policies & {"heatfield", "heatfield_untrained"})
     learned = selection.get("learned")
     training = specification.get("training")
     if has_heatfield:
         if backend != "huggingface":
             reasons.append("learned heat-field training requires the Hugging Face Qwen2 reader")
+        if "heatfield" not in policies:
+            reasons.append("learned heat-field study requires a trained heatfield condition")
+        if "heatfield_untrained" not in policies:
+            reasons.append("learned heat-field study requires an untrained heatfield control")
+        if data_kind == "tokenized_text":
+            boundaries = data.get("boundaries", [])
+            train_boundaries = [
+                boundary
+                for boundary in boundaries
+                if isinstance(boundary, dict)
+                and boundary.get("split") == "train"
+                and isinstance(boundary.get("start_token"), int)
+                and isinstance(boundary.get("stop_token"), int)
+            ]
+            evaluation_boundaries = [
+                boundary
+                for boundary in boundaries
+                if isinstance(boundary, dict)
+                and boundary.get("split") == "evaluation"
+                and isinstance(boundary.get("start_token"), int)
+                and isinstance(boundary.get("stop_token"), int)
+            ]
+            if not train_boundaries or not evaluation_boundaries:
+                reasons.append("learned heat-field study requires train and evaluation boundaries")
+            elif any(
+                train["start_token"] < evaluation["stop_token"]
+                and evaluation["start_token"] < train["stop_token"]
+                for train in train_boundaries
+                for evaluation in evaluation_boundaries
+            ):
+                reasons.append("learned heat-field train and evaluation boundaries overlap")
         if selection.get("gamma", {}).get("mode") != "fixed":
             reasons.append("learned heat-field execution currently requires fixed gamma")
         if selection.get("beta", {}).get("mode") != "fixed":
@@ -465,6 +518,7 @@ def _synthetic_streams(
         streams.append(
             {
                 "stream_id": f"synthetic-{stream_index:03d}",
+                "split": "evaluation",
                 "tokens": token_tuple,
                 "support_positions": tuple(supports),
                 "token_sha256": _token_sha256(token_tuple),
@@ -510,6 +564,7 @@ def _tokenized_text_streams(
         streams.append(
             {
                 "stream_id": boundary["id"],
+                "split": boundary.get("split", "evaluation"),
                 "tokens": tokens,
                 "support_positions": (None,) * (len(tokens) - 1),
                 "token_sha256": _token_sha256(tokens),
@@ -620,11 +675,16 @@ def _train_learned_policy(
             support_positions=tuple(stream["support_positions"]),
         )
         for stream in streams
+        if stream.get("split") == "train"
     ]
+    if not token_streams:
+        raise ValueError("learned heat-field training has no training streams")
+    maximum_positions = max(len(stream.tokens) - 1 for stream in token_streams)
     eligible = [
         (stream, position)
+        for position in range(attention["rolling_tokens"], maximum_positions)
         for stream in token_streams
-        for position in range(attention["rolling_tokens"], len(stream.tokens) - 1)
+        if position < len(stream.tokens) - 1
     ]
     if not eligible:
         raise ValueError("learned heat-field training has no eligible historical positions")
@@ -682,6 +742,7 @@ def _train_learned_policy(
                 "target_steps": training["steps"],
                 "checkpoint_sha256": _sha256(checkpoint),
                 "history": history,
+                "soft_hard_alignment": summarize_training_alignment(history),
             }
             _write_json(output, result)
     policy.eval()
@@ -764,9 +825,11 @@ def run_experiment(
         }
     )
     learned_policy = None
+    untrained_policy = None
     if any(
         condition["policy"] == "heatfield" for condition in specification["selection"]["conditions"]
     ):
+        untrained_policy = _build_learned_policy(reader, specification, torch)
         learned_policy = _build_learned_policy(reader, specification, torch)
         _train_learned_policy(
             reader=reader,
@@ -786,6 +849,7 @@ def run_experiment(
         (condition, stream)
         for condition in specification["selection"]["conditions"]
         for stream in result["streams"]
+        if stream.get("split") == "evaluation"
     ]
     total = len(units)
     progress = _LiveProgress(completed=len(completed), total=total)
@@ -799,6 +863,7 @@ def run_experiment(
                 condition,
                 specification["selection"],
                 learned_policy=learned_policy,
+                untrained_policy=untrained_policy,
             )
             stream = TokenStream(
                 stream_id=stream_record["stream_id"],
@@ -830,6 +895,8 @@ def run_experiment(
                 baseline=specification["evaluation"]["baseline"],
                 bootstrap_samples=specification["evaluation"]["bootstrap_samples"],
                 seed=specification["run"]["seed"],
+                historical_token_budget=specification["attention"]["historical_token_budget"],
+                paired_comparisons=specification["evaluation"].get("comparisons", []),
             )
             result["complete"] = len(completed) == total
             _write_json(output, result)
@@ -855,7 +922,10 @@ def load_run(path: str | Path) -> dict[str, Any]:
 def status(path: str | Path) -> dict[str, Any]:
     result = load_run(path)
     conditions = result["config"]["selection"]["conditions"]
-    total = len(conditions) * len(result["streams"])
+    evaluation_streams = [
+        stream for stream in result["streams"] if stream.get("split", "evaluation") == "evaluation"
+    ]
+    total = len(conditions) * len(evaluation_streams)
     completed = len(result["measurements"])
     return {
         "run_id": result["run_id"],
@@ -884,11 +954,26 @@ def print_status(value: dict[str, Any]) -> None:
 
 def print_summary(result: dict[str, Any]) -> None:
     print(f"Run {result['run_id']} ({'complete' if result['complete'] else 'incomplete'})")
+    alignment = result.get("training", {}).get("soft_hard_alignment")
+    if alignment:
+        correlation = alignment["soft_hard_utility_correlation"]
+        sign_agreement = alignment["utility_sign_agreement"]
+        print(
+            "training soft/hard alignment: "
+            f"steps={alignment['paired_steps']}, "
+            f"correlation={correlation if correlation is not None else 'undefined'}, "
+            f"sign_agreement={sign_agreement if sign_agreement is not None else 'undefined'}, "
+            f"mean_abs_gap={alignment['mean_absolute_utility_gap']}"
+        )
     for name, condition in result["summary"].get("conditions", {}).items():
+        retrieval = condition["retrieval"]
         print(
             f"{name}: loss={condition['mean_next_token_cross_entropy']:.6f}, "
             f"accuracy={condition['accuracy']:.3f}, "
-            f"historical_reads={condition['retrieval']['historical_token_occurrences']}"
+            f"historical_reads={retrieval['historical_token_occurrences']}, "
+            f"budget_utilization={retrieval.get('historical_budget_utilization', 0.0):.3f}, "
+            f"overlap={retrieval['overlap_occurrences']}, "
+            f"temporal_stability={retrieval['temporal_stability']:.3f}"
         )
     for name, comparison in result["summary"].get("paired_utility", {}).items():
         interval = comparison["paired_bootstrap_95_interval_nats"]

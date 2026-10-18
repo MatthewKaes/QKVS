@@ -301,6 +301,7 @@ def build_policy(
     condition: dict[str, Any],
     controls: dict[str, Any],
     learned_policy: SelectionPolicy | None = None,
+    untrained_policy: SelectionPolicy | None = None,
 ) -> SelectionPolicy:
     policy = condition["policy"]
     if policy == "rolling":
@@ -313,4 +314,8 @@ def build_policy(
         if learned_policy is None:
             raise ValueError("learned heat-field policy requires a trained checkpoint")
         return learned_policy
+    if policy == "heatfield_untrained":
+        if untrained_policy is None:
+            raise ValueError("untrained heat-field control requires its initialized policy")
+        return untrained_policy
     raise ValueError(f"unsupported selection policy: {policy}")
