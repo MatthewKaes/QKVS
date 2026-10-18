@@ -8,7 +8,7 @@ packages = ["qkvs"]
 [project]
 name = "qkvs-research"
 version = "0.1.0"
-description = "Research prototype for learned direct-address sparse attention"
+description = "Research harness for causal heat-field attention allocation"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [

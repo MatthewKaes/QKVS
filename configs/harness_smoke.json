@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "experiment": "harness_synthetic_verification",
+  "status": "harness_verification",
+  "run": {
+    "id": "harness-smoke",
+    "seed": 20261018
+  },
+  "model": {
+    "backend": "synthetic",
+    "frozen": true,
+    "vocab_size": 32,
+    "width": 32,
+    "layers": 2,
+    "heads": 4,
+    "seed": 20261019
+  },
+  "data": {
+    "kind": "synthetic",
+    "streams": 4,
+    "sequence_tokens": 24,
+    "seed": 20261020
+  },
+  "attention": {
+    "rolling_tokens": 4,
+    "historical_token_budget": 4
+  },
+  "selection": {
+    "proposal_count": 2,
+    "window_width": 2,
+    "gamma": {
+      "mode": "disabled"
+    },
+    "beta": {
+      "mode": "disabled"
+    },
+    "conditions": [
+      {
+        "name": "rolling",
+        "policy": "rolling"
+      },
+      {
+        "name": "fixed_offsets",
+        "policy": "fixed_offsets",
+        "offsets": [
+          8,
+          16
+        ]
+      }
+    ]
+  },
+  "evaluation": {
+    "metric": "next_token_cross_entropy",
+    "paired_conditions": true,
+    "baseline": "rolling",
+    "bootstrap_samples": 200
+  },
+  "execution": {
+    "allowed_devices": [
+      "cpu"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

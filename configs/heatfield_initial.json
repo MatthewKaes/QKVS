@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "experiment": "heatfield_initial",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "heatfield-initial",
+    "seed": 20261101
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "frozen": true
+  },
+  "data": {
+    "kind": "long_context_reading",
+    "streams": 128,
+    "sequence_tokens": 8192,
+    "seed": 20261102
+  },
+  "attention": {
+    "rolling_tokens": 256,
+    "historical_token_budget": 256
+  },
+  "selection": {
+    "proposal_count": 8,
+    "window_width": 32,
+    "gamma": {
+      "mode": "learned"
+    },
+    "beta": {
+      "mode": "learned"
+    },
+    "conditions": [
+      {
+        "name": "rolling",
+        "policy": "rolling"
+      },
+      {
+        "name": "fixed_offsets",
+        "policy": "fixed_offsets",
+        "offsets": [
+          512,
+          1024,
+          1536,
+          2048,
+          2560,
+          3072,
+          3584,
+          4096
+        ]
+      },
+      {
+        "name": "heatfield",
+        "policy": "heatfield"
+      }
+    ]
+  },
+  "evaluation": {
+    "metric": "next_token_cross_entropy",
+    "paired_conditions": true,
+    "baseline": "rolling",
+    "bootstrap_samples": 2000
+  },
+  "execution": {
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

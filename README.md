@@ -3,7 +3,7 @@
 > **Independent research prototype — not a validated replacement for dense attention.**
 > QKVS investigates whether a decoder-only autoregressive transformer can **learn where to spend a bounded historical attention budget**, guided by semantics and a compact causal memory of previous selection states, without scanning the entire historical KV cache at inference.
 >
-> This README is the enduring **research charter and conceptual specification**, not an experimental preregistration. See [AGENTS.md](AGENTS.md) for agent operating rules, the [Stage B preregistration](docs/stage_b_preregistration.md) for frozen experimental details, and the [execution decision](docs/stage_b_execution_decision.md) for the latest recorded results and stops.
+> This README is the enduring **research charter and conceptual specification**, not an experimental preregistration. See [AGENTS.md](AGENTS.md) for agent operating rules and the [initial heat-field preregistration draft](docs/heatfield_preregistration.md) for the next proposed experiment.
 
 ## The idea in one picture
 
@@ -57,7 +57,7 @@ H_t^\ell(x) = \sum_{j=1}^{J}g_jw_j\,\kappa_{\beta}(x;\mu_j,\sigma_j).
 
 The implementation must **not** materialize `H(x)` for all `N` positions and then run a top-k scan in deployment. It must map a fixed number of proposal parameters directly to bounded addresses/windows; a dense plot is for explanation and **offline supervision only**.
 
-A proposed **64-slot** allocation study offers substantially more room for clustered and distributed proposals than the earlier eight-slot controls. This is a *capacity hypothesis*, not an experimentally proven minimum. Increasing `J` without holding `R` fixed also changes attention cost: 64 windows of 32 tokens cost 2,048 historical reads, while 64 windows of four tokens cost 256. Compare `J`, window width, and `R` separately. Likewise, eight **directory entries** in Stage B do not imply that eight *heat proposals* are sufficient.
+A proposed **64-slot** allocation study offers substantially more room for clustered and distributed proposals than earlier eight-slot controls. This is a *capacity hypothesis*, not an experimentally proven minimum. Increasing `J` without holding `R` fixed also changes attention cost: 64 windows of 32 tokens cost 2,048 historical reads, while 64 windows of four tokens cost 256. Compare `J`, window width, and `R` separately. A positive-control directory size does not imply that the same number of *heat proposals* is sufficient.
 
 ## Temporal propagation is part of the model: γ (gamma)
 
@@ -156,7 +156,64 @@ These terms have different scales; **weights, normalization, curriculum, and est
 1. **Strict single-pass autoregression.** Token `t` and layer `ℓ` use only information available before their selection/attention operation. No second question pass, future-dependent historical writes, or changes to earlier token states. Validate causal masking and incremental KV-cache execution separately from numerical floating-point equality.
 2. **Bounded selection.** For fixed model dimensions and fixed `J`, `L`, and `R`, incremental historical selection and attention work must not grow with total context `N`. Intended per-token work is `O(J + L + R)` (plus fixed-size latent computation); historical KV storage is still `O(N)`.
 3. **Independent selection pathway.** S's parameters are distinct from Q/K/V. Q/K/V read **real historical KV entries** after selection. Selector annotations, full-context teacher state, directory values, and answer labels must not bypass the selected attention path into decoder logits.
-4. **Causal state evolution.** Cross-token state is updated from current/past representations only; cross-layer refinement follows the model's forward order. A bounded external directory is permitted as an experimental control, not assumed necessary or sufficient for QKVS.
+4. **Causal state evolution.** Cross-token state is updated from current/past representations only; cross-layer refinement follows the model's forward order. Recurrent selector state remains bounded independently of context length.
 5. **Identifiability.** No model can infer an arbitrary randomized semantic-to-position mapping from a causal query state that does not contain such information. A learned spatial prior can succeed on *predictable structure*; exact arbitrary bindings require causally preserved organization or an allowed bounded index. Test these separately.
 6. **Comparable research controls.** Hold task, frozen reader, token budget, causal schedule, answer scoring, source revision, and training/evaluation split constant wherever comparisons require them. Numerical backend changes can affect measured utility and must be reported.
 
+## Research harness
+
+QKVS uses one configuration-driven runtime. Selection policies emit bounded spatial proposals;
+the reader resolves them directly to historical windows, gathers the corresponding entries from
+its real K/V cache, and records every token occurrence actually read. Rolling-only and alternative
+policies use the same causal execution and scoring path.
+
+The current executable milestone is a deterministic CPU verification using a small frozen
+transformer. It establishes harness mechanics only. The initial learned heat-field configuration
+and preregistration are review drafts and cannot be run until their remaining scientific choices
+are frozen and independently authorized.
+
+```text
+configuration
+    -> shared harness lifecycle
+        -> selection policy -> bounded proposal resolution
+        -> frozen reader -> actual rolling + historical K/V gathers
+        -> shared per-token and retrieval metrics
+    -> atomic run artifact
+```
+
+The public command surface is:
+
+```bash
+python -m qkvs --help
+python -m qkvs validate --config configs/harness_smoke.json
+python -m qkvs run --config configs/harness_smoke.json --device cpu
+python -m qkvs status --run artifacts/results/harness-smoke
+python -m qkvs summarize --run artifacts/results/harness-smoke
+```
+
+The intended human-started interface for an approved GPU experiment is:
+
+```bash
+python -m qkvs run \
+  --config configs/heatfield_initial.json \
+  --device cuda
+```
+
+That command currently refuses to run because `heatfield_initial.json` is
+`draft_not_authorized` and the learned policy/model adapter are deliberately absent. Codex must not
+run CUDA workloads. Configuration validation, status, and summarization do not import the model
+runtime or initialize CUDA.
+
+## Configuration and artifacts
+
+Configurations keep proposal count, window width, and historical token-occurrence budget separate.
+They declare the rolling baseline, matched alternative policies, gamma and beta controls, scoring,
+data identity, device authorization, and run ID. Unsupported combinations fail validation.
+
+Each run writes `artifacts/results/<run-id>/result.json`. The artifact contains source and config
+hashes, raw per-token losses, actual K/V access indices, overlap and coverage measurements, paired
+utility, deterministic bootstrap uncertainty, progress, and completion state. Writes are atomic;
+rerunning the same command resumes without duplicating completed condition/stream pairs.
+
+See [the draft heat-field preregistration](docs/heatfield_preregistration.md) for the proposed first
+result-bearing study. Passing the CPU smoke run does not authorize or support that study.

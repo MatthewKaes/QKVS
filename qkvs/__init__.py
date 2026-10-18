@@ -1,6 +1,3 @@
-"""Learned direct-address sparse attention research prototype."""
+"""Causal heat-field research harness."""
 
-from qkvs.config import AttentionConfig, ModelConfig
-from qkvs.model import QKVSDecoder
-
-__all__ = ["AttentionConfig", "ModelConfig", "QKVSDecoder"]
+__all__: list[str] = []
