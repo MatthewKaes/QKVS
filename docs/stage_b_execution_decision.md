@@ -181,3 +181,9 @@ Read-only progress is available without initializing CUDA:
 ```bash
 .venv/bin/python -m qkvs.stage_b_numerical_validation --status
 ```
+
+The default status is a concise progress summary for terminal use. Add `--json` when a machine-readable
+status record is required.
+Status inspection remains read-only when the current checkout differs from the measurement source;
+it reports both revisions, the current tracked-tree state, and the artifact SHA-256 instead of
+rejecting the preserved result.

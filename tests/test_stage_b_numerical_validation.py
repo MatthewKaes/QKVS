@@ -13,7 +13,10 @@ from qkvs.stage_b_numerical_validation import (
     _execution_status,
     _incremental_hidden_cache,
     _layer_zero_kv_comparison,
+    _print_execution_status,
+    _progress_bar,
     _recover_interrupted_unit,
+    _status_with_checkout,
     _validate_proposal,
 )
 
@@ -121,3 +124,53 @@ def test_interrupted_unit_is_recoverable_from_last_atomic_checkpoint() -> None:
     assert status["completed_units"] == 0
     assert status["total_units"] == 4
     assert status["next_unit"] == active
+
+
+def test_progress_bar_reports_durable_aggregate_units() -> None:
+    assert _progress_bar(0, 12) == "[------------------------] 0/12"
+    assert _progress_bar(3, 12) == "[######------------------] 3/12"
+    assert _progress_bar(12, 12) == "[########################] 12/12"
+
+
+def test_human_status_summarizes_progress_without_dumping_json(capsys) -> None:
+    _print_execution_status(
+        {
+            "status": "checkpointed",
+            "completed_units": 3,
+            "total_units": 12,
+            "active_unit": None,
+            "next_unit": {"example_index": 2, "condition": "bf16_sdpa_default"},
+            "decision": {"outcome": "incomplete"},
+        },
+        output=Path("result.json"),
+        as_json=False,
+    )
+    output = capsys.readouterr().out
+    assert "[######------------------] 3/12" in output
+    assert "Next: example 2, condition bf16_sdpa_default" in output
+    assert '"remaining_units"' not in output
+
+
+def test_read_only_status_reports_checkout_drift_without_rejecting_artifact(tmp_path) -> None:
+    artifact = tmp_path / "result.json"
+    artifact.write_text("{}\n")
+    status = _status_with_checkout(
+        {
+            "status": "complete",
+            "completed_units": 12,
+            "total_units": 12,
+            "source_revision": "measurement-revision",
+            "decision": {"outcome": "passed_return_for_independent_arbitration"},
+        },
+        identity={
+            "git_revision": "current-revision",
+            "tracked_files_clean": False,
+        },
+        output=artifact,
+    )
+    assert status["artifact_sha256"]
+    assert status["checkout"] == {
+        "git_revision": "current-revision",
+        "tracked_files_clean": False,
+        "matches_artifact_source": False,
+    }

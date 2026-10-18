@@ -6,7 +6,9 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -491,10 +493,12 @@ def _run_condition(
     example: Any,
     *,
     device: torch.device,
+    report_progress: Callable[[str], None],
 ) -> dict[str, Any]:
     name = condition["name"]
-    print(f"example={example.index} condition={name} phase=load", flush=True)
+    report_progress("loading frozen model")
     model = _load_model(specification, condition, device)
+    report_progress("frozen model loaded")
     names = _state_names(model)
     input_ids = torch.tensor(example.input_ids, dtype=torch.long, device=device)[None]
     geometry = specification["geometry"]
@@ -537,7 +541,7 @@ def _run_condition(
         )
         torch.cuda.synchronize(device)
         timings["rolling_batched_seconds"] = time.perf_counter() - started
-        print(f"example={example.index} condition={name} phase=rolling_batch", flush=True)
+        report_progress("rolling batched trace captured")
 
         started = time.perf_counter()
         if is_fp32:
@@ -555,7 +559,7 @@ def _run_condition(
         rolling_layer_zero, rolling_key, rolling_value = _layer_zero_kv_comparison(
             model, input_ids, rolling_cache, example=example
         )
-        print(f"example={example.index} condition={name} phase=rolling_incremental", flush=True)
+        report_progress("rolling incremental trace captured")
 
         future_counterfactuals = {}
         if has_causal_checks:
@@ -581,7 +585,7 @@ def _run_condition(
                     ),
                 }
                 del changed_ids, changed_trace
-            print(f"example={example.index} condition={name} phase=future_checks", flush=True)
+            report_progress("future-prefix checks completed")
 
         trace_summary = None
         prefix_replays = {}
@@ -616,7 +620,7 @@ def _run_condition(
                     names,
                 )
                 del prefix_trace
-            print(f"example={example.index} condition={name} phase=fp32_trace", flush=True)
+            report_progress("FP32 trace checks completed")
 
         repeatability = None
         if is_bf16:
@@ -654,7 +658,7 @@ def _run_condition(
         oracle_layer_zero, oracle_key, oracle_value = _layer_zero_kv_comparison(
             model, input_ids, oracle_cache, example=example
         )
-        print(f"example={example.index} condition={name} phase=oracle_paths", flush=True)
+        report_progress("causal-oracle paths captured")
 
         if is_bf16:
             oracle_repeat_hidden, oracle_repeat_cache, oracle_repeat_cache_summary = (
@@ -877,6 +881,101 @@ def _execution_status(
     }
 
 
+def _status_with_checkout(
+    status: dict[str, Any],
+    *,
+    identity: dict[str, Any],
+    output: Path,
+) -> dict[str, Any]:
+    artifact_source = status["source_revision"]
+    return {
+        **status,
+        "artifact_sha256": _sha256(output),
+        "checkout": {
+            "git_revision": identity["git_revision"],
+            "tracked_files_clean": identity["tracked_files_clean"],
+            "matches_artifact_source": identity["git_revision"] == artifact_source,
+        },
+    }
+
+
+def _progress_bar(completed: int, total: int) -> str:
+    width = 24
+    filled = width if total == 0 else width * completed // total
+    return f"[{'#' * filled}{'-' * (width - filled)}] {completed}/{total}"
+
+
+def _print_execution_status(
+    status: dict[str, Any],
+    *,
+    output: Path,
+    as_json: bool,
+) -> None:
+    if as_json:
+        print(json.dumps({**status, "output": str(output)}, indent=2, sort_keys=True))
+        return
+
+    state = status["status"].replace("_", " ")
+    bar = _progress_bar(status["completed_units"], status["total_units"])
+    print(f"Stage B validation {bar}: {state}")
+    active = status.get("active_unit")
+    next_unit = status.get("next_unit")
+    if active is not None:
+        print(
+            f"Active: example {active['example_index']}, condition {active['condition']} "
+            "has no completed checkpoint."
+        )
+    elif next_unit is not None:
+        print(f"Next: example {next_unit['example_index']}, condition {next_unit['condition']}")
+    else:
+        print("All required validation units have completed checkpoints.")
+    decision = status.get("decision")
+    if decision is not None:
+        print(f"Decision: {decision['outcome']}; Stage B remains blocked.")
+    checkout = status.get("checkout")
+    if checkout is not None:
+        match = "matches" if checkout["matches_artifact_source"] else "differs from"
+        clean = "clean" if checkout["tracked_files_clean"] else "has tracked changes"
+        print(
+            f"Measurement source: {status['source_revision']}; current checkout "
+            f"{checkout['git_revision']} {match} it and {clean}."
+        )
+    artifact_sha256 = status.get("artifact_sha256")
+    if artifact_sha256 is not None:
+        print(f"Artifact SHA-256: {artifact_sha256}")
+    print(f"Artifact: {output}")
+
+
+class _Progress:
+    """Reports aggregate progress without overstating interrupted work.
+
+    Each example and condition pair is one durable step. Phase labels describe
+    work inside the active step, but the bar advances only after its atomic
+    checkpoint is written, so resumed output agrees with the saved artifact.
+    """
+
+    def __init__(self, *, completed: int, total: int) -> None:
+        self.completed = completed
+        self.total = total
+        self.started = time.perf_counter()
+
+    def _report(self, detail: str) -> None:
+        elapsed = int(time.perf_counter() - self.started)
+        print(
+            f"Stage B validation {_progress_bar(self.completed, self.total)} "
+            f"{detail} ({elapsed // 60:02d}:{elapsed % 60:02d})",
+            flush=True,
+        )
+
+    def phase(self, *, example_index: int, condition: str, phase: str) -> None:
+        self._report(f"example {example_index}, {condition}: {phase}")
+
+    def complete(self, *, example_index: int, condition: str, passed: bool) -> None:
+        self.completed += 1
+        outcome = "passed" if passed else "failed"
+        self._report(f"example {example_index}, {condition}: checkpointed ({outcome})")
+
+
 def _recover_interrupted_unit(result: dict[str, Any]) -> bool:
     execution = result.setdefault(
         "execution_state",
@@ -967,9 +1066,16 @@ def main() -> None:
     )
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit --status as JSON instead of the human-readable progress summary.",
+    )
     args = parser.parse_args()
     if args.max_conditions_this_run is not None and args.max_conditions_this_run <= 0:
         parser.error("--max-conditions-this-run must be positive")
+    if args.json and not args.status:
+        parser.error("--json requires --status")
 
     proposal = load_json(args.proposal)
     _validate_proposal(proposal)
@@ -998,8 +1104,6 @@ def main() -> None:
         return
 
     identity = _source_identity(args.proposal, proposal)
-    if not identity["tracked_files_clean"]:
-        raise ValueError("numerical-validation source files must be committed before measurement")
     expected = {
         "proposal": proposal,
         "base_config": specification,
@@ -1011,33 +1115,35 @@ def main() -> None:
     output = Path(args.output) if args.output else _OUTPUT
     if args.status:
         if not output.exists():
-            print(
-                json.dumps(
-                    {
-                        "status": "not_started",
-                        "completed_units": 0,
-                        "total_units": len(examples) * len(conditions),
-                        "source_revision": identity["git_revision"],
-                        "output": str(output),
+            _print_execution_status(
+                {
+                    "status": "not_started",
+                    "completed_units": 0,
+                    "total_units": len(examples) * len(conditions),
+                    "active_unit": None,
+                    "next_unit": {
+                        "example_index": examples[0].index,
+                        "condition": conditions[0]["name"],
                     },
-                    indent=2,
-                    sort_keys=True,
-                )
+                    "source_revision": identity["git_revision"],
+                },
+                output=output,
+                as_json=args.json,
             )
             return
         status_result = load_json(output)
-        actual = {key: status_result.get(key) for key in expected}
-        if actual != expected:
-            raise ValueError("existing validation output does not match source or protocol")
-        print(
-            json.dumps(
-                _execution_status(status_result, examples=examples, conditions=conditions),
-                indent=2,
-                sort_keys=True,
-            )
+        if status_result.get("test") != proposal["protocol"]:
+            raise ValueError("status artifact does not match the requested protocol")
+        status = _execution_status(status_result, examples=examples, conditions=conditions)
+        _print_execution_status(
+            _status_with_checkout(status, identity=identity, output=output),
+            output=output,
+            as_json=args.json,
         )
         return
 
+    if not identity["tracked_files_clean"]:
+        raise ValueError("numerical-validation source files must be committed before measurement")
     if not torch.cuda.is_available():
         raise RuntimeError("approved numerical validation requires CUDA")
     if output.exists():
@@ -1045,6 +1151,12 @@ def main() -> None:
         _validate_resume(result, expected)
         if _recover_interrupted_unit(result):
             write_json(output, result)
+            recovered = result["execution_state"]["recovery_events"][-1]["unit"]
+            print(
+                f"Recovered interrupted example {recovered['example_index']}, condition "
+                f"{recovered['condition']}; restarting it from the last complete checkpoint.",
+                flush=True,
+            )
     else:
         result = {
             "schema_version": 1,
@@ -1087,13 +1199,10 @@ def main() -> None:
     remaining = all_remaining
     if args.max_conditions_this_run is not None:
         remaining = remaining[: args.max_conditions_this_run]
-    print(
-        json.dumps(
-            _execution_status(result, examples=examples, conditions=conditions),
-            indent=2,
-            sort_keys=True,
-        ),
-        flush=True,
+    initial_status = _execution_status(result, examples=examples, conditions=conditions)
+    progress = _Progress(
+        completed=initial_status["completed_units"],
+        total=initial_status["total_units"],
     )
     for example, condition in remaining:
         _start_unit(
@@ -1102,12 +1211,18 @@ def main() -> None:
             condition=condition["name"],
         )
         write_json(output, result)
+
         measured = _run_condition(
             proposal,
             specification,
             condition,
             example,
             device=torch.device(args.device),
+            report_progress=partial(
+                progress.phase,
+                example_index=example.index,
+                condition=condition["name"],
+            ),
         )
         result["examples"][str(example.index)]["conditions"][condition["name"]] = measured
         _refresh_decision(result, examples=examples, conditions=conditions)
@@ -1122,36 +1237,27 @@ def main() -> None:
                 "complete" if result["decision"]["passed"] else "failed_stop"
             )
         write_json(output, result)
-        print(
-            json.dumps(
-                {
-                    "completed_example": example.index,
-                    "completed_condition": condition["name"],
-                    "condition_passed": measured["passed"],
-                    "decision": result["decision"],
-                    "progress": _execution_status(
-                        result,
-                        examples=examples,
-                        conditions=conditions,
-                    ),
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        progress.complete(
+            example_index=example.index,
+            condition=condition["name"],
+            passed=measured["passed"],
         )
         if result["decision"]["outcome"] == "failed_stop":
+            _print_execution_status(
+                _execution_status(result, examples=examples, conditions=conditions),
+                output=output,
+                as_json=False,
+            )
             raise SystemExit(1)
 
     if not all_remaining:
         _refresh_decision(result, examples=examples, conditions=conditions)
         write_json(output, result)
-        print(
-            json.dumps(
-                _execution_status(result, examples=examples, conditions=conditions),
-                indent=2,
-                sort_keys=True,
-            )
-        )
+    _print_execution_status(
+        _execution_status(result, examples=examples, conditions=conditions),
+        output=output,
+        as_json=False,
+    )
 
 
 if __name__ == "__main__":
