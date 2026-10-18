@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -8,12 +9,40 @@ from pathlib import Path
 import pytest
 
 from qkvs.harness import (
+    _LiveProgress,
+    _progress_line,
     load_run,
     run_experiment,
     status,
     validate_config,
     validate_config_file,
 )
+
+
+def test_live_progress_uses_fixed_counter_and_space_filled_bar() -> None:
+    line = _progress_line(3, 384, "heatfield / stream-002", 65)
+    assert line.startswith("[   3 / 384 ] [#")
+    bar = line.split("] [", maxsplit=1)[1].split("]", maxsplit=1)[0]
+    assert len(bar) == 40
+    assert set(bar) <= {"#", " "}
+    assert line.endswith("heatfield / stream-002 : 00:01:05")
+
+
+def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
+    output = io.StringIO()
+    progress = _LiveProgress(
+        completed=2,
+        total=12,
+        stream=output,
+        interval_seconds=60.0,
+    )
+    progress.start_job("fixed_offsets / synthetic-002")
+    progress.complete_job()
+    progress.close()
+    rendered = output.getvalue()
+    assert rendered.count("\r") >= 3
+    assert rendered.count("\n") == 1
+    assert "[  3 / 12 ]" in rendered
 
 
 def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> None:

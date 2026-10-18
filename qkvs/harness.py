@@ -7,8 +7,10 @@ import platform
 import random
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from qkvs.metrics import summarize_measurements
 
@@ -24,6 +26,96 @@ _SOURCE_FILES = (
     "qkvs/selection.py",
     "qkvs/metrics.py",
 )
+_PROGRESS_WIDTH = 40
+
+
+def _progress_bar(current: int, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
+    if total <= 0:
+        filled = width
+    else:
+        filled = width * min(current, total) // total
+        if current > 0:
+            filled = max(1, filled)
+    return "#" * filled + " " * (width - filled)
+
+
+def _progress_line(current: int, total: int, job: str, elapsed_seconds: float) -> str:
+    counter_width = len(str(total)) + 1
+    elapsed = max(0, int(elapsed_seconds))
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return (
+        f"[{current:>{counter_width}} / {total} ] "
+        f"[{_progress_bar(current, total)}] {job} : "
+        f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    )
+
+
+class _LiveProgress:
+    """Render one durable job counter with a transient one-second heartbeat."""
+
+    def __init__(
+        self,
+        *,
+        completed: int,
+        total: int,
+        stream: TextIO = sys.stdout,
+        interval_seconds: float = 1.0,
+    ) -> None:
+        self.completed = completed
+        self.total = total
+        self.stream = stream
+        self.interval_seconds = interval_seconds
+        self.active_job: str | None = None
+        self.running = False
+        self.started = time.monotonic()
+        self.last_width = 0
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
+        self.thread.start()
+
+    def _heartbeat(self) -> None:
+        while not self.stop.wait(self.interval_seconds):
+            self.render()
+
+    def _current(self) -> int:
+        if not self.running:
+            return self.completed
+        return min(self.completed + 1, self.total)
+
+    def render(self) -> None:
+        with self.lock:
+            job = self.active_job or "complete"
+            line = _progress_line(
+                self._current(),
+                self.total,
+                job,
+                time.monotonic() - self.started,
+            )
+            self.stream.write("\r" + line + " " * max(0, self.last_width - len(line)))
+            self.stream.flush()
+            self.last_width = len(line)
+
+    def start_job(self, job: str) -> None:
+        with self.lock:
+            self.active_job = job
+            self.running = True
+            self.started = time.monotonic()
+        self.render()
+
+    def complete_job(self) -> None:
+        with self.lock:
+            self.completed += 1
+            self.running = False
+        self.render()
+
+    def close(self) -> None:
+        self.stop.set()
+        self.thread.join()
+        self.render()
+        self.stream.write("\n")
+        self.stream.flush()
 
 
 def _sha256(path: Path) -> str:
@@ -342,51 +434,50 @@ def run_experiment(
         for stream in result["streams"]
     ]
     total = len(units)
-    for condition, stream_record in units:
-        unit = (condition["name"], stream_record["stream_id"])
-        if unit in completed:
-            continue
-        policy = build_policy(condition, specification["selection"])
-        stream = TokenStream(
-            stream_id=stream_record["stream_id"],
-            tokens=tuple(stream_record["tokens"]),
-            support_positions=tuple(stream_record["support_positions"]),
-        )
-        token_scores = reader.execute(
-            stream,
-            policy,
-            rolling_tokens=specification["attention"]["rolling_tokens"],
-            historical_token_budget=specification["attention"]["historical_token_budget"],
-            window_width=specification["selection"]["window_width"],
-            device=torch_device,
-        )
-        result["measurements"].append(
-            {
-                "condition": condition["name"],
-                "policy": condition["policy"],
-                "stream_id": stream.stream_id,
-                "token_scores": [score.as_dict() for score in token_scores],
-            }
-        )
-        result["measurements"].sort(
-            key=lambda measurement: (measurement["condition"], measurement["stream_id"])
-        )
-        completed.add(unit)
-        result["summary"] = summarize_measurements(
-            result["measurements"],
-            baseline=specification["evaluation"]["baseline"],
-            bootstrap_samples=specification["evaluation"]["bootstrap_samples"],
-            seed=specification["run"]["seed"],
-        )
-        result["complete"] = len(completed) == total
-        _write_json(output, result)
-        width = 24
-        filled = width * len(completed) // total
-        print(
-            f"[{'#' * filled}{'-' * (width - filled)}] {len(completed)}/{total} "
-            f"{condition['name']} {stream.stream_id}",
-            flush=True,
-        )
+    progress = _LiveProgress(completed=len(completed), total=total)
+    try:
+        for condition, stream_record in units:
+            unit = (condition["name"], stream_record["stream_id"])
+            if unit in completed:
+                continue
+            progress.start_job(f"{condition['name']} / {stream_record['stream_id']}")
+            policy = build_policy(condition, specification["selection"])
+            stream = TokenStream(
+                stream_id=stream_record["stream_id"],
+                tokens=tuple(stream_record["tokens"]),
+                support_positions=tuple(stream_record["support_positions"]),
+            )
+            token_scores = reader.execute(
+                stream,
+                policy,
+                rolling_tokens=specification["attention"]["rolling_tokens"],
+                historical_token_budget=specification["attention"]["historical_token_budget"],
+                window_width=specification["selection"]["window_width"],
+                device=torch_device,
+            )
+            result["measurements"].append(
+                {
+                    "condition": condition["name"],
+                    "policy": condition["policy"],
+                    "stream_id": stream.stream_id,
+                    "token_scores": [score.as_dict() for score in token_scores],
+                }
+            )
+            result["measurements"].sort(
+                key=lambda measurement: (measurement["condition"], measurement["stream_id"])
+            )
+            completed.add(unit)
+            result["summary"] = summarize_measurements(
+                result["measurements"],
+                baseline=specification["evaluation"]["baseline"],
+                bootstrap_samples=specification["evaluation"]["bootstrap_samples"],
+                seed=specification["run"]["seed"],
+            )
+            result["complete"] = len(completed) == total
+            _write_json(output, result)
+            progress.complete_job()
+    finally:
+        progress.close()
     return output, _load_json(output)
 
 
@@ -422,10 +513,12 @@ def status(path: str | Path) -> dict[str, Any]:
 def print_status(value: dict[str, Any]) -> None:
     total = value["total_units"]
     completed = value["completed_units"]
-    width = 24
-    filled = width if total == 0 else width * completed // total
     state = "complete" if value["complete"] else "incomplete"
-    print(f"QKVS [{'#' * filled}{'-' * (width - filled)}] {completed}/{total}: {state}")
+    counter_width = len(str(total)) + 1
+    print(
+        f"QKVS [{completed:>{counter_width}} / {total} ] "
+        f"[{_progress_bar(completed, total)}] {state}"
+    )
     print(f"Run: {value['run_id']}")
     print(f"Source: {value['source_revision']}")
     print(f"Artifact SHA-256: {value['artifact_sha256']}")
