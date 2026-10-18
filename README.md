@@ -263,30 +263,39 @@ qkvs status --run artifacts/results/harness-smoke
 qkvs summarize --run artifacts/results/harness-smoke
 ```
 
-QKVS is installed as an application with `uv tool`; it does not use a repository `.venv` or modify
-the operating system's Python packages. The pinned stack supports Python 3.14, which `uv` uses for
-the installed `qkvs` command. The approved pilot has a repository-root helper:
+`uv` is the bootstrap package manager: it creates an isolated user-level environment and installs
+the `qkvs` command with its Python dependencies. It is not part of experiment execution. QKVS does
+not use a repository `.venv` or modify the operating system's Python packages. The pinned stack
+supports Python 3.14, which `uv` uses to bootstrap the installed command:
 
 ```bash
-./run_long_context_pilot.sh --setup-only  # one-time setup and CPU-safe validation
-./run_long_context_pilot.sh               # human-initiated GPU pilot or resume
+./bootstrap.sh
 ```
 
-The helper installs the current checkout as an editable `uv` tool using Python 3.14, validates the
-configuration, checks driver health before launch, and then invokes the existing CLI. Re-running it
-refreshes the installed command to the current checkout. The setup-only form never starts the
-experiment or probes CUDA.
+Bootstrap installs the current checkout as an editable tool with its runtime dependencies. Run it
+again only when the package metadata or dependencies change. It does not validate or execute an
+experiment.
 
-`uv` installs commands in its user tool bin directory. The helper calls that path directly. To use
-`qkvs` from any shell, run `uv tool update-shell` once and start a new shell if `uv tool install`
-reports that its bin directory is not already on `PATH`.
-
-The proposed human-started interface for the long-context held-out learning study is:
+Execution is independent of `uv`. `run.sh` accepts a configuration, validates it, selects its sole
+declared `execution.allowed_devices` entry, checks driver health for CUDA, and invokes the installed
+CLI:
 
 ```bash
-qkvs run \
-  --config configs/heatfield_learning_study.json \
-  --device cuda
+./run.sh configs/harness_smoke.json
+./run.sh configs/heatfield_learning_study.json
+```
+
+Configurations intended for `run.sh` must authorize exactly one device. Use the public `qkvs run`
+command directly when choosing among multiple authorized devices.
+
+`uv` installs commands in its user tool bin directory. `run.sh` uses `qkvs` from `PATH` or its
+default user-tool location. To use `qkvs` directly from any shell, run `uv tool update-shell` once
+and start a new shell if `uv tool install` reports that its bin directory is not already on `PATH`.
+
+The human-started interface for the long-context held-out learning study is:
+
+```bash
+./run.sh configs/heatfield_learning_study.json
 ```
 
 The study configuration is `approved` for one human-initiated exploratory learning/feasibility
