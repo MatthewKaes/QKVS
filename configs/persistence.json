@@ -1,9 +1,0 @@
-{
-  "name": "one_hop_memory_persistence",
-  "seed": 7701,
-  "checkpoint": "artifacts/checkpoints/one_hop_learned.pt",
-  "sequence_lengths": [96, 192, 384],
-  "modes": ["frequent", "once", "never_until_query", "no_access"],
-  "batch_size": 8,
-  "batches": 16
-}

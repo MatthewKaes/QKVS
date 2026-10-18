@@ -1,9 +1,0 @@
-{
-  "name": "learned_overlap_ablation",
-  "seed": 8701,
-  "checkpoint": "artifacts/checkpoints/one_hop_learned.pt",
-  "sequence_lengths": [96, 192, 384],
-  "batch_size": 8,
-  "batches": 16,
-  "equivalence_trials": 100
-}
