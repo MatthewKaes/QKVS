@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -833,6 +834,124 @@ def _validate_resume(result: dict[str, Any], expected: dict[str, Any]) -> None:
         raise ValueError("validation already reached a frozen stop condition")
 
 
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _completed_units(result: dict[str, Any]) -> set[tuple[str, str]]:
+    return {
+        (example_index, condition_name)
+        for example_index, example_result in result["examples"].items()
+        for condition_name in example_result["conditions"]
+    }
+
+
+def _execution_status(
+    result: dict[str, Any],
+    *,
+    examples: list[Any],
+    conditions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    required = [
+        {"example_index": example.index, "condition": condition["name"]}
+        for example in examples
+        for condition in conditions
+    ]
+    completed = _completed_units(result)
+    remaining = [
+        unit
+        for unit in required
+        if (str(unit["example_index"]), unit["condition"]) not in completed
+    ]
+    execution = result.get("execution_state", {})
+    return {
+        "status": execution.get("status", "legacy_checkpoint"),
+        "completed_units": len(required) - len(remaining),
+        "total_units": len(required),
+        "active_unit": execution.get("active_unit"),
+        "next_unit": remaining[0] if remaining else None,
+        "remaining_units": remaining,
+        "recovery_events": execution.get("recovery_events", []),
+        "decision": result["decision"],
+        "source_revision": result["source_identity"]["git_revision"],
+    }
+
+
+def _recover_interrupted_unit(result: dict[str, Any]) -> bool:
+    execution = result.setdefault(
+        "execution_state",
+        {
+            "status": "ready",
+            "active_unit": None,
+            "attempts": [],
+            "recovery_events": [],
+        },
+    )
+    active = execution.get("active_unit")
+    if active is None:
+        return False
+    unit = (str(active["example_index"]), active["condition"])
+    if unit in _completed_units(result):
+        execution["active_unit"] = None
+        execution["status"] = "checkpointed"
+        return True
+    recovered_at = _timestamp()
+    for attempt in reversed(execution["attempts"]):
+        if attempt["status"] == "running" and attempt["unit"] == active:
+            attempt["status"] = "interrupted_before_checkpoint"
+            attempt["recovered_at"] = recovered_at
+            break
+    execution["recovery_events"].append(
+        {
+            "unit": active,
+            "detected_at": recovered_at,
+            "action": "resume_same_frozen_unit_from_previous_atomic_checkpoint",
+        }
+    )
+    execution["active_unit"] = None
+    execution["status"] = "recovered_interrupted_unit"
+    return True
+
+
+def _start_unit(
+    result: dict[str, Any],
+    *,
+    example_index: int,
+    condition: str,
+) -> None:
+    execution = result["execution_state"]
+    unit = {"example_index": example_index, "condition": condition}
+    attempt = {
+        "attempt": len(execution["attempts"]) + 1,
+        "unit": unit,
+        "status": "running",
+        "started_at": _timestamp(),
+        "pid": os.getpid(),
+    }
+    execution["attempts"].append(attempt)
+    execution["active_unit"] = unit
+    execution["status"] = "running"
+
+
+def _complete_unit(
+    result: dict[str, Any],
+    *,
+    example_index: int,
+    condition: str,
+    passed: bool,
+) -> None:
+    execution = result["execution_state"]
+    unit = {"example_index": example_index, "condition": condition}
+    for attempt in reversed(execution["attempts"]):
+        if attempt["status"] == "running" and attempt["unit"] == unit:
+            attempt["status"] = "completed"
+            attempt["completed_at"] = _timestamp()
+            attempt["condition_passed"] = passed
+            break
+    execution["active_unit"] = None
+    execution["status"] = "checkpointed" if passed else "failed_stop"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run approved Stage B numerical validation")
     parser.add_argument(
@@ -841,9 +960,16 @@ def main() -> None:
     )
     parser.add_argument("--device", choices=("cuda",), default="cuda")
     parser.add_argument("--output")
-    parser.add_argument("--max-conditions-this-run", type=int, default=1)
+    parser.add_argument(
+        "--max-conditions-this-run",
+        type=int,
+        help="Optionally limit this invocation; by default all remaining units run.",
+    )
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--status", action="store_true")
     args = parser.parse_args()
+    if args.max_conditions_this_run is not None and args.max_conditions_this_run <= 0:
+        parser.error("--max-conditions-this-run must be positive")
 
     proposal = load_json(args.proposal)
     _validate_proposal(proposal)
@@ -874,8 +1000,6 @@ def main() -> None:
     identity = _source_identity(args.proposal, proposal)
     if not identity["tracked_files_clean"]:
         raise ValueError("numerical-validation source files must be committed before measurement")
-    if not torch.cuda.is_available():
-        raise RuntimeError("approved numerical validation requires CUDA")
     expected = {
         "proposal": proposal,
         "base_config": specification,
@@ -885,9 +1009,42 @@ def main() -> None:
         "device": args.device,
     }
     output = Path(args.output) if args.output else _OUTPUT
+    if args.status:
+        if not output.exists():
+            print(
+                json.dumps(
+                    {
+                        "status": "not_started",
+                        "completed_units": 0,
+                        "total_units": len(examples) * len(conditions),
+                        "source_revision": identity["git_revision"],
+                        "output": str(output),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return
+        status_result = load_json(output)
+        actual = {key: status_result.get(key) for key in expected}
+        if actual != expected:
+            raise ValueError("existing validation output does not match source or protocol")
+        print(
+            json.dumps(
+                _execution_status(status_result, examples=examples, conditions=conditions),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("approved numerical validation requires CUDA")
     if output.exists():
         result = load_json(output)
         _validate_resume(result, expected)
+        if _recover_interrupted_unit(result):
+            write_json(output, result)
     else:
         result = {
             "schema_version": 1,
@@ -912,16 +1069,39 @@ def main() -> None:
                 "stage_b_status": "blocked",
                 "gate_0_authorized": False,
             },
+            "execution_state": {
+                "status": "ready",
+                "active_unit": None,
+                "attempts": [],
+                "recovery_events": [],
+            },
         }
         write_json(output, result)
 
-    remaining = [
+    all_remaining = [
         (example, condition)
         for example in examples
         for condition in conditions
         if condition["name"] not in result["examples"][str(example.index)]["conditions"]
-    ][: args.max_conditions_this_run]
+    ]
+    remaining = all_remaining
+    if args.max_conditions_this_run is not None:
+        remaining = remaining[: args.max_conditions_this_run]
+    print(
+        json.dumps(
+            _execution_status(result, examples=examples, conditions=conditions),
+            indent=2,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     for example, condition in remaining:
+        _start_unit(
+            result,
+            example_index=example.index,
+            condition=condition["name"],
+        )
+        write_json(output, result)
         measured = _run_condition(
             proposal,
             specification,
@@ -931,6 +1111,16 @@ def main() -> None:
         )
         result["examples"][str(example.index)]["conditions"][condition["name"]] = measured
         _refresh_decision(result, examples=examples, conditions=conditions)
+        _complete_unit(
+            result,
+            example_index=example.index,
+            condition=condition["name"],
+            passed=measured["passed"],
+        )
+        if result["decision"]["complete"]:
+            result["execution_state"]["status"] = (
+                "complete" if result["decision"]["passed"] else "failed_stop"
+            )
         write_json(output, result)
         print(
             json.dumps(
@@ -939,6 +1129,11 @@ def main() -> None:
                     "completed_condition": condition["name"],
                     "condition_passed": measured["passed"],
                     "decision": result["decision"],
+                    "progress": _execution_status(
+                        result,
+                        examples=examples,
+                        conditions=conditions,
+                    ),
                 },
                 indent=2,
                 sort_keys=True,
@@ -947,10 +1142,16 @@ def main() -> None:
         if result["decision"]["outcome"] == "failed_stop":
             raise SystemExit(1)
 
-    if not remaining:
+    if not all_remaining:
         _refresh_decision(result, examples=examples, conditions=conditions)
         write_json(output, result)
-        print(json.dumps(result["decision"], indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                _execution_status(result, examples=examples, conditions=conditions),
+                indent=2,
+                sort_keys=True,
+            )
+        )
 
 
 if __name__ == "__main__":

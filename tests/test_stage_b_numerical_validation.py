@@ -10,8 +10,10 @@ from transformers import Qwen2Config, Qwen2ForCausalLM
 from qkvs.causal_reference import rolling_mask_plan
 from qkvs.stage_b_numerical_validation import (
     _cache_structure_passed,
+    _execution_status,
     _incremental_hidden_cache,
     _layer_zero_kv_comparison,
+    _recover_interrupted_unit,
     _validate_proposal,
 )
 
@@ -88,3 +90,34 @@ def test_cache_structure_rejects_noncontiguous_positions() -> None:
         },
     }
     assert not _cache_structure_passed(summary)
+
+
+def test_interrupted_unit_is_recoverable_from_last_atomic_checkpoint() -> None:
+    active = {"example_index": 1, "condition": "bf16_sdpa_default"}
+    result = {
+        "source_identity": {"git_revision": "revision"},
+        "decision": {"outcome": "incomplete"},
+        "examples": {
+            "1": {"conditions": {}},
+            "2": {"conditions": {}},
+        },
+        "execution_state": {
+            "status": "running",
+            "active_unit": active,
+            "attempts": [{"unit": active, "status": "running"}],
+            "recovery_events": [],
+        },
+    }
+    assert _recover_interrupted_unit(result)
+    assert result["execution_state"]["active_unit"] is None
+    assert result["execution_state"]["attempts"][0]["status"] == ("interrupted_before_checkpoint")
+    assert result["execution_state"]["recovery_events"][0]["unit"] == active
+
+    status = _execution_status(
+        result,
+        examples=[SimpleNamespace(index=1), SimpleNamespace(index=2)],
+        conditions=[{"name": "bf16_sdpa_default"}, {"name": "fp32_sdpa_math"}],
+    )
+    assert status["completed_units"] == 0
+    assert status["total_units"] == 4
+    assert status["next_unit"] == active

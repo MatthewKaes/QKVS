@@ -162,3 +162,22 @@ rerun.
 This authorization does not approve Gate 0, causal-oracle dataset evaluation, S training,
 directory-capacity changes, or heat-field implementation. A completed replacement validation must
 return its raw measurements, source revision, and observed outcome for a new independent decision.
+
+The replacement runner executes all remaining validation units in one invocation and atomically
+checkpoints the result before and after every condition. If the process is interrupted, rerunning
+the same command records the interrupted attempt and resumes the same frozen unit from the last
+complete checkpoint:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  PYTORCH_ALLOC_CONF=expandable_segments:True \
+  .venv/bin/python -m qkvs.stage_b_numerical_validation \
+  --proposal configs/stage_b_numerical_validation_replacement_proposal.json \
+  --device cuda
+```
+
+Read-only progress is available without initializing CUDA:
+
+```bash
+.venv/bin/python -m qkvs.stage_b_numerical_validation --status
+```
