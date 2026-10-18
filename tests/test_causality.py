@@ -739,8 +739,8 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     )
 
 
-def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, capsys) -> None:
-    from qkvs.harness import print_summary, run_experiment, validate_config
+def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, capfd) -> None:
+    from qkvs.harness import print_summary, run_experiment, status, validate_config
 
     class ByteTokenizer:
         init_kwargs = {"_commit_hash": "1" * 40}
@@ -883,6 +883,19 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     partial = json.loads(partial_output.read_text())
     assert partial["training"]["completed_steps"] == 1
     assert partial["training"]["streaming"]["next_positions"] == {"train": 8}
+    partial_status = status(partial_output)
+    assert partial_status["completed_units"] == 3
+    assert partial_status["total_units"] == 8
+    assert partial_status["phase_units"] == {
+        "dense_prefill": {"completed": 2, "total": 2},
+        "training_checkpoints": {"completed": 1, "total": 2},
+        "evaluation": {"completed": 0, "total": 4},
+    }
+    assert partial_status["training_steps"] == {"completed": 1, "total": 2}
+    interrupted_progress = capfd.readouterr().out
+    assert "dense prefill / train" in interrupted_progress
+    assert "training steps 1-1 / 2" in interrupted_progress
+    assert "training steps 2-2 / 2" in interrupted_progress
     monkeypatch.setattr(reader, "heatfield_training_rollout", original_rollout)
     output, first = run_experiment(
         config,
@@ -974,7 +987,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     )
     assert first["summary"]["conditions"]["heatfield"]["post_transition"]["scored_tokens"]
     print_summary(first)
-    assert "(descriptive_single_stream)" in capsys.readouterr().out
+    assert "(descriptive_single_stream)" in capfd.readouterr().out
 
     _, resumed = run_experiment(
         config,

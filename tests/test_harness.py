@@ -12,6 +12,7 @@ import pytest
 
 from qkvs.harness import (
     _LiveProgress,
+    _progress_counts,
     _progress_line,
     _tokenized_text_streams,
     load_run,
@@ -63,6 +64,47 @@ def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
     assert rendered.count("\r") >= 3
     assert rendered.count("\n") == 1
     assert "[  3 / 12 ]" in rendered
+
+
+def test_live_progress_restore_does_not_advance_durable_count() -> None:
+    output = io.StringIO()
+    progress = _LiveProgress(
+        completed=2,
+        total=12,
+        stream=output,
+        interval_seconds=60.0,
+    )
+    progress.start_job("restore dense prefill", advances=False)
+    progress.complete_job()
+    progress.close()
+
+    rendered = output.getvalue()
+    assert "[  2 / 12 ]" in rendered
+    assert "[  3 / 12 ]" not in rendered
+
+
+def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
+    specification = json.loads(Path("configs/heatfield_learning_study.json").read_text())
+    result = {
+        "config": specification,
+        "streams": [
+            {"stream_id": boundary["id"], "split": boundary["split"]}
+            for boundary in specification["data"]["boundaries"]
+        ],
+        "dense_prefill": {},
+        "training": {},
+        "measurements": [],
+    }
+
+    completed, total, phases = _progress_counts(result)
+
+    assert completed == 0
+    assert total == 17
+    assert phases == {
+        "dense_prefill": (0, 2),
+        "training_checkpoints": (0, 10),
+        "evaluation": (0, 5),
+    }
 
 
 def test_checked_in_configurations_are_valid_and_pilot_is_approved() -> None:

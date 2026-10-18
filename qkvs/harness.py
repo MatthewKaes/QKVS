@@ -60,15 +60,16 @@ class _LiveProgress:
         *,
         completed: int,
         total: int,
-        stream: TextIO = sys.stdout,
+        stream: TextIO | None = None,
         interval_seconds: float = 1.0,
     ) -> None:
         self.completed = completed
         self.total = total
-        self.stream = stream
+        self.stream = sys.stdout if stream is None else stream
         self.interval_seconds = interval_seconds
         self.active_job: str | None = None
         self.running = False
+        self.advances = False
         self.started = time.monotonic()
         self.last_width = 0
         self.lock = threading.Lock()
@@ -81,7 +82,7 @@ class _LiveProgress:
             self.render()
 
     def _current(self) -> int:
-        if not self.running:
+        if not self.running or not self.advances:
             return self.completed
         return min(self.completed + 1, self.total)
 
@@ -98,25 +99,78 @@ class _LiveProgress:
             self.stream.flush()
             self.last_width = len(line)
 
-    def start_job(self, job: str) -> None:
+    def start_job(self, job: str, *, advances: bool = True) -> None:
         with self.lock:
+            if self.running:
+                raise RuntimeError("cannot start progress while another job is active")
             self.active_job = job
             self.running = True
+            self.advances = advances
             self.started = time.monotonic()
         self.render()
 
     def complete_job(self) -> None:
         with self.lock:
-            self.completed += 1
+            if not self.running:
+                raise RuntimeError("cannot complete progress without an active job")
+            if self.advances:
+                self.completed += 1
             self.running = False
+            self.advances = False
+            self.active_job = None
         self.render()
 
     def close(self) -> None:
         self.stop.set()
         self.thread.join()
+        with self.lock:
+            self.running = False
+            self.advances = False
         self.render()
         self.stream.write("\n")
         self.stream.flush()
+
+
+def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:
+    specification = result["config"]
+    streams = result["streams"]
+    dense_total = len(streams) if specification["model"]["backend"] == "huggingface" else 0
+    dense_completed = min(dense_total, len(result.get("dense_prefill", {})))
+
+    trains_selector = any(
+        condition["policy"] == "heatfield" for condition in specification["selection"]["conditions"]
+    )
+    training = specification.get("training", {})
+    checkpoint_interval = training.get("checkpoint_interval", 1)
+    training_steps = training.get("steps", 0) if trains_selector else 0
+    completed_steps = result.get("training", {}).get("completed_steps", 0)
+    training_total = (
+        (training_steps + checkpoint_interval - 1) // checkpoint_interval if training_steps else 0
+    )
+    training_completed = min(
+        training_total,
+        (
+            (completed_steps + checkpoint_interval - 1) // checkpoint_interval
+            if completed_steps
+            else 0
+        ),
+    )
+
+    evaluation_streams = [
+        stream for stream in streams if stream.get("split", "evaluation") == "evaluation"
+    ]
+    evaluation_total = len(specification["selection"]["conditions"]) * len(evaluation_streams)
+    evaluation_completed = min(evaluation_total, len(result["measurements"]))
+    phases = {
+        "dense_prefill": (dense_completed, dense_total),
+        "training_checkpoints": (training_completed, training_total),
+        "evaluation": (evaluation_completed, evaluation_total),
+    }
+    return (
+        sum(completed for completed, _ in phases.values()),
+        sum(total for _, total in phases.values()),
+        phases,
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -707,6 +761,7 @@ def _prepare_dense_prefills(
     result: dict[str, Any],
     output: Path,
     device: Any,
+    progress: _LiveProgress,
 ) -> dict[str, Any]:
     """Load or atomically create one S-independent prefix per owner and token prefix."""
 
@@ -721,7 +776,7 @@ def _prepare_dense_prefills(
     prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
     snapshots: dict[str, Any] = {}
     shared: dict[tuple[str, tuple[int, ...]], tuple[Any, Path]] = {}
-    records: dict[str, Any] = {}
+    records = dict(result.get("dense_prefill", {}))
     for record in streams:
         stream = TokenStream(
             stream_id=record["stream_id"],
@@ -735,12 +790,16 @@ def _prepare_dense_prefills(
             )
         prefix = stream.tokens[:activation_tokens]
         key = (ownership, prefix)
+        prior = records.get(stream.stream_id)
+        progress.start_job(
+            f"dense prefill / {stream.stream_id}",
+            advances=prior is None,
+        )
         if key not in shared:
             prefix_sha256 = hashlib.sha256(
                 json.dumps(prefix, separators=(",", ":")).encode()
             ).hexdigest()
             path = output.parent / "dense_prefill" / f"{ownership}-{prefix_sha256}.pt"
-            prior = result.get("dense_prefill", {}).get(stream.stream_id)
             if prior is not None:
                 if (
                     not path.exists()
@@ -777,8 +836,9 @@ def _prepare_dense_prefills(
             "artifact_sha256": _sha256(path),
             "identity": snapshot.identity,
         }
-    result["dense_prefill"] = records
-    _write_json(output, result)
+        result["dense_prefill"] = records
+        _write_json(output, result)
+        progress.complete_job()
     return snapshots
 
 
@@ -814,6 +874,7 @@ def _train_learned_policy(
     device: Any,
     torch: Any,
     dense_prefills: dict[str, Any],
+    progress: _LiveProgress,
 ) -> None:
     from qkvs.model import TokenStream
 
@@ -883,6 +944,12 @@ def _train_learned_policy(
 
     policy.train()
     while step < training["steps"]:
+        if step % training["checkpoint_interval"] == 0:
+            checkpoint_stop = min(
+                training["steps"],
+                step + training["checkpoint_interval"],
+            )
+            progress.start_job(f"training steps {step + 1}-{checkpoint_stop} / {training['steps']}")
         selected_stream_index = None
         for offset in range(len(token_streams)):
             candidate_index = (next_stream_index + offset) % len(token_streams)
@@ -988,6 +1055,7 @@ def _train_learned_policy(
                 },
             }
             _write_json(output, result)
+            progress.complete_job()
     if any(
         states[stream.stream_id].next_position != len(stream.tokens) - 1 for stream in token_streams
     ):
@@ -1072,44 +1140,52 @@ def run_experiment(
             "cuda_initialized_after_reader": torch.cuda.is_initialized(),
         }
     )
-    dense_prefills = _prepare_dense_prefills(
-        reader=reader,
-        streams=streams,
-        specification=specification,
-        result=result,
-        output=output,
-        device=torch_device,
-    )
-    learned_policy = None
-    untrained_policy = None
-    if any(
-        condition["policy"] == "heatfield" for condition in specification["selection"]["conditions"]
-    ):
-        untrained_policy = _build_learned_policy(reader, specification, torch)
-        learned_policy = _build_learned_policy(reader, specification, torch)
-        _train_learned_policy(
+    completed_units, total_units, _ = _progress_counts(result)
+    progress = _LiveProgress(completed=completed_units, total=total_units)
+    try:
+        dense_prefills = _prepare_dense_prefills(
             reader=reader,
-            policy=learned_policy,
             streams=streams,
             specification=specification,
             result=result,
             output=output,
             device=torch_device,
-            torch=torch,
-            dense_prefills=dense_prefills,
+            progress=progress,
         )
-    completed = {
-        (measurement["condition"], measurement["stream_id"])
-        for measurement in result["measurements"]
-    }
-    units = [
-        (condition, stream)
-        for condition in specification["selection"]["conditions"]
-        for stream in result["streams"]
-        if stream.get("split") == "evaluation"
-    ]
-    total = len(units)
-    progress = _LiveProgress(completed=len(completed), total=total)
+        learned_policy = None
+        untrained_policy = None
+        if any(
+            condition["policy"] == "heatfield"
+            for condition in specification["selection"]["conditions"]
+        ):
+            untrained_policy = _build_learned_policy(reader, specification, torch)
+            learned_policy = _build_learned_policy(reader, specification, torch)
+            _train_learned_policy(
+                reader=reader,
+                policy=learned_policy,
+                streams=streams,
+                specification=specification,
+                result=result,
+                output=output,
+                device=torch_device,
+                torch=torch,
+                dense_prefills=dense_prefills,
+                progress=progress,
+            )
+        completed = {
+            (measurement["condition"], measurement["stream_id"])
+            for measurement in result["measurements"]
+        }
+        units = [
+            (condition, stream)
+            for condition in specification["selection"]["conditions"]
+            for stream in result["streams"]
+            if stream.get("split") == "evaluation"
+        ]
+    except BaseException:
+        progress.close()
+        raise
+    evaluation_total = len(units)
     try:
         for condition, stream_record in units:
             unit = (condition["name"], stream_record["stream_id"])
@@ -1184,7 +1260,7 @@ def run_experiment(
                 historical_token_budget=specification["attention"]["historical_token_budget"],
                 paired_comparisons=specification["evaluation"].get("comparisons", []),
             )
-            result["complete"] = len(completed) == total
+            result["complete"] = len(completed) == evaluation_total
             _write_json(output, result)
             progress.complete_job()
     finally:
@@ -1207,16 +1283,20 @@ def load_run(path: str | Path) -> dict[str, Any]:
 
 def status(path: str | Path) -> dict[str, Any]:
     result = load_run(path)
-    conditions = result["config"]["selection"]["conditions"]
-    evaluation_streams = [
-        stream for stream in result["streams"] if stream.get("split", "evaluation") == "evaluation"
-    ]
-    total = len(conditions) * len(evaluation_streams)
-    completed = len(result["measurements"])
+    completed, total, phases = _progress_counts(result)
+    training = result.get("training", {})
     return {
         "run_id": result["run_id"],
         "completed_units": completed,
         "total_units": total,
+        "phase_units": {
+            name: {"completed": phase_completed, "total": phase_total}
+            for name, (phase_completed, phase_total) in phases.items()
+        },
+        "training_steps": {
+            "completed": training.get("completed_steps", 0),
+            "total": result["config"].get("training", {}).get("steps", 0),
+        },
         "complete": result["complete"],
         "source_revision": result["source_identity"]["git_revision"],
         "config_sha256": result["config_sha256"],
@@ -1232,6 +1312,17 @@ def print_status(value: dict[str, Any]) -> None:
     print(
         f"QKVS [{completed:>{counter_width}} / {total} ] "
         f"[{_progress_bar(completed, total)}] {state}"
+    )
+    phases = value["phase_units"]
+    training = value["training_steps"]
+    print(
+        "Phases: "
+        f"prefill {phases['dense_prefill']['completed']}/{phases['dense_prefill']['total']}, "
+        f"training checkpoints "
+        f"{phases['training_checkpoints']['completed']}/"
+        f"{phases['training_checkpoints']['total']} "
+        f"(steps {training['completed']}/{training['total']}), "
+        f"evaluation {phases['evaluation']['completed']}/{phases['evaluation']['total']}"
     )
     print(f"Run: {value['run_id']}")
     print(f"Source: {value['source_revision']}")
