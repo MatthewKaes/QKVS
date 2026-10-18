@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-import torch
+import os
 
-from qkvs.model import FrozenCausalReader, TokenStream
-from qkvs.selection import FixedOffsetPolicy, RollingOnlyPolicy
+import pytest
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config, Qwen2ForCausalLM
+
+from qkvs.model import FrozenCausalReader, HuggingFaceQwen2Reader, TokenStream
+from qkvs.selection import (
+    FixedOffsetPolicy,
+    HeatFieldProposal,
+    PolicyState,
+    ProposalSet,
+    RollingOnlyPolicy,
+)
 
 
 def _reader() -> FrozenCausalReader:
@@ -40,6 +50,12 @@ def test_reader_instruments_actual_causal_kv_accesses() -> None:
                 *access.historical_indices,
                 *access.rolling_indices,
             )
+            assert access.cache_length == access.token_position + 1
+            assert access.historical_occurrences == len(access.historical_indices)
+            assert access.duplicate_historical_occurrences == (
+                len(access.historical_indices) - len(set(access.historical_indices))
+            )
+            assert access.rolling_overlap_occurrences == 0
 
 
 def test_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
@@ -88,3 +104,145 @@ def test_same_reader_engine_accepts_rolling_and_bounded_policies() -> None:
     )
     assert all(not access.historical_indices for score in rolling for access in score.accesses)
     assert any(access.historical_indices for score in selected for access in score.accesses)
+    assert any(
+        rolling_score.loss != selected_score.loss
+        for rolling_score, selected_score in zip(rolling, selected, strict=True)
+    )
+
+
+def _qwen_reader() -> HuggingFaceQwen2Reader:
+    torch.manual_seed(29)
+    config = Qwen2Config(
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=64,
+        attention_dropout=0.0,
+    )
+    model = Qwen2ForCausalLM(config)
+    return HuggingFaceQwen2Reader(
+        model,
+        specification={
+            "id": "test-only-random-qwen2",
+            "revision": "0" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+    )
+
+
+def test_qwen2_incremental_full_history_matches_standard_cpu_reference() -> None:
+    diagnostic = _qwen_reader().full_history_diagnostic(
+        (1, 5, 9, 3, 7, 11, 2, 13),
+        device=torch.device("cpu"),
+        atol=2e-5,
+        rtol=2e-5,
+    )
+    assert diagnostic["diagnostic_only_unbounded"]
+    assert diagnostic["allclose"], diagnostic
+    assert diagnostic["max_abs_error"] < 2e-5
+    assert len(diagnostic["per_position_max_abs_error"]) == 7
+
+
+def test_qwen2_adapter_rejects_position_variant_outside_validated_support() -> None:
+    model = _qwen_reader().model
+    model.config.rope_scaling = {"rope_type": "linear", "factor": 2.0}
+    with pytest.raises(ValueError, match="nondefault RoPE"):
+        HuggingFaceQwen2Reader(
+            model,
+            specification={
+                "id": "test-only-random-qwen2",
+                "revision": "0" * 40,
+                "dtype": "float32",
+                "frozen": True,
+            },
+        )
+
+
+def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
+    class LayerPolicy:
+        def propose(self, context, state: PolicyState) -> ProposalSet:
+            del state
+            center = 0.1 if context.layer == 0 else 0.9
+            return ProposalSet(
+                (HeatFieldProposal(center=center, spread=1.0, weight=1.0),),
+                PolicyState((center,)),
+            )
+
+    tokens = tuple(index % 32 for index in range(16))
+    scores = _qwen_reader().execute(
+        _stream(tokens),
+        LayerPolicy(),
+        rolling_tokens=2,
+        historical_token_budget=1,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    late = scores[-1].accesses
+    assert late[0].historical_indices != late[1].historical_indices
+    for score in scores:
+        for access in score.accesses:
+            assert access.cache_length == score.position + 1
+            assert all(index < access.history_end for index in access.historical_indices)
+            assert access.rolling_overlap_occurrences == 0
+
+
+def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
+    prefix = (1, 2, 3, 4, 5, 6, 7)
+    first = _stream((*prefix, 8, 9, 10))
+    second = _stream((*prefix, 21, 22, 23))
+    first_scores = _qwen_reader().execute(
+        first,
+        FixedOffsetPolicy((4,)),
+        rolling_tokens=2,
+        historical_token_budget=1,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    second_scores = _qwen_reader().execute(
+        second,
+        FixedOffsetPolicy((4,)),
+        rolling_tokens=2,
+        historical_token_budget=1,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    assert [score.as_dict() for score in first_scores[:6]] == [
+        score.as_dict() for score in second_scores[:6]
+    ]
+
+
+@pytest.mark.skipif(
+    "QKVS_PRETRAINED_MODEL" not in os.environ,
+    reason="set QKVS_PRETRAINED_MODEL to a complete local Qwen2 checkpoint",
+)
+def test_local_pretrained_qwen2_full_history_reference() -> None:
+    checkpoint = os.environ["QKVS_PRETRAINED_MODEL"]
+    model = AutoModelForCausalLM.from_pretrained(
+        checkpoint,
+        local_files_only=True,
+        attn_implementation="eager",
+        torch_dtype=torch.float32,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint, local_files_only=True)
+    reader = HuggingFaceQwen2Reader(
+        model,
+        tokenizer,
+        specification={
+            "id": checkpoint,
+            "revision": "0" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+    )
+    tokens = tuple(tokenizer.encode("A short deterministic reference.", add_special_tokens=False))
+    diagnostic = reader.full_history_diagnostic(
+        tokens[: min(len(tokens), 12)],
+        device=torch.device("cpu"),
+        atol=2e-4,
+        rtol=2e-4,
+    )
+    assert diagnostic["allclose"], diagnostic

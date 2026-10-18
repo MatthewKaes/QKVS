@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -168,13 +169,58 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         for field in ("id", "revision"):
             if not isinstance(model.get(field), str) or not model.get(field):
                 errors.append(f"model.{field} must be a pinned nonempty string")
+        revision = model.get("revision")
+        if isinstance(revision, str) and not re.fullmatch(r"[0-9a-f]{40}", revision):
+            errors.append("model.revision must be a full 40-character Git commit")
+        dtype = model.get("dtype")
+        if dtype is not None and dtype not in {"float32", "bfloat16"}:
+            errors.append("model.dtype must be float32 or bfloat16")
+        for field in ("tokenizer_id", "tokenizer_revision"):
+            if field in model and (not isinstance(model[field], str) or not model[field]):
+                errors.append(f"model.{field} must be a nonempty string")
+        tokenizer_revision = model.get("tokenizer_revision")
+        if tokenizer_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", tokenizer_revision):
+            errors.append("model.tokenizer_revision must be a full 40-character Git commit")
 
     data = specification.get("data", {})
-    if data.get("kind") != "synthetic" and status == "harness_verification":
-        errors.append("harness verification requires synthetic data")
-    for field in ("streams", "sequence_tokens", "seed"):
-        if not _positive_integer(data.get(field)):
-            errors.append(f"data.{field} must be a positive integer")
+    data_kind = data.get("kind")
+    if data_kind == "synthetic" or data_kind == "long_context_reading":
+        for field in ("streams", "sequence_tokens", "seed"):
+            if not _positive_integer(data.get(field)):
+                errors.append(f"data.{field} must be a positive integer")
+    elif data_kind == "tokenized_text":
+        source = data.get("source", {})
+        if not isinstance(source.get("path"), str) or not source.get("path"):
+            errors.append("data.source.path must be a nonempty string")
+        source_hash = source.get("sha256")
+        if not isinstance(source_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+            errors.append("data.source.sha256 must be a 64-character lowercase digest")
+        boundaries = data.get("boundaries")
+        if not isinstance(boundaries, list) or not boundaries:
+            errors.append("data.boundaries must be a nonempty list")
+            boundaries = []
+        boundary_ids: list[str] = []
+        for index, boundary in enumerate(boundaries):
+            if not isinstance(boundary, dict):
+                errors.append(f"data.boundaries[{index}] must be an object")
+                continue
+            stream_id = boundary.get("id")
+            start = boundary.get("start_token")
+            stop = boundary.get("stop_token")
+            if not isinstance(stream_id, str) or not stream_id:
+                errors.append(f"data.boundaries[{index}].id must be nonempty")
+            else:
+                boundary_ids.append(stream_id)
+            if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+                errors.append(f"data.boundaries[{index}].start_token must be nonnegative")
+            if not _positive_integer(stop):
+                errors.append(f"data.boundaries[{index}].stop_token must be positive")
+            if isinstance(start, int) and isinstance(stop, int) and stop - start < 2:
+                errors.append(f"data.boundaries[{index}] must contain at least two tokens")
+        if len(boundary_ids) != len(set(boundary_ids)):
+            errors.append("data boundary ids must be unique")
+    else:
+        errors.append("data.kind is unsupported")
 
     attention = specification.get("attention", {})
     for field in ("rolling_tokens", "historical_token_budget"):
@@ -188,15 +234,6 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("selection.proposal_count must be a positive integer")
     if not _positive_integer(window_width):
         errors.append("selection.window_width must be a positive integer")
-    budget = attention.get("historical_token_budget")
-    if (
-        _positive_integer(proposal_count)
-        and _positive_integer(window_width)
-        and _positive_integer(budget)
-        and proposal_count * window_width != budget
-    ):
-        errors.append("proposal_count * window_width must equal historical_token_budget")
-
     for control_name in ("gamma", "beta"):
         control = selection.get(control_name, {})
         mode = control.get("mode")
@@ -232,13 +269,16 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             offsets = condition.get("offsets")
             if (
                 not isinstance(offsets, list)
-                or len(offsets) != proposal_count
+                or not offsets
+                or not _positive_integer(proposal_count)
+                or len(offsets) > proposal_count
                 or any(not _positive_integer(offset) for offset in offsets)
             ):
-                errors.append("fixed_offsets requires one positive offset per proposal")
+                errors.append("fixed_offsets requires positive offsets within proposal capacity")
     if len(names) != len(set(names)):
         errors.append("condition names must be unique")
-    if not any(condition.get("policy") == "rolling" for condition in conditions):
+    condition_objects = [condition for condition in conditions if isinstance(condition, dict)]
+    if not any(condition.get("policy") == "rolling" for condition in condition_objects):
         errors.append("a rolling-only condition is mandatory")
 
     evaluation = specification.get("evaluation", {})
@@ -265,11 +305,22 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     if status not in {"harness_verification", "approved"}:
         reasons.append("configuration is not authorized for harness execution")
-    if backend != "synthetic":
-        reasons.append("the frozen Hugging Face reader adapter is not implemented")
-    policies = {condition.get("policy") for condition in conditions}
+    if backend == "huggingface" and model.get("dtype") not in {"float32", "bfloat16"}:
+        reasons.append("a Hugging Face execution dtype has not been frozen")
+    if backend == "huggingface" and data_kind != "tokenized_text":
+        reasons.append("Hugging Face execution requires identity-pinned tokenized_text data")
+    if backend == "synthetic" and data_kind != "synthetic":
+        reasons.append("the synthetic reader requires synthetic data")
+    if data_kind == "long_context_reading":
+        reasons.append(
+            "long_context_reading is a draft data description, not an implemented loader"
+        )
+    policies = {condition.get("policy") for condition in condition_objects}
     if not policies <= {"rolling", "fixed_offsets"}:
         reasons.append("learned heat-field selection is not implemented")
+    for control_name in ("gamma", "beta"):
+        if selection.get(control_name, {}).get("mode") != "disabled":
+            reasons.append(f"selection.{control_name} is not implemented")
     return {
         "valid": not errors,
         "runnable": not errors and not reasons,
@@ -325,7 +376,15 @@ def _write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
-def _synthetic_streams(specification: dict[str, Any]) -> list[dict[str, Any]]:
+def _token_sha256(tokens: tuple[int, ...]) -> str:
+    return hashlib.sha256(
+        b"".join(token.to_bytes(8, "little", signed=False) for token in tokens)
+    ).hexdigest()
+
+
+def _synthetic_streams(
+    specification: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     data = specification["data"]
     vocab_size = specification["model"]["vocab_size"]
     period = min(max(4, vocab_size // 2), max(4, data["sequence_tokens"] // 2))
@@ -338,17 +397,88 @@ def _synthetic_streams(specification: dict[str, Any]) -> list[dict[str, Any]]:
         for position, target in enumerate(tokens[1:]):
             prior = [index for index in range(position + 1) if tokens[index] == target]
             supports.append(prior[-1] if prior else None)
+        token_tuple = tuple(tokens)
         streams.append(
             {
                 "stream_id": f"synthetic-{stream_index:03d}",
-                "tokens": tokens,
+                "tokens": token_tuple,
                 "support_positions": tuple(supports),
-                "token_sha256": hashlib.sha256(
-                    b"".join(token.to_bytes(4, "little") for token in tokens)
-                ).hexdigest(),
+                "token_sha256": _token_sha256(token_tuple),
             }
         )
-    return streams
+    return streams, {
+        "kind": "synthetic",
+        "seed": data["seed"],
+        "stream_count": data["streams"],
+        "sequence_tokens": data["sequence_tokens"],
+        "stream_token_sha256": {stream["stream_id"]: stream["token_sha256"] for stream in streams},
+    }
+
+
+def _tokenized_text_streams(
+    specification: dict[str, Any],
+    *,
+    config_path: Path,
+    tokenizer: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if tokenizer is None:
+        raise ValueError("tokenized_text data requires the pretrained reader tokenizer")
+    data = specification["data"]
+    configured_path = Path(data["source"]["path"])
+    source_path = (
+        configured_path
+        if configured_path.is_absolute()
+        else (config_path.parent / configured_path).resolve()
+    )
+    actual_sha256 = _sha256(source_path)
+    expected_sha256 = data["source"]["sha256"]
+    if actual_sha256 != expected_sha256:
+        raise ValueError("tokenized text source does not match data.source.sha256")
+    text = source_path.read_text(encoding="utf-8")
+    all_tokens = tuple(tokenizer.encode(text, add_special_tokens=False))
+    streams: list[dict[str, Any]] = []
+    for boundary in data["boundaries"]:
+        start = boundary["start_token"]
+        stop = boundary["stop_token"]
+        if stop > len(all_tokens):
+            raise ValueError(f"data boundary {boundary['id']} stops beyond the tokenized source")
+        tokens = all_tokens[start:stop]
+        streams.append(
+            {
+                "stream_id": boundary["id"],
+                "tokens": tokens,
+                "support_positions": (None,) * (len(tokens) - 1),
+                "token_sha256": _token_sha256(tokens),
+            }
+        )
+    return streams, {
+        "kind": "tokenized_text",
+        "source_path": data["source"]["path"],
+        "source_sha256": actual_sha256,
+        "encoding": "utf-8",
+        "add_special_tokens": False,
+        "full_source_tokens": len(all_tokens),
+        "boundaries": data["boundaries"],
+        "stream_token_sha256": {stream["stream_id"]: stream["token_sha256"] for stream in streams},
+    }
+
+
+def _build_streams(
+    specification: dict[str, Any],
+    *,
+    config_path: Path,
+    tokenizer: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kind = specification["data"]["kind"]
+    if kind == "synthetic":
+        return _synthetic_streams(specification)
+    if kind == "tokenized_text":
+        return _tokenized_text_streams(
+            specification,
+            config_path=config_path,
+            tokenizer=tokenizer,
+        )
+    raise ValueError(f"unsupported data loader: {kind}")
 
 
 def _result_path(
@@ -381,17 +511,35 @@ def run_experiment(
     identity = _source_identity(config_path)
     if not identity["tracked_files_clean"] and not allow_dirty_source:
         raise ValueError("harness source must be committed before execution")
+
+    import torch
+
+    from qkvs.model import TokenStream, load_reader
+    from qkvs.selection import build_policy
+
+    torch_device = torch.device(device)
+    cuda_initialized_before_reader = torch.cuda.is_initialized()
+    reader = load_reader(specification["model"], torch_device)
+    streams, data_identity = _build_streams(
+        specification,
+        config_path=config_path,
+        tokenizer=reader.tokenizer,
+    )
+    streams = json.loads(json.dumps(streams))
+    model_identity = reader.identity()
     output = _result_path(specification, output_root=output_root)
     expected = {
         "config": specification,
         "config_sha256": _sha256(config_path),
         "source_identity": identity,
+        "model_identity": model_identity,
+        "data_identity": data_identity,
         "device": device,
     }
     if output.exists():
         result = _load_json(output)
         actual = {key: result.get(key) for key in expected}
-        if actual != expected:
+        if actual != expected or result.get("streams") != streams:
             raise ValueError("saved run does not match the current source and configuration")
     else:
         result = {
@@ -403,27 +551,20 @@ def run_experiment(
                 "platform": platform.platform(),
                 "pid": os.getpid(),
             },
-            "streams": _synthetic_streams(specification),
+            "streams": streams,
             "measurements": [],
             "summary": {},
             "complete": False,
         }
         _write_json(output, result)
-
-    import torch
-
-    from qkvs.model import TokenStream, load_reader
-    from qkvs.selection import build_policy
-
-    torch_device = torch.device(device)
     result["environment"].update(
         {
             "torch": torch.__version__,
             "torch_cuda": torch.version.cuda,
-            "cuda_initialized": torch.cuda.is_initialized(),
+            "cuda_initialized_before_reader": cuda_initialized_before_reader,
+            "cuda_initialized_after_reader": torch.cuda.is_initialized(),
         }
     )
-    reader = load_reader(specification["model"], torch_device)
     completed = {
         (measurement["condition"], measurement["stream_id"])
         for measurement in result["measurements"]

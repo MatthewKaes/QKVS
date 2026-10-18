@@ -16,7 +16,7 @@ class SelectionContext:
 
 @dataclass(frozen=True)
 class HeatFieldProposal:
-    """One bounded spatial proposal; center is normalized over eligible history."""
+    """One bounded proposal; spread is reserved and must be 1 in this milestone."""
 
     center: float
     spread: float
@@ -66,22 +66,10 @@ class RollingOnlyPolicy:
 class FixedOffsetPolicy:
     """A bounded control that proposes fixed distances behind the current token."""
 
-    def __init__(
-        self,
-        offsets: tuple[int, ...],
-        *,
-        gamma: float | None = None,
-        beta: float | None = None,
-    ) -> None:
+    def __init__(self, offsets: tuple[int, ...]) -> None:
         if not offsets or any(offset <= 0 for offset in offsets):
             raise ValueError("fixed offsets must be positive")
-        if gamma is not None and not 0.0 <= gamma < 1.0:
-            raise ValueError("gamma must lie in [0, 1)")
-        if beta is not None and beta <= 0.0:
-            raise ValueError("beta must be positive")
         self.offsets = offsets
-        self.gamma = gamma
-        self.beta = beta
 
     def propose(self, context: SelectionContext, state: PolicyState) -> ProposalSet:
         if context.history_end <= 0:
@@ -91,24 +79,17 @@ class FixedOffsetPolicy:
             )
             return ProposalSet(proposals, PolicyState(tuple(0.0 for _ in self.offsets)))
 
-        previous = state.centers
-        if previous and len(previous) != len(self.offsets):
-            raise ValueError("policy state does not match proposal count")
         centers: list[float] = []
         proposals: list[HeatFieldProposal] = []
-        for index, offset in enumerate(self.offsets):
+        for offset in self.offsets:
             target_position = min(context.history_end - 1, max(0, context.position - offset))
-            target_center = (target_position + 0.5) / context.history_end
-            if self.gamma is not None and previous:
-                center = self.gamma * previous[index] + (1.0 - self.gamma) * target_center
-            else:
-                center = target_center
+            center = (target_position + 0.5) / context.history_end
             center = min(max(center, 0.0), 1.0)
             centers.append(center)
             proposals.append(
                 HeatFieldProposal(
                     center=center,
-                    spread=1.0 if self.beta is None else 1.0 / self.beta,
+                    spread=1.0,
                     weight=1.0,
                 )
             )
@@ -142,6 +123,8 @@ def resolve_proposals(
             raise ValueError("proposal centers must lie in [0, 1]")
         if proposal.spread <= 0.0 or proposal.weight < 0.0:
             raise ValueError("proposal spread must be positive and weight nonnegative")
+        if proposal.spread != 1.0:
+            raise ValueError("proposal spread and spatial beta are not implemented")
         if len(indices) + window_width > historical_token_budget:
             break
         center_token = min(history_end - 1, int(proposal.center * history_end))
@@ -171,11 +154,12 @@ def validate_historical_selection(
 
 
 def build_policy(condition: dict[str, Any], controls: dict[str, Any]) -> SelectionPolicy:
-    del controls
     policy = condition["policy"]
     if policy == "rolling":
         return RollingOnlyPolicy()
     if policy == "fixed_offsets":
+        if len(condition["offsets"]) > controls["proposal_count"]:
+            raise ValueError("fixed offsets exceed proposal capacity")
         return FixedOffsetPolicy(tuple(condition["offsets"]))
     if policy == "heatfield":
         raise ValueError("learned heat-field policy is not implemented or authorized")

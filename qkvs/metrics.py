@@ -34,8 +34,12 @@ def paired_bootstrap_interval(
 def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
     historical_occurrences = sum(len(access["historical_indices"]) for access in accesses)
     historical_unique = sum(len(set(access["historical_indices"])) for access in accesses)
-    overlap_occurrences = historical_occurrences - historical_unique
+    duplicate_occurrences = historical_occurrences - historical_unique
     rolling_occurrences = sum(len(access["rolling_indices"]) for access in accesses)
+    rolling_overlap_occurrences = sum(
+        sum(index in set(access["rolling_indices"]) for index in access["historical_indices"])
+        for access in accesses
+    )
     proposal_centers = [center for access in accesses for center in access["proposal_centers"]]
     normalized_historical_positions = [
         index / access["history_end"]
@@ -68,11 +72,32 @@ def summarize_accesses(accesses: list[dict[str, Any]]) -> dict[str, Any]:
             if previous["support_position"] != current["support_position"]:
                 responsiveness.append(float(previous_indices != current_indices))
 
+    per_layer = {
+        str(layer): {
+            "attention_steps": len(layer_accesses),
+            "historical_token_occurrences": sum(
+                len(access["historical_indices"]) for access in layer_accesses
+            ),
+            "duplicate_historical_occurrences": sum(
+                len(access["historical_indices"]) - len(set(access["historical_indices"]))
+                for access in layer_accesses
+            ),
+            "rolling_token_occurrences": sum(
+                len(access["rolling_indices"]) for access in layer_accesses
+            ),
+        }
+        for layer, layer_accesses in sorted(by_layer.items())
+    }
+
     return {
         "historical_token_occurrences": historical_occurrences,
         "historical_unique_tokens": historical_unique,
-        "overlap_occurrences": overlap_occurrences,
+        "duplicate_historical_occurrences": duplicate_occurrences,
+        "overlap_occurrences": duplicate_occurrences,
+        "rolling_overlap_occurrences": rolling_overlap_occurrences,
         "rolling_token_occurrences": rolling_occurrences,
+        "actual_token_occurrences": historical_occurrences + rolling_occurrences,
+        "per_layer": per_layer,
         "mean_proposal_center": _mean(proposal_centers),
         "mean_normalized_historical_position": _mean(normalized_historical_positions),
         "support_coverage": support_hits / len(support_trials) if support_trials else None,

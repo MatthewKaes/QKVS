@@ -167,10 +167,20 @@ the reader resolves them directly to historical windows, gathers the correspondi
 its real K/V cache, and records every token occurrence actually read. Rolling-only and alternative
 policies use the same causal execution and scoring path.
 
-The current executable milestone is a deterministic CPU verification using a small frozen
-transformer. It establishes harness mechanics only. The initial learned heat-field configuration
-and preregistration are review drafts and cannot be run until their remaining scientific choices
-are frozen and independently authorized.
+The checked-in executable configuration is a deterministic CPU verification using a small frozen
+synthetic transformer. The same reader interface also supports frozen Hugging Face
+`Qwen2ForCausalLM` full-attention checkpoints, including grouped-query attention and the
+checkpoint's positional and normalization modules. A pretrained run additionally requires a
+pinned model and tokenizer revision, an explicit execution dtype, a SHA-256-pinned UTF-8 source,
+and fixed token boundaries. No result-bearing pretrained protocol is checked in or authorized.
+
+The Qwen2 adapter writes each layer's position-rotated K/V once, then gathers only the actual
+historical occurrences and mandatory rolling window used by that layer's ordinary Q/K/V
+attention. Its full-history mode is an explicitly unbounded, short-sequence diagnostic for
+comparison with standard Hugging Face execution; it is not a deployable selection policy.
+Architectures other than Qwen2, Qwen2 checkpoints with sliding-attention layers, and Qwen2
+checkpoints with nondefault RoPE scaling are currently unsupported. Gamma, beta, learned spread,
+and learned heat-field selection also remain unimplemented and fail execution validation.
 
 ```text
 configuration
@@ -200,9 +210,9 @@ python -m qkvs run \
 ```
 
 That command currently refuses to run because `heatfield_initial.json` is
-`draft_not_authorized` and the learned policy/model adapter are deliberately absent. Codex must not
-run CUDA workloads. Configuration validation, status, and summarization do not import the model
-runtime or initialize CUDA.
+`draft_not_authorized`; it also lacks frozen data and dtype choices and requests the unimplemented
+learned policy, gamma, and beta modes. Codex must not run CUDA workloads. Configuration validation,
+status, and summarization do not import the model runtime or initialize CUDA.
 
 ## Configuration and artifacts
 
@@ -215,5 +225,6 @@ hashes, raw per-token losses, actual K/V access indices, overlap and coverage me
 utility, deterministic bootstrap uncertainty, progress, and completion state. Writes are atomic;
 rerunning the same command resumes without duplicating completed condition/stream pairs.
 
-See [the draft heat-field preregistration](docs/heatfield_preregistration.md) for the proposed first
-result-bearing study. Passing the CPU smoke run does not authorize or support that study.
+`configs/heatfield_initial.json` is retained only as an unapproved design draft. Passing the CPU
+smoke run or the pretrained adapter's numerical diagnostics does not authorize or support that
+study.

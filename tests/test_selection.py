@@ -15,8 +15,8 @@ from qkvs.selection import (
 
 def test_collective_resolution_counts_overlapping_occurrences() -> None:
     proposals = (
-        HeatFieldProposal(center=0.5, spread=0.2, weight=1.0),
-        HeatFieldProposal(center=0.5, spread=0.3, weight=0.5),
+        HeatFieldProposal(center=0.5, spread=1.0, weight=1.0),
+        HeatFieldProposal(center=0.5, spread=1.0, weight=0.5),
     )
     selection = resolve_proposals(
         proposals,
@@ -50,8 +50,8 @@ def test_resolution_is_direct_causal_and_budgeted() -> None:
         )
 
 
-def test_gamma_recurrence_is_bounded_and_beta_is_spatial_only() -> None:
-    policy = FixedOffsetPolicy((8,), gamma=0.75, beta=2.0)
+def test_fixed_offsets_keep_bounded_layer_state_without_unsupported_controls() -> None:
+    policy = FixedOffsetPolicy((8,))
     first = policy.propose(
         SelectionContext(position=20, layer=0, history_end=17, hidden=object()),
         PolicyState(),
@@ -61,6 +61,30 @@ def test_gamma_recurrence_is_bounded_and_beta_is_spatial_only() -> None:
         first.state,
     )
     assert len(second.state.centers) == 1
-    assert second.proposals[0].spread == 0.5
+    assert second.proposals[0].spread == 1.0
     assert second.state.centers[0] != first.state.centers[0]
     assert 0.0 <= second.state.centers[0] <= 1.0
+
+
+def test_nonunit_spread_is_explicitly_unavailable() -> None:
+    with pytest.raises(ValueError, match="spatial beta"):
+        resolve_proposals(
+            (HeatFieldProposal(center=0.5, spread=0.5, weight=1.0),),
+            history_end=8,
+            window_width=2,
+            historical_token_budget=2,
+        )
+
+
+def test_proposal_capacity_window_width_and_occurrence_budget_are_independent() -> None:
+    proposals = tuple(
+        HeatFieldProposal(center=index / 3, spread=1.0, weight=1.0) for index in range(4)
+    )
+    selection = resolve_proposals(
+        proposals,
+        history_end=16,
+        window_width=3,
+        historical_token_budget=7,
+    )
+    assert selection.occurrence_count == 6
+    assert len(selection.proposals) == 4

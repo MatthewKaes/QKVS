@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
@@ -11,6 +12,7 @@ import pytest
 from qkvs.harness import (
     _LiveProgress,
     _progress_line,
+    _tokenized_text_streams,
     load_run,
     run_experiment,
     status,
@@ -63,7 +65,31 @@ def test_checked_in_configurations_are_valid_and_only_smoke_is_runnable() -> Non
     )
 
 
-def test_configuration_rejects_budget_mismatch_and_missing_rolling() -> None:
+def test_pinned_huggingface_text_configuration_is_runnable_in_schema() -> None:
+    specification = json.loads(Path("configs/harness_smoke.json").read_text())
+    specification["model"] = {
+        "backend": "huggingface",
+        "id": "organization/test-qwen2",
+        "revision": "1" * 40,
+        "dtype": "float32",
+        "frozen": True,
+    }
+    specification["data"] = {
+        "kind": "tokenized_text",
+        "source": {"path": "source.txt", "sha256": "2" * 64},
+        "boundaries": [{"id": "stream", "start_token": 0, "stop_token": 16}],
+    }
+    report = validate_config(specification)
+    assert report["valid"]
+    assert report["runnable"]
+
+    specification["model"]["revision"] = "main"
+    report = validate_config(specification)
+    assert not report["valid"]
+    assert "model.revision must be a full 40-character Git commit" in report["errors"]
+
+
+def test_configuration_keeps_budget_independent_and_rejects_missing_rolling() -> None:
     specification = json.loads(Path("configs/harness_smoke.json").read_text())
     specification["attention"]["historical_token_budget"] = 5
     specification["selection"]["conditions"] = [
@@ -81,8 +107,54 @@ def test_configuration_rejects_budget_mismatch_and_missing_rolling() -> None:
     specification["evaluation"]["baseline"] = "fixed"
     report = validate_config(specification)
     assert not report["valid"]
-    assert "proposal_count * window_width must equal historical_token_budget" in report["errors"]
     assert "a rolling-only condition is mandatory" in report["errors"]
+    assert not any("proposal_count * window_width" in error for error in report["errors"])
+
+
+def test_tokenized_text_streams_have_fixed_boundaries_and_source_identity(tmp_path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("deterministic real token stream", encoding="utf-8")
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    class ByteTokenizer:
+        def encode(self, text, *, add_special_tokens):
+            assert not add_special_tokens
+            return list(text.encode())
+
+    specification = {
+        "data": {
+            "kind": "tokenized_text",
+            "source": {"path": "source.txt", "sha256": source_hash},
+            "boundaries": [
+                {"id": "first", "start_token": 0, "stop_token": 8},
+                {"id": "second", "start_token": 8, "stop_token": 18},
+            ],
+        }
+    }
+    first = _tokenized_text_streams(
+        specification,
+        config_path=tmp_path / "config.json",
+        tokenizer=ByteTokenizer(),
+    )
+    second = _tokenized_text_streams(
+        specification,
+        config_path=tmp_path / "config.json",
+        tokenizer=ByteTokenizer(),
+    )
+    assert first == second
+    streams, identity = first
+    assert [stream["stream_id"] for stream in streams] == ["first", "second"]
+    assert all(set(stream["support_positions"]) == {None} for stream in streams)
+    assert identity["source_sha256"] == source_hash
+    assert identity["boundaries"] == specification["data"]["boundaries"]
+
+    source.write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="source.sha256"):
+        _tokenized_text_streams(
+            specification,
+            config_path=tmp_path / "config.json",
+            tokenizer=ByteTokenizer(),
+        )
 
 
 def test_cpu_run_is_reproducible_resumable_and_paired(tmp_path) -> None:
@@ -118,16 +190,35 @@ def test_cpu_run_is_reproducible_resumable_and_paired(tmp_path) -> None:
     assert progress["completed_units"] == progress["total_units"] == 8
     assert load_run(output)["summary"] == first["summary"]
 
-    corrupted = json.loads(output.read_text())
-    corrupted["source_identity"]["git_revision"] = "different-source"
-    output.write_text(json.dumps(corrupted))
-    with pytest.raises(ValueError, match="does not match"):
-        run_experiment(
-            "configs/harness_smoke.json",
-            device="cpu",
-            output_root=tmp_path,
-            allow_dirty_source=True,
-        )
+    for identity_key in ("source_identity", "model_identity", "data_identity"):
+        corrupted = json.loads(json.dumps(first))
+        corrupted[identity_key]["corrupted"] = True
+        output.write_text(json.dumps(corrupted))
+        with pytest.raises(ValueError, match="does not match"):
+            run_experiment(
+                "configs/harness_smoke.json",
+                device="cpu",
+                output_root=tmp_path,
+                allow_dirty_source=True,
+            )
+    output.write_text(json.dumps(first))
+
+    partial = json.loads(json.dumps(first))
+    partial["measurements"].pop()
+    partial["complete"] = False
+    output.write_text(json.dumps(partial))
+    _, completed = run_experiment(
+        "configs/harness_smoke.json",
+        device="cpu",
+        output_root=tmp_path,
+        allow_dirty_source=True,
+    )
+    units = [
+        (measurement["condition"], measurement["stream_id"])
+        for measurement in completed["measurements"]
+    ]
+    assert completed["complete"]
+    assert len(units) == len(set(units)) == 8
 
 
 def test_draft_heatfield_run_is_refused_before_model_loading(tmp_path) -> None:
@@ -140,13 +231,17 @@ def test_draft_heatfield_run_is_refused_before_model_loading(tmp_path) -> None:
         )
 
 
-def test_validate_cli_does_not_import_torch_or_execute_model() -> None:
+def test_validate_status_and_summary_paths_do_not_import_torch_or_execute_model() -> None:
     root = Path(__file__).resolve().parent.parent
     script = """
 import sys
-from qkvs.harness import validate_config_file
+from qkvs.harness import load_run, print_summary, status, validate_config_file
 report = validate_config_file('configs/harness_smoke.json')
 assert report['valid']
+result = load_run('artifacts/results/harness-smoke')
+assert result['measurements']
+assert status('artifacts/results/harness-smoke')['run_id'] == 'harness-smoke'
+print_summary(result)
 assert 'torch' not in sys.modules
 """
     subprocess.run([sys.executable, "-c", script], cwd=root, check=True)
