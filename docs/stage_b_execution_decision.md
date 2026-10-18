@@ -50,3 +50,32 @@ substantive protocol change. Until then:
 - do not implement or train `S`;
 - do not change directory capacity, retrieval layer, or execution topology; and
 - do not reuse this failed result as positive Stage B evidence.
+
+## Authorized numerical diagnostic
+
+The arbiter subsequently authorized one bounded diagnostic investigation without reopening Stage
+B or changing the failed artifact. Its frozen specification is
+[`stage_b_numerical_diagnostic.json`](../configs/stage_b_numerical_diagnostic.json). It uses the
+same example and input-token hash and records:
+
+- the earliest rolling batch/incremental divergence at every decoder layer and token scale;
+- BF16 default-SDPA, BF16 math-SDPA, FP32 math-SDPA, and FP32 eager conditions;
+- uncached-prefix, cached-incremental, key/value-cache, mask-structure, and future-token
+  counterfactual measurements; and
+- final four-label losses and causal-oracle-minus-rolling utility under both execution paths.
+
+This diagnostic has no pass condition into Gate 0. Its purpose is to distinguish precision/backend
+effects from cache or masking defects and, only if the evidence justifies it, support a separately
+reviewed replacement numerical-validation protocol. Gate 0, `S`, and directory changes remain
+blocked.
+
+Run one checkpointed condition per invocation. Repeating the same command advances to the next
+frozen condition and atomically extends the same raw artifact:
+
+```bash
+HF_HOME="$PWD/artifacts/cache/huggingface" HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m qkvs.stage_b_numerical_diagnostic \
+  --diagnostic-config configs/stage_b_numerical_diagnostic.json \
+  --device cuda \
+  --max-conditions-this-run 1
+```
