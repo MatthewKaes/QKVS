@@ -3,7 +3,7 @@
 > **Independent research prototype — not a validated replacement for dense attention.**
 > QKVS investigates whether a decoder-only autoregressive transformer can **learn where to spend a bounded historical attention budget**, guided by semantics and a compact causal memory of previous selection states, without scanning the entire historical KV cache at inference.
 >
-> This README is the enduring **research charter and conceptual specification**, not an experimental preregistration. See [AGENTS.md](AGENTS.md) for agent operating rules and the [initial heat-field preregistration draft](docs/heatfield_preregistration.md) for the next proposed experiment.
+> This README is the enduring **research charter and conceptual specification**, not an experimental preregistration. See [AGENTS.md](AGENTS.md) for agent operating rules.
 
 ## The idea in one picture
 
