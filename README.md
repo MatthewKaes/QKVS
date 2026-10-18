@@ -40,10 +40,10 @@ Ordinary attention still uses **Q/K/V**. QKVS adds **S**, a separately learned s
 
 A candidate form for `S` is `J` spatial proposals, each with a center, spread, importance, and optional activity gate:
 
-\[
+```math
 S_t^\ell = \{(\mu_j,\sigma_j,w_j,g_j)\}_{j=1}^{J}, \qquad
 H_t^\ell(x) = \sum_{j=1}^{J}g_jw_j\,\kappa_{\beta}(x;\mu_j,\sigma_j).
-\]
+```
 
 `H(x)` is a **conceptual heat field over eligible historical positions**. Overlap between its component kernels can express more than a set of independent point predictions:
 
@@ -69,14 +69,14 @@ A principal design goal is for `S` to carry a **lingering retrieval heat signatu
 
 A stable **candidate** recurrence at each layer is:
 
-\[
+```math
 \begin{aligned}
 u_t^\ell &= F_\ell(h_t^\ell,\,S_t^{\ell-1}),\\
 z_t^\ell &= (1-\gamma_t^\ell)\,u_t^\ell
               +\gamma_t^\ell z_{t-1}^\ell,\\
 S_t^\ell &= G_\ell(z_t^\ell), \qquad 0\leq\gamma_t^\ell<1.
 \end{aligned}
-\]
+```
 
 `z_t^ℓ` is a small **persistent latent heat state**; `S_t^ℓ` decodes that state into spatial retrieval proposals. The first-layer cross-layer input is omitted or initialized causally. `γ` could be fixed, learned per layer, or dynamically gated per token/proposal; those are **alternatives to test**, not existing implementation facts.
 
@@ -105,10 +105,10 @@ A dense teacher can produce historical attention importance `a_i ≥ 0` for toke
 
 For selected historical windows `B`, evaluate the reader's answer loss with and without those windows under **the same causal timing**:
 
-\[
+```math
 U(B\mid x,y) = \mathcal L(y\mid\text{rolling},x)
                 - \mathcal L(y\mid\text{rolling}+B,x).
-\]
+```
 
 `U(B) > 0` means the selected set helps; `U(B) < 0` means the set hurts. Utility is **not additive**: complementary blocks may help only together, and a duplicate can change Q/K/V softmax multiplicity. The model must learn **set-level marginal value**, not merely rank individual addresses by a scalar label.
 
@@ -116,29 +116,29 @@ U(B\mid x,y) = \mathcal L(y\mid\text{rolling},x)
 
 Let `c_i(B)` be the number of selected windows covering historical token `i`. An illustrative discounted attention-coverage reward is:
 
-\[
+```math
 C_\alpha(B) = \sum_i a_i\sum_{r=0}^{c_i(B)-1}\alpha^r,
 \qquad 0\leq\alpha<1.
-\]
+```
 
 The first read receives full credit, a second overlap adds only `α` times that credit, a third adds `α²`, and so on. With `α=0` the teacher rewards **unique coverage only**. A very important peak may still justify multiple overlapping windows if the discounted marginal value exceeds reading something else. The **measured downstream utility** decides whether that overlap is actually beneficial.
 
 A differentiable **training surrogate** can use the soft coverage `q_{ji}` of proposal `j` at token `i` and approximate unique occupancy as
 
-\[
+```math
 p_i = 1-\prod_{j=1}^{J}(1-q_{ji}).
-\]
+```
 
 This is a useful approximation, not a claim that an integer KV gather transmits gradients. A teacher can generate a sparse binary mask or continuous target from discounted budgeted coverage; training may use set-level distillation, offline utility preferences, or an explicitly justified gradient estimator. **Do not assume answer-loss gradients pass through hard addresses.**
 
 An illustrative future objective mixes normalized coverage and utility while accounting for token/window budget:
 
-\[
+```math
 \max_{B:\,\mathrm{reads}(B)\le R}
 \lambda_A\,\widetilde C_\alpha(B)
 +\lambda_U\,\widetilde U(B)
 -\lambda_{\mathrm{cost}}\,\mathrm{cost}(B).
-\]
+```
 
 These terms have different scales; **weights, normalization, curriculum, and estimator are unvalidated design variables**. Teacher coverage should help regularize narrow optimization, but it can introduce biases of its own. The primary experimental question is whether **capturing the teacher's attention mass also recovers useful prediction quality** on held-out tasks. If attention mass and true causal utility disagree, **utility wins**. Benchmark both signals separately before endorsing any mixture.
 
