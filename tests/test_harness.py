@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from qkvs.harness import (
-    _LiveProgress,
+    _Progress,
     _progress_counts,
     _progress_line,
     _tokenized_text_streams,
@@ -49,39 +49,23 @@ def test_live_progress_uses_fixed_counter_and_space_filled_bar() -> None:
     assert line.endswith("heatfield / stream-002 : 00:01:05")
 
 
-def test_live_progress_rewrites_one_line_and_terminates_once() -> None:
-    class InteractiveOutput(io.StringIO):
-        def isatty(self) -> bool:
-            return True
-
-    output = InteractiveOutput()
-    progress = _LiveProgress(
-        completed=2,
-        total=12,
-        stream=output,
-        interval_seconds=60.0,
-    )
+def test_progress_reports_each_job_once_without_carriage_returns() -> None:
+    output = io.StringIO()
+    progress = _Progress(completed=2, total=12, stream=output)
     progress.start_job("fixed_offsets / synthetic-002")
     progress.complete_job()
     progress.close()
+
     rendered = output.getvalue()
-    assert rendered.count("\r") >= 3
+    assert rendered.count("fixed_offsets / synthetic-002") == 1
     assert rendered.count("\n") == 1
     assert "[  3 / 12 ]" in rendered
+    assert "\r" not in rendered
 
 
-def test_live_progress_restore_does_not_advance_durable_count() -> None:
-    class InteractiveOutput(io.StringIO):
-        def isatty(self) -> bool:
-            return True
-
-    output = InteractiveOutput()
-    progress = _LiveProgress(
-        completed=2,
-        total=12,
-        stream=output,
-        interval_seconds=60.0,
-    )
+def test_progress_restore_does_not_advance_durable_count() -> None:
+    output = io.StringIO()
+    progress = _Progress(completed=2, total=12, stream=output)
     progress.start_job("restore dense prefill", advances=False)
     progress.complete_job()
     progress.close()
@@ -89,24 +73,6 @@ def test_live_progress_restore_does_not_advance_durable_count() -> None:
     rendered = output.getvalue()
     assert "[  2 / 12 ]" in rendered
     assert "[  3 / 12 ]" not in rendered
-
-
-def test_captured_progress_never_emits_heartbeat_updates() -> None:
-    output = io.StringIO()
-    progress = _LiveProgress(
-        completed=2,
-        total=12,
-        stream=output,
-        interval_seconds=0.001,
-    )
-    progress.start_job("fixed_offsets / synthetic-002")
-    progress.render()
-    progress.render()
-    progress.complete_job()
-    progress.close()
-
-    rendered = output.getvalue()
-    assert rendered.count("fixed_offsets / synthetic-002") == 1
     assert rendered.count("\n") == 1
     assert "\r" not in rendered
 
