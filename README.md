@@ -146,3 +146,8 @@ Full attention remains a recorded diagnostic in V3, not a pass condition. The an
 reached 91.7% accuracy and beat rolling, fair random, and candidate-recency under every
 preregistered paired loss criterion. This establishes useful selected-history headroom, not learned
 or deployment-compatible routing.
+
+Stage B is preregistered separately in
+[docs/stage_b_preregistration.md](docs/stage_b_preregistration.md). Its strict single-pass causal
+reference and actual-checkpoint incremental audit are implemented, but causal-oracle evaluation and
+S training remain blocked pending arbiter review. No directory model has been trained.

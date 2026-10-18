@@ -1,0 +1,111 @@
+{
+  "stage": "B",
+  "status": "preregistered_not_approved_for_full_run",
+  "model": {
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775"
+  },
+  "datasets": {
+    "training": {
+      "name": "SQuAD train v1.1",
+      "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v1.1.json",
+      "sha256": "3527663986b8295af4f7fcdff1ba1ff3f72d07d61a20f487cb238a6ef92fd955",
+      "cache_path": "artifacts/cache/squad/train-v1.1.json"
+    },
+    "evaluation": {
+      "name": "SQuAD dev v1.1",
+      "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json",
+      "sha256": "95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9",
+      "cache_path": "artifacts/cache/squad/dev-v1.1.json"
+    },
+    "article_split_seed": 20265001,
+    "validation_article_fraction": 0.2,
+    "train_examples": 512,
+    "validation_examples": 128,
+    "evaluation_examples": 128
+  },
+  "geometry": {
+    "history_blocks": 56,
+    "candidate_positions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "block_tokens": 128,
+    "rolling_tokens": 256,
+    "rolling_layers": 24,
+    "global_prefix_tokens": 32,
+    "retrieval_budget_blocks": 1,
+    "retrieval_layer": 1,
+    "decision_position": "final_prompt_token"
+  },
+  "oracle_parity": {
+    "examples": 24,
+    "dataset_seed": 20261017,
+    "target_position_seed": 20262018,
+    "answer_label_seed": 20263018,
+    "random_baseline_seed": 20264018,
+    "minimum_causal_oracle_accuracy": 0.5,
+    "minimum_causal_oracle_vs_rolling_lower_bound_nats": 0.05,
+    "bootstrap_samples": 2000,
+    "output": "artifacts/results/stage_b_causal_oracle_parity.json"
+  },
+  "directory": {
+    "slots": 8,
+    "key_dimension": 32,
+    "primary_block_representation": "causal_layer1_input_mean_pool",
+    "control_block_representation": "causal_layer1_input_closing_token",
+    "query_representation": "causal_layer1_input_final_prompt_token",
+    "write_policy": "append_candidate_at_block_close",
+    "address_value": "candidate_block_start",
+    "temperature": 0.07
+  },
+  "training": {
+    "loss": "eight_way_supervised_contrastive_cross_entropy",
+    "batch_size": 32,
+    "maximum_steps": 1000,
+    "evaluation_interval": 100,
+    "optimizer": "adamw",
+    "learning_rate": 0.001,
+    "weight_decay": 0.01,
+    "gradient_clip_norm": 1.0,
+    "seeds": [
+      20267001,
+      20267002,
+      20267003
+    ],
+    "checkpoint_selection": "lowest_validation_cross_entropy"
+  },
+  "controls": [
+    "query_only_position_keys",
+    "correct_directory_learned_s",
+    "shuffled_key_address_bindings",
+    "random_candidate",
+    "candidate_recency",
+    "causally_aligned_annotated_oracle",
+    "stage_a_oracle",
+    "nondeployable_full_context_query",
+    "moved_block_counterfactual",
+    "retrieved_block_removal",
+    "closing_token_key",
+    "causal_mean_pooled_key"
+  ],
+  "gate": {
+    "minimum_learned_s_vs_rolling_lower_bound_nats": 0.0,
+    "minimum_learned_s_vs_random_lower_bound_nats": 0.0,
+    "minimum_learned_s_vs_recency_lower_bound_nats": 0.0,
+    "minimum_moved_block_accuracy": 0.5,
+    "minimum_moved_block_accuracy_lower_bound": 0.125,
+    "minimum_moved_address_follow_rate": 0.5,
+    "maximum_removal_vs_rolling_logit_error": 0.00001,
+    "incremental_hidden_max_absolute_error": 0.002,
+    "incremental_logit_max_absolute_error": 0.0001,
+    "minimum_incremental_last_hidden_cosine": 0.999999,
+    "require_incremental_top1_match": true
+  }
+}

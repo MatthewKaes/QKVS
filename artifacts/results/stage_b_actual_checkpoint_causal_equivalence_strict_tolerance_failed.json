@@ -1,0 +1,54 @@
+{
+  "decision_position": 95,
+  "device": "cpu",
+  "dtype": "float32",
+  "global_prefix_end": 8,
+  "model": {
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775"
+  },
+  "modes": {
+    "causal_oracle": {
+      "batched_top1_token": 504,
+      "hidden_max_absolute_error": 0.0016326904296875,
+      "hidden_mean_absolute_error": 1.8217082470073365e-05,
+      "incremental_top1_token": 504,
+      "logit_max_absolute_error": 2.193450927734375e-05,
+      "logit_mean_absolute_error": 3.6159265164315e-06
+    },
+    "rolling": {
+      "batched_top1_token": 504,
+      "hidden_max_absolute_error": 0.0016326904296875,
+      "hidden_mean_absolute_error": 1.8217877368442714e-05,
+      "incremental_top1_token": 504,
+      "logit_max_absolute_error": 2.372264862060547e-05,
+      "logit_mean_absolute_error": 3.3672070003376575e-06
+    },
+    "stage_a_oracle": {
+      "batched_top1_token": 504,
+      "hidden_max_absolute_error": 0.0012359619140625,
+      "hidden_mean_absolute_error": 1.7925771317095496e-05,
+      "incremental_top1_token": 504,
+      "logit_max_absolute_error": 2.47955322265625e-05,
+      "logit_mean_absolute_error": 3.929588729079114e-06
+    }
+  },
+  "passed": false,
+  "python": "3.13.15",
+  "retrieval_layer": 1,
+  "rolling_tokens": 32,
+  "schema_version": 1,
+  "selected_range": [
+    16,
+    24
+  ],
+  "sequence_tokens": 96,
+  "test": "stage_b_strict_causal_batch_incremental_equivalence",
+  "thresholds": {
+    "hidden_max_absolute_error": 1e-05,
+    "logit_max_absolute_error": 0.0001,
+    "require_top1_match": true
+  },
+  "torch": "2.9.0+cu130",
+  "transformers": "4.57.1"
+}
