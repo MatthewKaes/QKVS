@@ -469,13 +469,14 @@ trial sets and 60 dense-prefix snapshots.
 position/coverage cells for KL≤0.01. It retains attempts, successful candidates, and hit
 probability; the complete feasibility and candidate files remain unchanged and authoritative.
 
-Two follow-up configurations remain `draft_not_authorized` and report only the KL≤0.01 analytical
-threshold. `configs/h1a_kl_0_01_existing_cell_extension.json` adds trial IDs 400–499 to every
+Two follow-up configurations are each approved for one human-initiated exploratory GPU run. Each
+reports only the KL≤0.01 analytical threshold.
+`configs/h1a_kl_0_01_existing_cell_extension.json` adds trial IDs 400–499 to every
 non-dense cell of the completed 60-position grid (66,060 passes including dense controls) and
 identity-checks/reuses that run's immutable dense snapshots. `configs/h1a_kl_0_01_position_extension.json`
 adds 50 new seeded positions across the 32K range, with 500 candidates at each of the same eleven
-non-dense coverage percentages plus a dense control (275,050 passes). Neither may execute without
-independent authorization.
+non-dense coverage percentages plus a dense control (275,050 passes). Authorization does not extend
+to altered parameters or additional runs.
 
 The same directory includes deterministic SVG and PNG density heatmaps for the `0.001`-nat and
 `0.01`-nat KL thresholds. They use actual token coordinates and bilinear interpolation between

@@ -352,19 +352,19 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     }
     assert h1a_cell_extension == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "h1a_kl_0_01_existing_cell_extension",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
     assert h1a_position_extension == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "h1a_kl_0_01_position_extension",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
