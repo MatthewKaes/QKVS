@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
-_SNAPSHOT_OVERLAP_THRESHOLDS = (0.9999, 0.9995, 0.995, 0.95)
+SNAPSHOT_OVERLAP_THRESHOLDS = (0.9999, 0.9995, 0.995, 0.95)
 
 
 def _mean(values: Iterable[float]) -> float:
@@ -398,7 +398,7 @@ def summarize_snapshot_trial_set(
                 float(candidate["probability_distribution_overlap"] >= threshold)
                 for candidate in candidates
             )
-            for threshold in _SNAPSHOT_OVERLAP_THRESHOLDS
+            for threshold in SNAPSHOT_OVERLAP_THRESHOLDS
         },
         "mean_selected_token_occurrences": _mean(
             candidate["selected_token_occurrences"] for candidate in candidates

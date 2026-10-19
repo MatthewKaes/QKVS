@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "experiment": "h1a_context_density_expansion",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "h1a-context-density-expansion",
+    "seed": 20261019
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "dtype": "bfloat16",
+    "frozen": true
+  },
+  "data": {
+    "kind": "tokenized_text",
+    "source": {
+      "path": "../data/project_gutenberg_1661.txt",
+      "url": "https://www.gutenberg.org/cache/epub/1661/pg1661.txt",
+      "bytes": 607606,
+      "sha256": "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0"
+    },
+    "boundaries": [
+      {
+        "id": "h1a-expansion-sherlock-000",
+        "split": "evaluation",
+        "start_token": 0,
+        "stop_token": 32768
+      }
+    ]
+  },
+  "study": {
+    "kind": "unconstrained_snapshot_compressibility",
+    "positions": [
+      793,
+      1853,
+      2324,
+      2669,
+      3851,
+      3938,
+      4767,
+      5350,
+      6006,
+      6634,
+      7468,
+      8041,
+      9138,
+      9733,
+      10151,
+      11076,
+      11552,
+      12108,
+      12834,
+      13796,
+      14215,
+      15041,
+      15296,
+      15908,
+      15942,
+      15974,
+      16008,
+      16076,
+      16091,
+      16154,
+      16195,
+      16233,
+      16282,
+      16295,
+      16328,
+      16365,
+      16741,
+      17765,
+      18122,
+      18978,
+      19611,
+      20338,
+      21320,
+      21424,
+      22206,
+      22944,
+      23437,
+      24408,
+      24815,
+      25679,
+      26066,
+      27098,
+      27457,
+      28433,
+      29131,
+      29898,
+      30534,
+      31398,
+      31780,
+      32549
+    ],
+    "position_cohorts": {
+      "stratified_512_to_32k": [
+        793,
+        1853,
+        2324,
+        2669,
+        3851,
+        3938,
+        4767,
+        5350,
+        6006,
+        6634,
+        7468,
+        8041,
+        9138,
+        9733,
+        10151,
+        11076,
+        11552,
+        12108,
+        12834,
+        13796,
+        14215,
+        15041,
+        15296,
+        16282,
+        16741,
+        17765,
+        18122,
+        18978,
+        19611,
+        20338,
+        21320,
+        21424,
+        22206,
+        22944,
+        23437,
+        24408,
+        24815,
+        25679,
+        26066,
+        27098,
+        27457,
+        28433,
+        29131,
+        29898,
+        30534,
+        31398,
+        31780,
+        32549
+      ],
+      "targeted_15_5k_to_16k": [
+        15908,
+        15942,
+        15974,
+        16008,
+        16076,
+        16091,
+        16154,
+        16195,
+        16233,
+        16295,
+        16328,
+        16365
+      ]
+    },
+    "position_selection": {
+      "algorithm": "sha256-stratified-v1",
+      "seed": 20261020,
+      "validated_max_position_embeddings": 32768,
+      "stratified_range": [
+        512,
+        32767
+      ],
+      "stratified_count": 48,
+      "targeted_range": [
+        15872,
+        16383
+      ],
+      "targeted_count": 12,
+      "excluded_previous_positions": [
+        99,
+        999,
+        4095,
+        6143,
+        8191,
+        10239,
+        16382
+      ]
+    },
+    "expected_candidate_passes": 108060,
+    "block_width": 8,
+    "sampling_percentages": [
+      1,
+      5,
+      10,
+      20,
+      40,
+      60,
+      80,
+      95,
+      99,
+      100
+    ],
+    "trial_start": 0,
+    "trials_per_fraction": 200,
+    "sampling_algorithm": "uniform-aligned-blocks-v1",
+    "fidelity_tolerances_nats": [
+      0.001,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "dense_parity_tolerance": {
+      "logit_atol": 0.005,
+      "loss_atol": 0.005
+    }
+  },
+  "execution": {
+    "prefill_chunk_tokens": 128,
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

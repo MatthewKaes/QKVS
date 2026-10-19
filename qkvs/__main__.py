@@ -4,6 +4,7 @@ import argparse
 
 from qkvs.harness import (
     dump_json,
+    export_snapshot_data,
     load_run,
     print_status,
     print_summary,
@@ -37,6 +38,13 @@ def _parser() -> argparse.ArgumentParser:
     summarize = commands.add_parser("summarize", help="summarize measurements from a saved run")
     summarize.add_argument("--run", required=True)
     summarize.add_argument("--json", action="store_true")
+
+    export = commands.add_parser(
+        "export-snapshot",
+        help="export a completed snapshot study as compact CSV research data",
+    )
+    export.add_argument("--run", required=True)
+    export.add_argument("--output", required=True)
     return parser
 
 
@@ -56,6 +64,10 @@ def main() -> None:
     if args.command == "summarize":
         result = load_run(args.run)
         dump_json(result["summary"]) if args.json else print_summary(result)
+        return
+    if args.command == "export-snapshot":
+        manifest = export_snapshot_data(args.run, args.output)
+        print(f"Exported {manifest['csv']['H1a_trials.csv']['rows']} candidates to {args.output}")
         return
     if args.command == "run":
         _, result = run_experiment(args.config, device=args.device)

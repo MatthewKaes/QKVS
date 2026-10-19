@@ -446,6 +446,28 @@ human-initiated exploratory GPU study. The command is:
 ./run.sh configs/h1a_snapshot_compressibility.json
 ```
 
+Completed snapshot studies can be exported without loading a model:
+
+```bash
+qkvs export-snapshot \
+  --run artifacts/results/h1a-unconstrained-snapshot-compressibility \
+  --output docs/data/h1a-unconstrained-snapshot-compressibility
+```
+
+The exporter verifies every trial-set hash, then writes atomic candidate, dense-reference, and
+feasibility CSVs plus a provenance manifest. Seeds use exact unsigned 64-bit hexadecimal strings;
+candidate rows are ordered by stream, position, requested fraction, and trial ID. The completed
+H1a artifacts record 20 sampled-location bins, despite an interim handoff describing 16, so the
+export preserves all 20 rather than merging or inventing bins. Dense K/V snapshots remain separate.
+
+`configs/h1a_context_expansion.json` is an unauthorized draft containing 48 seeded positions
+stratified from position 512 toward the 32K model boundary plus a separate 12-position replication
+cohort in the 15.5K–16K region. The 60 frozen positions exclude all seven original H1a positions
+and imply 108,060 candidate passes. `configs/h1a_independent_document_replication.json` is a
+separate unauthorized draft with the same position cohorts and sampling protocol over a
+SHA-256-pinned Project Gutenberg edition of *Moby-Dick*. Neither draft may be executed without
+independent authorization.
+
 ## Configuration and artifacts
 
 Configurations keep proposal count, window width, and historical token-occurrence budget separate.
@@ -495,6 +517,7 @@ concurrent run.
 `configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
 `configs/heatfield_hard_aligned_corrected_study.json` identifies the completed correction;
 `configs/heatfield_full_qkvs_learning_study.json` identifies the unauthorized full-QKVS training
-draft; `configs/h1a_snapshot_compressibility.json` identifies the approved H1a snapshot study.
+draft; `configs/h1a_snapshot_compressibility.json` identifies the completed approved H1a snapshot
+study; and the context-expansion and independent-document H1a configurations remain unauthorized.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

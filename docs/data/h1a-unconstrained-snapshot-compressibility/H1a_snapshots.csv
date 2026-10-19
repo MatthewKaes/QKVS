@@ -1,0 +1,8 @@
+stream_id,position,context_length,next_token_target,dense_reference_next_token_ce,dense_reference_top_one_prediction
+h1a-sherlock-000,99,100,525,0.00020122528076171875,525
+h1a-sherlock-000,999,1000,279,0.765625,279
+h1a-sherlock-000,4095,4096,65250,9.0,7340
+h1a-sherlock-000,6143,6144,1084,3.15625,358
+h1a-sherlock-000,8191,8192,574,3.34375,40
+h1a-sherlock-000,10239,10240,6617,3.203125,2684
+h1a-sherlock-000,16382,16383,11,0.01080322265625,11

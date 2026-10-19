@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -18,6 +19,7 @@ from qkvs.harness import (
     _progress_counts,
     _progress_line,
     _tokenized_text_streams,
+    export_snapshot_data,
     load_run,
     print_summary,
     run_experiment,
@@ -26,6 +28,7 @@ from qkvs.harness import (
     validate_config_file,
 )
 from qkvs.metrics import summarize_snapshot_frontiers, summarize_snapshot_trial_set
+from qkvs.selection import derive_random_block_seed
 
 
 def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, monkeypatch) -> None:
@@ -243,12 +246,16 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     corrected_path = Path("configs/heatfield_hard_aligned_corrected_study.json")
     full_qkvs_path = Path("configs/heatfield_full_qkvs_learning_study.json")
     h1a_path = Path("configs/h1a_snapshot_compressibility.json")
+    h1a_expansion_path = Path("configs/h1a_context_expansion.json")
+    h1a_replication_path = Path("configs/h1a_independent_document_replication.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
     corrected = validate_config_file(corrected_path)
     full_qkvs = validate_config_file(full_qkvs_path)
     h1a = validate_config_file(h1a_path)
+    h1a_expansion = validate_config_file(h1a_expansion_path)
+    h1a_replication = validate_config_file(h1a_replication_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -322,6 +329,24 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_unconstrained_snapshot_compressibility",
         "status": "approved",
     }
+    for report, experiment in (
+        (h1a_expansion, "h1a_context_density_expansion"),
+        (h1a_replication, "h1a_independent_document_replication"),
+    ):
+        assert report == {
+            "valid": True,
+            "runnable": False,
+            "errors": [],
+            "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+            "experiment": experiment,
+            "status": "draft_not_authorized",
+        }
+    assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
+        "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
+    )
+    assert hashlib.sha256(Path("docs/data/H1a.json").read_bytes()).hexdigest() == (
+        "c060125fc921642f3486bba111804ae5c41f2a24be02f5f84440ac834e0291ba"
+    )
     h1a_specification = json.loads(h1a_path.read_text())
     assert all(
         field not in h1a_specification
@@ -348,6 +373,77 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "snapshot studies must not define QKVS attention or selector controls"
         in validate_config(invalid_h1a)["errors"]
     )
+
+    expansion = json.loads(h1a_expansion_path.read_text())
+    replication = json.loads(h1a_replication_path.read_text())
+    original_positions = set(h1a_specification["study"]["positions"])
+    expansion_positions = expansion["study"]["positions"]
+    expansion_cohorts = expansion["study"]["position_cohorts"]
+    assert len(expansion_positions) == len(set(expansion_positions)) == 60
+    assert len(expansion_cohorts["stratified_512_to_32k"]) == 48
+    assert len(expansion_cohorts["targeted_15_5k_to_16k"]) == 12
+    assert set(expansion_positions).isdisjoint(original_positions)
+    assert set(expansion_positions) == {
+        position for cohort in expansion_cohorts.values() for position in cohort
+    }
+    assert all(15872 <= position < 16383 for position in expansion_cohorts["targeted_15_5k_to_16k"])
+    assert min(expansion_cohorts["stratified_512_to_32k"]) >= 512
+    assert max(expansion_cohorts["stratified_512_to_32k"]) <= 32766
+    assert expansion["study"]["expected_candidate_passes"] == 108060
+    assert expansion["study"]["expected_candidate_passes"] == 60 * (9 * 200 + 1)
+    position_selection = expansion["study"]["position_selection"]
+    assert position_selection["validated_max_position_embeddings"] == 32768
+
+    def regenerate_positions(start, stop, count, cohort, excluded):
+        regenerated = []
+        for index in range(count):
+            lower = start + index * (stop - start) // count
+            upper = start + (index + 1) * (stop - start) // count
+            position = lower + derive_random_block_seed(
+                position_selection["seed"], cohort, index
+            ) % (upper - lower)
+            while position in excluded or position in regenerated:
+                position = lower + (position - lower + 1) % (upper - lower)
+            regenerated.append(position)
+        return regenerated
+
+    regenerated_stratified = regenerate_positions(
+        *position_selection["stratified_range"],
+        position_selection["stratified_count"],
+        1,
+        original_positions,
+    )
+    regenerated_targeted = regenerate_positions(
+        *position_selection["targeted_range"],
+        position_selection["targeted_count"],
+        2,
+        original_positions | set(regenerated_stratified),
+    )
+    assert regenerated_stratified == expansion_cohorts["stratified_512_to_32k"]
+    assert regenerated_targeted == expansion_cohorts["targeted_15_5k_to_16k"]
+    assert expansion["model"] == h1a_specification["model"]
+    assert expansion["data"]["source"] == h1a_specification["data"]["source"]
+    for field in (
+        "block_width",
+        "sampling_percentages",
+        "trial_start",
+        "trials_per_fraction",
+        "sampling_algorithm",
+        "fidelity_tolerances_nats",
+        "dense_parity_tolerance",
+    ):
+        assert expansion["study"][field] == h1a_specification["study"][field]
+        assert replication["study"][field] == expansion["study"][field]
+    assert replication["study"]["positions"] == expansion_positions
+    assert replication["study"]["position_cohorts"] == expansion_cohorts
+    assert replication["model"] == expansion["model"]
+    assert replication["data"]["source"] == {
+        "path": "../data/project_gutenberg_2701.txt",
+        "url": "https://www.gutenberg.org/cache/epub/2701/pg2701.txt",
+        "bytes": 1276315,
+        "sha256": "b5e88b71a1cda068e9ab1d94344c9d932338ba6da1a66def97a1aecd9cfcc87d",
+    }
+    assert replication["data"]["source"] != expansion["data"]["source"]
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -431,6 +527,98 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "learned heat-field training configuration is incomplete"
         in validate_config(invalid)["not_runnable_reasons"]
     )
+
+
+def test_checked_in_h1a_csv_export_is_complete_and_self_consistent() -> None:
+    directory = Path("docs/data/h1a-unconstrained-snapshot-compressibility")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["format"] == "qkvs-h1a-csv-v1"
+    assert manifest["run_id"] == "h1a-unconstrained-snapshot-compressibility"
+    assert manifest["source_identity"]["git_revision"] == (
+        "f53dba9e8c46ea2c95e80fa996c3d99a2ad0f9a1"
+    )
+    assert manifest["sampled_location_histogram_bins"] == 20
+    for name, record in manifest["csv"].items():
+        path = directory / name
+        assert path.stat().st_size == record["bytes"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"]
+
+    with (directory / "H1a_trials.csv").open(newline="") as source:
+        trials = list(csv.DictReader(source))
+    with (directory / "H1a_snapshots.csv").open(newline="") as source:
+        snapshots = list(csv.DictReader(source))
+    with (directory / "H1a_feasibility.csv").open(newline="") as source:
+        feasibility = list(csv.DictReader(source))
+    assert len(trials) == manifest["csv"]["H1a_trials.csv"]["rows"] == 12607
+    assert len(snapshots) == manifest["csv"]["H1a_snapshots.csv"]["rows"] == 7
+    assert len(feasibility) == manifest["csv"]["H1a_feasibility.csv"]["rows"] == 560
+    identities = [
+        (
+            row["stream_id"],
+            int(row["position"]),
+            float(row["requested_sampled_fraction"]),
+            int(row["trial_id"]),
+        )
+        for row in trials
+    ]
+    assert identities == sorted(identities)
+    assert len(identities) == len(set(identities))
+    assert all(
+        row["candidate_seed_hex"].startswith("0x")
+        and len(row["candidate_seed_hex"]) == 18
+        and 0 <= int(row["candidate_seed_hex"], 16) < 2**64
+        for row in trials
+    )
+    assert sum(column.startswith("sampled_position_bin_") for column in trials[0]) == 20
+
+    trials_by_fraction: dict[tuple[int, float], list[dict[str, str]]] = {}
+    for row in trials:
+        trials_by_fraction.setdefault(
+            (int(row["position"]), float(row["requested_sampled_fraction"])), []
+        ).append(row)
+    for row in feasibility:
+        candidates = trials_by_fraction[
+            (int(row["position"]), float(row["requested_sampled_fraction"]))
+        ]
+        threshold = float(row["threshold"])
+        metric = row["metric"]
+        if row["comparison"] == "<=":
+            success_count = sum(float(candidate[metric]) <= threshold for candidate in candidates)
+        else:
+            assert row["comparison"] == ">="
+            success_count = sum(float(candidate[metric]) >= threshold for candidate in candidates)
+        assert int(row["success_count"]) == success_count
+        assert int(row["attempts"]) == len(candidates)
+        assert float(row["success_probability"]) == success_count / len(candidates)
+
+    for position, frontiers in manifest["original_frontiers"]["frontiers_by_position"].items():
+        position_trials = [row for row in trials if row["position"] == position]
+        for tolerance, frontier in frontiers.items():
+            successful = [
+                row
+                for row in position_trials
+                if float(row["kl_divergence_nats"]) <= float(tolerance)
+            ]
+            assert frontier["status"] == "found"
+            discovered = min(
+                successful,
+                key=lambda row: (
+                    float(row["realized_sampled_fraction"]),
+                    float(row["kl_divergence_nats"]),
+                    int(row["trial_id"]),
+                ),
+            )
+            assert (
+                float(discovered["realized_sampled_fraction"])
+                == frontier["smallest_discovered_fraction"]
+            )
+            assert (
+                float(discovered["requested_sampled_fraction"])
+                == frontier["requested_sampled_fraction"]
+            )
+            assert int(discovered["trial_id"]) == frontier["trial_id"]
+            assert int(discovered["candidate_seed_hex"], 16) == frontier["candidate_seed"]
+            assert float(discovered["kl_divergence_nats"]) == frontier["kl_divergence_nats"]
 
 
 def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() -> None:
@@ -660,6 +848,102 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     )
     print_summary(resumed)
     assert "KL<=0.1" in capfd.readouterr().out
+
+    export_directory = tmp_path / "export"
+    original_hashes = {
+        record["path"]: hashlib.sha256((output.parent / record["path"]).read_bytes()).hexdigest()
+        for record in resumed["snapshot_observations"]
+    }
+    manifest = export_snapshot_data(output, export_directory)
+    with (export_directory / "H1a_trials.csv").open(newline="") as source:
+        trial_rows = list(csv.DictReader(source))
+    with (export_directory / "H1a_snapshots.csv").open(newline="") as source:
+        snapshot_rows = list(csv.DictReader(source))
+    with (export_directory / "H1a_feasibility.csv").open(newline="") as source:
+        feasibility_rows = list(csv.DictReader(source))
+    assert manifest["format"] == "qkvs-h1a-csv-v1"
+    assert manifest["sampled_location_histogram_bins"] == 20
+    assert manifest["csv"]["H1a_trials.csv"]["rows"] == len(trial_rows) == 8
+    assert manifest["csv"]["H1a_snapshots.csv"]["rows"] == len(snapshot_rows) == 2
+    assert manifest["csv"]["H1a_feasibility.csv"]["rows"] == len(feasibility_rows) == 24
+    assert all(
+        row["candidate_seed_hex"].startswith("0x") and len(row["candidate_seed_hex"]) == 18
+        for row in trial_rows
+    )
+    assert len(
+        {
+            (
+                row["stream_id"],
+                int(row["position"]),
+                float(row["requested_sampled_fraction"]),
+                int(row["trial_id"]),
+            )
+            for row in trial_rows
+        }
+    ) == len(trial_rows)
+    assert [
+        (
+            row["stream_id"],
+            int(row["position"]),
+            float(row["requested_sampled_fraction"]),
+            int(row["trial_id"]),
+        )
+        for row in trial_rows
+    ] == sorted(
+        (
+            row["stream_id"],
+            int(row["position"]),
+            float(row["requested_sampled_fraction"]),
+            int(row["trial_id"]),
+        )
+        for row in trial_rows
+    )
+    original_candidates = {
+        (
+            observation["position"],
+            observation["requested_sampled_fraction"],
+            candidate["trial_id"],
+        ): candidate
+        for observation in observations
+        for candidate in observation["candidates"]
+    }
+    for row in trial_rows:
+        candidate = original_candidates[
+            (
+                int(row["position"]),
+                float(row["requested_sampled_fraction"]),
+                int(row["trial_id"]),
+            )
+        ]
+        assert int(row["candidate_seed_hex"], 16) == candidate["candidate_seed"]
+        assert float(row["kl_divergence_nats"]) == candidate["kl_divergence_nats"]
+        assert (
+            float(row["probability_distribution_overlap"])
+            == candidate["probability_distribution_overlap"]
+        )
+        assert float(row["next_token_ce_delta_nats"]) == candidate["next_token_ce_delta_nats"]
+        assert [int(row[f"sampled_position_bin_{index:02d}"]) for index in range(20)] == candidate[
+            "sampled_position_histogram"
+        ]
+    assert {
+        record["path"]: hashlib.sha256((output.parent / record["path"]).read_bytes()).hexdigest()
+        for record in resumed["snapshot_observations"]
+    } == original_hashes
+    for name, record in manifest["csv"].items():
+        csv_path = export_directory / name
+        assert hashlib.sha256(csv_path.read_bytes()).hexdigest() == record["sha256"]
+        assert csv_path.stat().st_size == record["bytes"]
+    second_export = tmp_path / "second-export"
+    export_snapshot_data(output, second_export)
+    assert all(
+        (export_directory / name).read_bytes() == (second_export / name).read_bytes()
+        for name in (
+            "H1a_trials.csv",
+            "H1a_snapshots.csv",
+            "H1a_feasibility.csv",
+            "manifest.json",
+        )
+    )
 
     _, repeated = run_experiment(
         config,
@@ -1021,4 +1305,4 @@ def test_module_help_exposes_one_common_interface() -> None:
         text=True,
     )
     assert completed.stdout.startswith("usage: qkvs ")
-    assert "{run,validate,status,summarize}" in completed.stdout
+    assert "{run,validate,status,summarize,export-snapshot}" in completed.stdout

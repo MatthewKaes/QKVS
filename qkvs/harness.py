@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
@@ -11,10 +12,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TextIO
 
 from qkvs.metrics import (
+    SNAPSHOT_OVERLAP_THRESHOLDS,
     summarize_measurements,
     summarize_snapshot_frontiers,
     summarize_snapshot_trial_set,
@@ -56,6 +59,7 @@ _SNAPSHOT_STUDY_KIND = "unconstrained_snapshot_compressibility"
 _SNAPSHOT_EXECUTION_VERSION = "qwen2-h1a-current-token-v1"
 _SNAPSHOT_HISTOGRAM_BINS = 20
 _SNAPSHOT_PROBABILITY_TOLERANCE = 1e-6
+_SNAPSHOT_EXPORT_FORMAT = "qkvs-h1a-csv-v1"
 
 
 def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -757,6 +761,39 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         trial_start = study.get("trial_start")
         if not isinstance(trial_start, int) or isinstance(trial_start, bool) or trial_start < 0:
             errors.append("snapshot trial_start must be a nonnegative integer")
+        cohorts = study.get("position_cohorts")
+        if cohorts is not None:
+            if (
+                not isinstance(cohorts, dict)
+                or not cohorts
+                or any(
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(cohort, list)
+                    or not cohort
+                    or any(not _positive_integer(position) for position in cohort)
+                    for name, cohort in cohorts.items()
+                )
+            ):
+                errors.append("snapshot position cohorts must be named nonempty position lists")
+            else:
+                cohort_positions = [position for cohort in cohorts.values() for position in cohort]
+                if len(cohort_positions) != len(set(cohort_positions)):
+                    errors.append("snapshot position cohorts must not overlap")
+                if set(cohort_positions) != set(positions):
+                    errors.append("snapshot position cohorts must partition study.positions")
+        expected_candidate_passes = study.get("expected_candidate_passes")
+        if expected_candidate_passes is not None:
+            calculated_candidate_passes = (
+                len(positions) * ((len(percentages) - 1) * study.get("trials_per_fraction", 0) + 1)
+                if positions and percentages and _positive_integer(study.get("trials_per_fraction"))
+                else None
+            )
+            if (
+                not _positive_integer(expected_candidate_passes)
+                or expected_candidate_passes != calculated_candidate_passes
+            ):
+                errors.append("snapshot expected candidate passes do not match the study grid")
         if study.get("sampling_algorithm") != "uniform-aligned-blocks-v1":
             errors.append("snapshot sampling_algorithm is unsupported")
         tolerances = study.get("fidelity_tolerances_nats")
@@ -1348,6 +1385,360 @@ def _read_snapshot_observation_sets(
             raise ValueError("snapshot observation manifest does not match its artifact")
         observations.append(observation)
     return observations
+
+
+def _write_csv(
+    path: Path,
+    fieldnames: tuple[str, ...],
+    rows: Iterable[dict[str, Any]],
+) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    row_count = 0
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as output:
+            writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+                row_count += 1
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return row_count
+
+
+def _snapshot_seed_hex(value: Any) -> str:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < 2**64:
+        raise ValueError("snapshot candidate seed is not an unsigned 64-bit integer")
+    return f"0x{value:016x}"
+
+
+def export_snapshot_data(
+    path: str | Path,
+    output_directory: str | Path,
+) -> dict[str, Any]:
+    """Export a completed snapshot study without model execution or observation recomputation."""
+
+    result_path = resolve_run(path)
+    result = _load_json(result_path)
+    study = result.get("config", {}).get("study", {})
+    if study.get("kind") != _SNAPSHOT_STUDY_KIND:
+        raise ValueError("CSV export requires a snapshot study result")
+    if not result.get("complete"):
+        raise ValueError("CSV export requires a complete snapshot study")
+    observations = sorted(
+        _read_snapshot_observation_sets(result, result_path),
+        key=lambda observation: (
+            int(observation["position"]),
+            float(observation["requested_sampling_percentage"]),
+        ),
+    )
+    expected_observations = len(study["positions"]) * len(study["sampling_percentages"])
+    if len(observations) != expected_observations:
+        raise ValueError("snapshot observation count does not match the frozen configuration")
+    recomputed_frontiers = summarize_snapshot_frontiers(
+        observations,
+        fidelity_tolerances=[float(value) for value in study["fidelity_tolerances_nats"]],
+    )
+    if recomputed_frontiers != result.get("snapshot_summary"):
+        raise ValueError("snapshot fidelity frontiers do not match the original observations")
+
+    candidates = [
+        candidate for observation in observations for candidate in observation["candidates"]
+    ]
+    histogram_widths = {len(candidate["sampled_position_histogram"]) for candidate in candidates}
+    layer_counts = {len(candidate["sampled_block_count_per_layer"]) for candidate in candidates}
+    if len(histogram_widths) != 1 or len(layer_counts) != 1:
+        raise ValueError("snapshot candidate dimensions are inconsistent")
+    histogram_bins = histogram_widths.pop()
+    layer_count = layer_counts.pop()
+    stream_id = result["streams"][0]["stream_id"]
+    candidate_identities: set[tuple[str, int, float, int]] = set()
+    for observation in observations:
+        expected_count = (
+            1
+            if float(observation["requested_sampling_percentage"]) == 100.0
+            else study["trials_per_fraction"]
+        )
+        if len(observation["candidates"]) != expected_count:
+            raise ValueError("snapshot candidate count does not match the frozen configuration")
+        for candidate in observation["candidates"]:
+            identity = (
+                stream_id,
+                int(observation["position"]),
+                float(observation["requested_sampled_fraction"]),
+                int(candidate["trial_id"]),
+            )
+            if identity in candidate_identities:
+                raise ValueError("snapshot export contains a duplicate candidate identity")
+            candidate_identities.add(identity)
+
+    trial_fields = (
+        "stream_id",
+        "position",
+        "context_length",
+        "requested_sampling_percentage",
+        "requested_sampled_fraction",
+        "realized_sampled_fraction",
+        "trial_id",
+        "candidate_seed_hex",
+        "sampling_algorithm",
+        "execution_identity_sha256",
+        "sampling_cost_rho",
+        "selected_token_occurrences",
+        "historical_token_occurrences",
+        "current_token_layer_reads",
+        "actual_gathered_key_occurrences",
+        "actual_gathered_value_occurrences",
+        "aggregate_unique_positions",
+        "historical_unique_positions",
+        "aggregate_block_count",
+        *(f"layer_{index:02d}_block_count" for index in range(layer_count)),
+        "kl_divergence_nats",
+        "probability_distribution_overlap",
+        "sparse_next_token_loss",
+        "next_token_ce_delta_nats",
+        "sparse_top_one_prediction",
+        "top_one_agreement",
+        "full_logit_max_abs_error",
+        "full_loss_abs_error",
+        *(f"sampled_position_bin_{index:02d}" for index in range(histogram_bins)),
+    )
+
+    def trial_rows() -> Iterable[dict[str, Any]]:
+        for observation in observations:
+            for candidate in sorted(
+                observation["candidates"], key=lambda candidate: int(candidate["trial_id"])
+            ):
+                row = {
+                    "stream_id": stream_id,
+                    "position": observation["position"],
+                    "context_length": observation["causal_history_length"],
+                    "requested_sampling_percentage": observation["requested_sampling_percentage"],
+                    "requested_sampled_fraction": candidate["requested_sampled_fraction"],
+                    "realized_sampled_fraction": candidate["realized_sampled_fraction"],
+                    "trial_id": candidate["trial_id"],
+                    "candidate_seed_hex": _snapshot_seed_hex(candidate["candidate_seed"]),
+                    "sampling_algorithm": candidate["sampling_algorithm"],
+                    "execution_identity_sha256": candidate["execution_identity_sha256"],
+                    "sampling_cost_rho": candidate["sampling_cost_rho"],
+                    "selected_token_occurrences": candidate["selected_token_occurrences"],
+                    "historical_token_occurrences": candidate["historical_token_occurrences"],
+                    "current_token_layer_reads": candidate["current_token_layer_reads"],
+                    "actual_gathered_key_occurrences": candidate["actual_gathered_key_occurrences"],
+                    "actual_gathered_value_occurrences": candidate[
+                        "actual_gathered_value_occurrences"
+                    ],
+                    "aggregate_unique_positions": candidate["aggregate_unique_positions"],
+                    "historical_unique_positions": candidate["historical_unique_positions"],
+                    "aggregate_block_count": candidate["aggregate_block_count"],
+                    "kl_divergence_nats": candidate["kl_divergence_nats"],
+                    "probability_distribution_overlap": candidate[
+                        "probability_distribution_overlap"
+                    ],
+                    "sparse_next_token_loss": candidate["sparse_next_token_loss"],
+                    "next_token_ce_delta_nats": candidate["next_token_ce_delta_nats"],
+                    "sparse_top_one_prediction": candidate["sparse_top_one_prediction"],
+                    "top_one_agreement": int(candidate["top_one_agreement"]),
+                    "full_logit_max_abs_error": candidate["full_logit_max_abs_error"],
+                    "full_loss_abs_error": candidate["full_loss_abs_error"],
+                }
+                row.update(
+                    {
+                        f"layer_{index:02d}_block_count": value
+                        for index, value in enumerate(candidate["sampled_block_count_per_layer"])
+                    }
+                )
+                row.update(
+                    {
+                        f"sampled_position_bin_{index:02d}": value
+                        for index, value in enumerate(candidate["sampled_position_histogram"])
+                    }
+                )
+                yield row
+
+    reference_by_position: dict[int, dict[str, Any]] = {}
+    for observation in observations:
+        position = int(observation["position"])
+        reference = observation["reference"]
+        prior = reference_by_position.setdefault(position, reference)
+        if prior != reference:
+            raise ValueError("snapshot dense reference differs across sampling fractions")
+    snapshot_fields = (
+        "stream_id",
+        "position",
+        "context_length",
+        "next_token_target",
+        "dense_reference_next_token_ce",
+        "dense_reference_top_one_prediction",
+    )
+
+    def snapshot_rows() -> Iterable[dict[str, Any]]:
+        for position, reference in sorted(reference_by_position.items()):
+            yield {
+                "stream_id": stream_id,
+                "position": position,
+                "context_length": position + 1,
+                "next_token_target": reference["next_token_target"],
+                "dense_reference_next_token_ce": reference["next_token_loss"],
+                "dense_reference_top_one_prediction": reference["top_one_prediction"],
+            }
+
+    feasibility_fields = (
+        "stream_id",
+        "position",
+        "context_length",
+        "requested_sampling_percentage",
+        "requested_sampled_fraction",
+        "realized_sampled_fraction_minimum",
+        "realized_sampled_fraction_mean",
+        "realized_sampled_fraction_maximum",
+        "metric",
+        "comparison",
+        "threshold",
+        "success_count",
+        "attempts",
+        "success_probability",
+    )
+
+    def feasibility_rows() -> Iterable[dict[str, Any]]:
+        for observation in observations:
+            trial_candidates = observation["candidates"]
+            attempts = len(trial_candidates)
+            realized = list(
+                float(candidate["realized_sampled_fraction"]) for candidate in trial_candidates
+            )
+            metrics = (
+                (
+                    "kl_divergence_nats",
+                    "<=",
+                    tuple(float(value) for value in study["fidelity_tolerances_nats"]),
+                    lambda value, threshold: value <= threshold,
+                    observation["summary"]["successful_candidate_fraction"],
+                ),
+                (
+                    "probability_distribution_overlap",
+                    ">=",
+                    SNAPSHOT_OVERLAP_THRESHOLDS,
+                    lambda value, threshold: value >= threshold,
+                    observation["summary"]["overlap_successful_candidate_fraction"],
+                ),
+            )
+            for metric, comparison, thresholds, succeeds, original in metrics:
+                for threshold in thresholds:
+                    success_count = sum(
+                        succeeds(float(candidate[metric]), threshold)
+                        for candidate in trial_candidates
+                    )
+                    probability = success_count / attempts
+                    threshold_key = format(threshold, ".12g")
+                    if not math.isclose(
+                        probability,
+                        float(original[threshold_key]),
+                        rel_tol=0.0,
+                        abs_tol=1e-15,
+                    ):
+                        raise ValueError("snapshot feasibility summary does not match candidates")
+                    yield {
+                        "stream_id": stream_id,
+                        "position": observation["position"],
+                        "context_length": observation["causal_history_length"],
+                        "requested_sampling_percentage": observation[
+                            "requested_sampling_percentage"
+                        ],
+                        "requested_sampled_fraction": observation["requested_sampled_fraction"],
+                        "realized_sampled_fraction_minimum": min(realized),
+                        "realized_sampled_fraction_mean": sum(realized) / attempts,
+                        "realized_sampled_fraction_maximum": max(realized),
+                        "metric": metric,
+                        "comparison": comparison,
+                        "threshold": threshold,
+                        "success_count": success_count,
+                        "attempts": attempts,
+                        "success_probability": probability,
+                    }
+
+    output = Path(output_directory)
+    trial_path = output / "H1a_trials.csv"
+    snapshot_path = output / "H1a_snapshots.csv"
+    feasibility_path = output / "H1a_feasibility.csv"
+    trial_count = _write_csv(trial_path, trial_fields, trial_rows())
+    snapshot_count = _write_csv(snapshot_path, snapshot_fields, snapshot_rows())
+    feasibility_count = _write_csv(
+        feasibility_path,
+        feasibility_fields,
+        feasibility_rows(),
+    )
+    root = Path(__file__).resolve().parent.parent
+    resolved_result_path = result_path.resolve()
+    displayed_result_path = (
+        str(resolved_result_path.relative_to(root))
+        if resolved_result_path.is_relative_to(root)
+        else str(resolved_result_path)
+    )
+    observation_bytes = sum(
+        (result_path.parent / record["path"]).stat().st_size
+        for record in result["snapshot_observations"]
+    )
+    dense_prefix_paths = [
+        result_path.parent / record["path"] for record in result["snapshot_prefixes"].values()
+    ]
+    manifest = {
+        "schema_version": 1,
+        "format": _SNAPSHOT_EXPORT_FORMAT,
+        "run_id": result["run_id"],
+        "source_identity": result["source_identity"],
+        "model_identity": result["model_identity"],
+        "data_identity": result["data_identity"],
+        "configuration": result["config"],
+        "configuration_sha256": result["config_sha256"],
+        "sampler_version": study["sampling_algorithm"],
+        "ordering": ["stream_id", "position", "requested_sampled_fraction", "trial_id"],
+        "candidate_seed_encoding": "unsigned-64-bit-lowercase-hex",
+        "sampled_location_histogram_bins": histogram_bins,
+        "csv": {
+            csv_path.name: {
+                "sha256": _sha256(csv_path),
+                "bytes": csv_path.stat().st_size,
+                "rows": row_count,
+            }
+            for csv_path, row_count in (
+                (trial_path, trial_count),
+                (snapshot_path, snapshot_count),
+                (feasibility_path, feasibility_count),
+            )
+        },
+        "original_artifacts": {
+            "result": {
+                "path": displayed_result_path,
+                "sha256": _sha256(result_path),
+            },
+            "trial_sets": result["snapshot_observations"],
+            "dense_prefixes": result["snapshot_prefixes"],
+        },
+        "original_frontiers": result["snapshot_summary"],
+        "storage_bytes": {
+            "csv_total": sum(
+                csv_path.stat().st_size
+                for csv_path in (trial_path, snapshot_path, feasibility_path)
+            ),
+            "original_result_json": result_path.stat().st_size,
+            "original_trial_set_json": observation_bytes,
+            "original_structured_measurements": result_path.stat().st_size + observation_bytes,
+            "dense_prefix_snapshots": sum(
+                prefix_path.stat().st_size
+                for prefix_path in dense_prefix_paths
+                if prefix_path.is_file()
+            ),
+            "dense_prefix_snapshot_count": sum(
+                prefix_path.is_file() for prefix_path in dense_prefix_paths
+            ),
+        },
+    }
+    _write_json(output / "manifest.json", manifest)
+    return manifest
 
 
 def _snapshot_position_histogram(
