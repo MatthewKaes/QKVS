@@ -2287,7 +2287,7 @@ def _run_snapshot_study(
     trial_start = study["trial_start"]
     sampling_algorithm = study["sampling_algorithm"]
     dense_snapshot_strategy = study.get("dense_snapshot_strategy", "independent")
-    pending_feasibility_rows: list[dict[str, Any]] = []
+    pending_cells: list[dict[str, Any]] = []
     pending_checkpoint_units = 0
     pending_checkpoint_candidates = 0
 
@@ -2295,6 +2295,93 @@ def _run_snapshot_study(
         nonlocal pending_checkpoint_units, pending_checkpoint_candidates
         if not pending_checkpoint_units:
             return
+        progress.start_job(
+            f"checkpoint / {pending_checkpoint_candidates} candidates",
+            advances=False,
+        )
+        materialized = torch.cat([cell["values"] for cell in pending_cells]).cpu().tolist()
+        pending_feasibility_rows: list[dict[str, Any]] = []
+        value_offset = 0
+        for cell in pending_cells:
+            candidate_records = []
+            candidate_count = len(cell["trial_ids"])
+            cell_values = materialized[value_offset : value_offset + candidate_count]
+            value_offset += candidate_count
+            for trial_id, candidate_seed, realized_fraction, values in zip(
+                cell["trial_ids"],
+                cell["candidate_seeds"],
+                cell["realized_fractions"],
+                cell_values,
+                strict=True,
+            ):
+                if not all(math.isfinite(value) for value in values):
+                    raise RuntimeError("snapshot candidate measurement is nonfinite")
+                if not (
+                    -_SNAPSHOT_PROBABILITY_TOLERANCE
+                    <= values[1]
+                    <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
+                ):
+                    raise RuntimeError("snapshot probability overlap is outside [0, 1]")
+                candidate_records.append(
+                    {
+                        "requested_sampled_fraction": cell["requested_fraction"],
+                        "realized_sampled_fraction": float(realized_fraction),
+                        "trial_id": int(trial_id),
+                        "candidate_seed": int(candidate_seed),
+                        "kl_divergence_nats": values[0],
+                        "probability_distribution_overlap": values[1],
+                        "sparse_next_token_loss": values[2],
+                        "next_token_ce_delta_nats": values[3],
+                        "sparse_top_one_prediction": int(values[4]),
+                        "top_one_agreement": int(values[4])
+                        == cell["reference_prediction"],
+                        "full_logit_max_abs_error": values[5],
+                        "full_loss_abs_error": values[6],
+                    }
+                )
+            if float(cell["percentage"]) == 100.0:
+                tolerance = study["dense_parity_tolerance"]
+                dense_candidate = candidate_records[0]
+                if (
+                    dense_candidate["full_logit_max_abs_error"] > tolerance["logit_atol"]
+                    or dense_candidate["full_loss_abs_error"] > tolerance["loss_atol"]
+                    or abs(dense_candidate["probability_distribution_overlap"] - 1.0)
+                    > _SNAPSHOT_PROBABILITY_TOLERANCE
+                ):
+                    raise RuntimeError("100% snapshot candidate does not match full QKV")
+            feasibility = _snapshot_feasibility_rows(
+                candidate_records,
+                stream_id=stream.stream_id,
+                position=cell["position"],
+                percentage=cell["percentage"],
+                tolerances=fidelity_tolerances,
+                run_id=result["run_id"],
+                source_revision=source_identity["git_revision"],
+                config_sha256=result["config_sha256"],
+                sampling_algorithm=sampling_algorithm,
+            )
+            observation = {
+                "schema_version": 1,
+                "format": _SNAPSHOT_CELL_FORMAT,
+                "identity_sha256": cell["identity_sha256"],
+                "position": cell["position"],
+                "requested_sampling_percentage": cell["percentage"],
+                "requested_sampled_fraction": cell["requested_fraction"],
+                "sampling_algorithm": sampling_algorithm,
+                "trial_start": trial_start,
+                "trial_count": candidate_count,
+                "feasibility": feasibility,
+            }
+            result["snapshot_observations"].append(observation)
+            observations.append(observation)
+            result["snapshot_summary"] = _update_snapshot_frontiers(
+                result["snapshot_summary"],
+                candidate_records,
+                position=cell["position"],
+                tolerances=fidelity_tolerances,
+            )
+            pending_feasibility_rows.extend(feasibility)
+        result["complete"] = len(completed) == expected_trial_sets
         result["snapshot_observations"].sort(
             key=lambda item: (
                 item["position"],
@@ -2303,8 +2390,9 @@ def _run_snapshot_study(
         )
         _write_json(output, result)
         _append_snapshot_feasibility_rows(snapshot_csv_path, pending_feasibility_rows)
+        progress.complete_job(durable=False)
         progress.commit_units(pending_checkpoint_units)
-        pending_feasibility_rows.clear()
+        pending_cells.clear()
         pending_checkpoint_units = 0
         pending_checkpoint_candidates = 0
 
@@ -2549,12 +2637,13 @@ def _run_snapshot_study(
                     job_label,
                     fraction=0.0,
                 )
-                candidate_records: list[dict[str, Any]]
                 if observation_path.exists():
                     raise ValueError("legacy snapshot observation conflicts with aggregate v2 run")
                 else:
-                    candidate_records = []
                     candidate_values: list[Any] = []
+                    candidate_trial_id_batches: list[Any] = []
+                    candidate_seed_batches: list[Any] = []
+                    candidate_realized_fraction_batches: list[Any] = []
                     cell_batch_size = snapshot_candidate_batch_size(
                         position,
                         requested_fraction,
@@ -2566,10 +2655,11 @@ def _run_snapshot_study(
                         candidate_seeds: Any,
                         selected_occurrence_counts: Any,
                         *,
-                        candidate_records: list[dict[str, Any]],
                         candidate_values: list[Any],
+                        candidate_trial_id_batches: list[Any],
+                        candidate_seed_batches: list[Any],
+                        candidate_realized_fraction_batches: list[Any],
                         position: int,
-                        requested_fraction: float,
                         reference: Any,
                         reference_probabilities: Any,
                         reference_log_probs: Any,
@@ -2591,31 +2681,39 @@ def _run_snapshot_study(
                             probe_predictions = probe_batch.predictions.float()
                             occurrence_counts = probe_batch.occurrence_counts
 
-                        for counts, trial_id, candidate_seed, selected_occurrences in zip(
-                            occurrence_counts,
-                            trial_ids,
-                            candidate_seeds,
-                            selected_occurrence_counts,
-                            strict=True,
-                        ):
-                            trial_id = int(trial_id)
-                            candidate_seed = int(candidate_seed)
-                            selected_occurrences = int(selected_occurrences)
-                            if sum(counts) != selected_occurrences:
-                                raise RuntimeError(
-                                    "snapshot probe read accounting does not match selection"
-                                )
-                            realized_fraction = selected_occurrences / (
-                                reader.model.config.num_hidden_layers * (position + 1)
+                        batch_count = len(occurrence_counts)
+                        selected_array = (
+                            selected_occurrence_counts.astype(np.int64, copy=False)
+                            if isinstance(selected_occurrence_counts, np.ndarray)
+                            else np.fromiter(
+                                selected_occurrence_counts,
+                                dtype=np.int64,
+                                count=batch_count,
                             )
-                            candidate_records.append(
-                                {
-                                    "requested_sampled_fraction": requested_fraction,
-                                    "realized_sampled_fraction": realized_fraction,
-                                    "trial_id": trial_id,
-                                    "candidate_seed": candidate_seed,
-                                }
+                        )
+                        gathered_array = np.fromiter(
+                            (sum(counts) for counts in occurrence_counts),
+                            dtype=np.int64,
+                            count=batch_count,
+                        )
+                        if not np.array_equal(gathered_array, selected_array):
+                            raise RuntimeError(
+                                "snapshot probe read accounting does not match selection"
                             )
+                        candidate_trial_id_batches.append(
+                            trial_ids.astype(np.int64, copy=False)
+                            if isinstance(trial_ids, np.ndarray)
+                            else np.fromiter(trial_ids, dtype=np.int64, count=batch_count)
+                        )
+                        candidate_seed_batches.append(
+                            candidate_seeds.astype(np.uint64, copy=False)
+                            if isinstance(candidate_seeds, np.ndarray)
+                            else np.fromiter(candidate_seeds, dtype=np.uint64, count=batch_count)
+                        )
+                        candidate_realized_fraction_batches.append(
+                            selected_array
+                            / (reader.model.config.num_hidden_layers * (position + 1))
+                        )
 
                         sparse_log_probs = torch.log_softmax(probe_logits.float(), dim=-1)
                         sparse_probabilities = sparse_log_probs.exp()
@@ -2734,10 +2832,13 @@ def _run_snapshot_study(
                                 trial_ids,
                                 candidate_seeds,
                                 block_batch.candidate_occurrence_counts,
-                                candidate_records=candidate_records,
                                 candidate_values=candidate_values,
+                                candidate_trial_id_batches=candidate_trial_id_batches,
+                                candidate_seed_batches=candidate_seed_batches,
+                                candidate_realized_fraction_batches=(
+                                    candidate_realized_fraction_batches
+                                ),
                                 position=position,
-                                requested_fraction=requested_fraction,
                                 reference=reference,
                                 reference_probabilities=reference_probabilities,
                                 reference_log_probs=reference_log_probs,
@@ -2822,10 +2923,13 @@ def _run_snapshot_study(
                                 (record[0] for record in batch_metadata),
                                 (record[1] for record in batch_metadata),
                                 (record[2] for record in batch_metadata),
-                                candidate_records=candidate_records,
                                 candidate_values=candidate_values,
+                                candidate_trial_id_batches=candidate_trial_id_batches,
+                                candidate_seed_batches=candidate_seed_batches,
+                                candidate_realized_fraction_batches=(
+                                    candidate_realized_fraction_batches
+                                ),
                                 position=position,
-                                requested_fraction=requested_fraction,
                                 reference=reference,
                                 reference_probabilities=reference_probabilities,
                                 reference_log_probs=reference_log_probs,
@@ -2835,78 +2939,28 @@ def _run_snapshot_study(
                                 f"trial {batch_stop}/{trial_count}",
                                 fraction=batch_stop / trial_count,
                             )
-                    materialized = torch.cat(candidate_values).cpu().tolist()
-                    for candidate, values in zip(candidate_records, materialized, strict=True):
-                        if not all(math.isfinite(value) for value in values):
-                            raise RuntimeError("snapshot candidate measurement is nonfinite")
-                        if not (
-                            -_SNAPSHOT_PROBABILITY_TOLERANCE
-                            <= values[1]
-                            <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
-                        ):
-                            raise RuntimeError("snapshot probability overlap is outside [0, 1]")
-                        candidate.update(
-                            {
-                                "kl_divergence_nats": values[0],
-                                "probability_distribution_overlap": values[1],
-                                "sparse_next_token_loss": values[2],
-                                "next_token_ce_delta_nats": values[3],
-                                "sparse_top_one_prediction": int(values[4]),
-                                "top_one_agreement": int(values[4]) == int(reference_values[1]),
-                                "full_logit_max_abs_error": values[5],
-                                "full_loss_abs_error": values[6],
-                            }
-                        )
-                    if float(percentage) == 100.0:
-                        tolerance = study["dense_parity_tolerance"]
-                        dense_candidate = candidate_records[0]
-                        if (
-                            dense_candidate["full_logit_max_abs_error"] > tolerance["logit_atol"]
-                            or dense_candidate["full_loss_abs_error"] > tolerance["loss_atol"]
-                            or abs(dense_candidate["probability_distribution_overlap"] - 1.0)
-                            > _SNAPSHOT_PROBABILITY_TOLERANCE
-                        ):
-                            raise RuntimeError("100% snapshot candidate does not match full QKV")
-                    feasibility = _snapshot_feasibility_rows(
-                        candidate_records,
-                        stream_id=stream.stream_id,
-                        position=position,
-                        percentage=percentage,
-                        tolerances=fidelity_tolerances,
-                        run_id=result["run_id"],
-                        source_revision=source_identity["git_revision"],
-                        config_sha256=result["config_sha256"],
-                        sampling_algorithm=sampling_algorithm,
+                    pending_cells.append(
+                        {
+                            "identity_sha256": identity_sha256,
+                            "position": position,
+                            "percentage": percentage,
+                            "requested_fraction": requested_fraction,
+                            "reference_prediction": int(reference_values[1]),
+                            "trial_ids": np.concatenate(candidate_trial_id_batches),
+                            "candidate_seeds": np.concatenate(candidate_seed_batches),
+                            "realized_fractions": np.concatenate(
+                                candidate_realized_fraction_batches
+                            ),
+                            "values": torch.cat(candidate_values),
+                        }
                     )
-                    observation = {
-                        "schema_version": 1,
-                        "format": _SNAPSHOT_CELL_FORMAT,
-                        "identity_sha256": identity_sha256,
-                        "position": position,
-                        "requested_sampling_percentage": percentage,
-                        "requested_sampled_fraction": requested_fraction,
-                        "sampling_algorithm": sampling_algorithm,
-                        "trial_start": trial_start,
-                        "trial_count": trial_count,
-                        "feasibility": feasibility,
-                    }
-                result["snapshot_observations"].append(observation)
-                observations.append(observation)
                 completed.add(unit)
-                result["snapshot_summary"] = _update_snapshot_frontiers(
-                    result["snapshot_summary"],
-                    candidate_records,
-                    position=position,
-                    tolerances=fidelity_tolerances,
-                )
-                result["complete"] = len(completed) == expected_trial_sets
-                pending_feasibility_rows.extend(observation["feasibility"])
                 pending_checkpoint_units += 1
                 pending_checkpoint_candidates += trial_count
                 progress.complete_job(durable=False)
                 if (
                     pending_checkpoint_candidates >= checkpoint_candidates
-                    or result["complete"]
+                    or len(completed) == expected_trial_sets
                 ):
                     checkpoint_snapshot_cells()
             if (

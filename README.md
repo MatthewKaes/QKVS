@@ -493,7 +493,8 @@ identity and is never reused as serial predictive data. Future snapshot configur
 native block arrays, adaptive token-budgeted batches, a bounded CPU producer, and buffered
 durability without changing the v2 sampler's candidate mapping. Native block execution constructs
 no Python token-range tuples. Buffered durability writes the CSV and manifest only after the
-configured number of candidates and may recompute at most that many after interruption.
+configured number of candidates, performs one GPU-to-CPU metric materialization at that boundary,
+and may recompute at most that many candidates after interruption.
 
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
