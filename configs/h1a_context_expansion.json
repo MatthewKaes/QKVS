@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "h1a_context_density_expansion",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "h1a-context-density-expansion",
     "seed": 20261019
@@ -184,7 +184,7 @@
         16382
       ]
     },
-    "expected_candidate_passes": 108060,
+    "expected_candidate_passes": 264060,
     "block_width": 8,
     "sampling_percentages": [
       1,
@@ -193,13 +193,15 @@
       20,
       40,
       60,
+      70,
       80,
+      90,
       95,
       99,
       100
     ],
     "trial_start": 0,
-    "trials_per_fraction": 200,
+    "trials_per_fraction": 400,
     "sampling_algorithm": "uniform-aligned-blocks-v1",
     "fidelity_tolerances_nats": [
       0.001,

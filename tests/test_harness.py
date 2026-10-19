@@ -329,18 +329,22 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_unconstrained_snapshot_compressibility",
         "status": "approved",
     }
-    for report, experiment in (
-        (h1a_expansion, "h1a_context_density_expansion"),
-        (h1a_replication, "h1a_independent_document_replication"),
-    ):
-        assert report == {
-            "valid": True,
-            "runnable": False,
-            "errors": [],
-            "not_runnable_reasons": ["configuration is not authorized for harness execution"],
-            "experiment": experiment,
-            "status": "draft_not_authorized",
-        }
+    assert h1a_expansion == {
+        "valid": True,
+        "runnable": True,
+        "errors": [],
+        "not_runnable_reasons": [],
+        "experiment": "h1a_context_density_expansion",
+        "status": "approved",
+    }
+    assert h1a_replication == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_independent_document_replication",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -389,8 +393,23 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert all(15872 <= position < 16383 for position in expansion_cohorts["targeted_15_5k_to_16k"])
     assert min(expansion_cohorts["stratified_512_to_32k"]) >= 512
     assert max(expansion_cohorts["stratified_512_to_32k"]) <= 32766
-    assert expansion["study"]["expected_candidate_passes"] == 108060
-    assert expansion["study"]["expected_candidate_passes"] == 60 * (9 * 200 + 1)
+    assert expansion["study"]["sampling_percentages"] == [
+        1,
+        5,
+        10,
+        20,
+        40,
+        60,
+        70,
+        80,
+        90,
+        95,
+        99,
+        100,
+    ]
+    assert expansion["study"]["trials_per_fraction"] == 400
+    assert expansion["study"]["expected_candidate_passes"] == 264060
+    assert expansion["study"]["expected_candidate_passes"] == 60 * (11 * 400 + 1)
     position_selection = expansion["study"]["position_selection"]
     assert position_selection["validated_max_position_embeddings"] == 32768
 
@@ -425,15 +444,19 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert expansion["data"]["source"] == h1a_specification["data"]["source"]
     for field in (
         "block_width",
-        "sampling_percentages",
         "trial_start",
-        "trials_per_fraction",
         "sampling_algorithm",
         "fidelity_tolerances_nats",
         "dense_parity_tolerance",
     ):
         assert expansion["study"][field] == h1a_specification["study"][field]
         assert replication["study"][field] == expansion["study"][field]
+    assert (
+        replication["study"]["sampling_percentages"]
+        == h1a_specification["study"]["sampling_percentages"]
+    )
+    assert replication["study"]["trials_per_fraction"] == 200
+    assert replication["study"]["expected_candidate_passes"] == 108060
     assert replication["study"]["positions"] == expansion_positions
     assert replication["study"]["position_cohorts"] == expansion_cohorts
     assert replication["model"] == expansion["model"]
