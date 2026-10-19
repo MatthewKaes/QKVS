@@ -20,6 +20,8 @@ from qkvs.selection import (
     PolicyState,
     ProposalSet,
     RollingOnlyPolicy,
+    SelectionContext,
+    resolve_proposals,
 )
 
 _PINNED_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -704,6 +706,90 @@ def _heatfield_policy() -> LearnedHeatFieldPolicy:
     )
 
 
+def test_absolute_teacher_coverage_preserves_mass_and_gate_gradients() -> None:
+    policy = _heatfield_policy()
+    context = SelectionContext(
+        position=10,
+        layer=0,
+        history_end=8,
+        hidden=torch.linspace(-1.0, 1.0, 32),
+    )
+
+    def coverage_gradient(teacher_mass_per_position):
+        policy.zero_grad(set_to_none=True)
+        proposal_set = policy.propose(context, PolicyState())
+        occupancy = model_module._collective_soft_occupancy(
+            proposal_set.soft_parameters,
+            history_end=context.history_end,
+            window_width=2,
+            beta=proposal_set.beta,
+        )
+        teacher = torch.full((context.history_end,), teacher_mass_per_position)
+        loss, covered = model_module._absolute_teacher_coverage(teacher, occupancy)
+        loss.backward()
+        gate_gradient = policy.decoders[0][-1].bias.grad.view(2, 4)[:, 3].abs().sum()
+        return loss.detach(), covered.detach(), gate_gradient.detach()
+
+    negligible_loss, negligible_covered, negligible_gradient = coverage_gradient(1e-9)
+    substantial_loss, substantial_covered, substantial_gradient = coverage_gradient(0.1)
+
+    assert negligible_loss + negligible_covered == pytest.approx(8e-9)
+    assert substantial_loss + substantial_covered == pytest.approx(0.8)
+    assert substantial_loss > negligible_loss * 1e6
+    assert substantial_gradient > negligible_gradient * 1e6
+    assert substantial_gradient > 0.0
+
+
+def test_learned_gates_can_decline_all_historical_retrieval() -> None:
+    policy = _heatfield_policy()
+    with torch.no_grad():
+        output = policy.decoders[0][-1]
+        output.weight.zero_()
+        output.bias.view(2, 4)[:, 3].fill_(-100.0)
+    proposal_set = policy.propose(
+        SelectionContext(
+            position=10,
+            layer=0,
+            history_end=8,
+            hidden=torch.zeros(32),
+        ),
+        PolicyState(),
+    )
+    selection = resolve_proposals(
+        proposal_set.proposals,
+        history_end=8,
+        window_width=2,
+        historical_token_budget=4,
+        beta=proposal_set.beta,
+    )
+
+    assert not any(proposal.active for proposal in proposal_set.proposals)
+    assert selection.occurrence_count == 0
+
+
+def test_fixed_offsets_duplicate_the_initial_window_at_long_context_activation() -> None:
+    policy = FixedOffsetPolicy(tuple(range(4096, 12161, 128)))
+    proposal_set = policy.propose(
+        SelectionContext(
+            position=6144,
+            layer=0,
+            history_end=2049,
+            hidden=None,
+        ),
+        PolicyState(),
+    )
+    selection = resolve_proposals(
+        proposal_set.proposals,
+        history_end=2049,
+        window_width=8,
+        historical_token_budget=512,
+    )
+
+    assert selection.windows.count(tuple(range(8))) == 48
+    assert selection.occurrence_count == 512
+    assert selection.unique_count == 136
+
+
 def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> None:
     reader = _qwen_reader()
     policy = _heatfield_policy()
@@ -756,6 +842,17 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     )
     assert all(metric["historical_occurrences"] <= 4 for metric in training_metrics)
     assert all(metric["coverage_overlap_alpha"] == 0.0 for metric in training_metrics)
+    assert all(
+        metric["coverage_loss"]
+        == pytest.approx(metric["teacher_historical_attention_uncovered_mass"])
+        for metric in training_metrics
+    )
+    assert all(
+        metric["teacher_historical_attention_covered_mass"]
+        + metric["teacher_historical_attention_uncovered_mass"]
+        == pytest.approx(metric["teacher_historical_attention_mass"])
+        for metric in training_metrics
+    )
     assert any(metric["historical_occurrences"] > 0 for metric in training_metrics)
     assert any(metric["hard_utility"] != 0.0 for metric in training_metrics)
     assert all(metric["trajectory"] == "learned_hard_detached" for metric in training_metrics)
@@ -946,6 +1043,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     partial = json.loads(partial_output.read_text())
     assert partial["training"]["completed_steps"] == 1
     assert partial["training"]["streaming"]["next_positions"] == {"train": 8}
+    assert partial["training"]["streaming"]["effective_supervised_targets"] == 3
+    assert partial["training"]["streaming"]["effective_supervised_targets_per_layer"] == {
+        "0": 2,
+        "1": 1,
+    }
     partial_status = status(partial_output)
     assert partial_status["completed_units"] == 3
     assert partial_status["total_units"] == 8
@@ -973,6 +1075,11 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
         (output.parent / record["path"]).exists() for record in first["dense_prefill"].values()
     )
     assert first["training"]["completed_steps"] == 2
+    assert first["training"]["streaming"]["effective_supervised_targets"] == 6
+    assert first["training"]["streaming"]["effective_supervised_targets_per_layer"] == {
+        "0": 3,
+        "1": 3,
+    }
     assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
     assert [record["position"] for record in first["training"]["history"]] == [
         4,

@@ -392,6 +392,45 @@ def _gather_cache_occurrences(
     return torch.stack(selected, dim=1)
 
 
+def _collective_soft_occupancy(
+    soft_parameters: Tensor,
+    *,
+    history_end: int,
+    window_width: int,
+    beta: float,
+) -> Tensor:
+    if history_end < 0 or window_width <= 0 or beta <= 0.0:
+        raise ValueError("soft occupancy geometry is invalid")
+    if soft_parameters.ndim != 2 or soft_parameters.shape[1] != 4:
+        raise ValueError("soft proposal parameters must have center, spread, weight, and gate")
+    historical_positions = torch.arange(
+        history_end,
+        device=soft_parameters.device,
+        dtype=soft_parameters.dtype,
+    )
+    centers = soft_parameters[:, 0:1]
+    spreads = (window_width * soft_parameters[:, 1:2] / beta).clamp_min(0.5)
+    importance = soft_parameters[:, 2:3]
+    gates = soft_parameters[:, 3:4]
+    distance = (historical_positions.unsqueeze(0) - centers) / spreads
+    kernels = torch.exp(-0.5 * distance.square())
+    proposal_occupancy = gates * (1.0 - torch.exp(-importance * kernels))
+    proposal_occupancy = proposal_occupancy.clamp(0.0, 1.0 - 1e-6)
+    return 1.0 - torch.prod(1.0 - proposal_occupancy, dim=0)
+
+
+def _absolute_teacher_coverage(
+    teacher_history: Tensor,
+    collective_occupancy: Tensor,
+) -> tuple[Tensor, Tensor]:
+    if teacher_history.ndim != 1 or teacher_history.shape != collective_occupancy.shape:
+        raise ValueError("teacher history and collective occupancy must align")
+    teacher_history = teacher_history.to(collective_occupancy.dtype)
+    covered = torch.sum(teacher_history * collective_occupancy)
+    uncovered = torch.sum(teacher_history * (1.0 - collective_occupancy))
+    return uncovered, covered
+
+
 def _validate_transition(rolling_tokens: int, activation_tokens: int) -> None:
     if rolling_tokens <= 0:
         raise ValueError("rolling attention is mandatory")
@@ -1592,25 +1631,18 @@ class HuggingFaceQwen2Reader:
                 dtype=torch.float32,
             ).mean(dim=0)
             teacher_history = teacher_weights[:rolling_start]
-            teacher_history = teacher_history / teacher_history.sum().clamp_min(1e-12)
 
         soft = proposal_set.soft_parameters
-        historical_positions = torch.arange(
-            rolling_start,
-            device=soft.device,
-            dtype=soft.dtype,
+        collective_occupancy = _collective_soft_occupancy(
+            soft,
+            history_end=rolling_start,
+            window_width=window_width,
+            beta=proposal_set.beta,
         )
-        centers = soft[:, 0:1]
-        spreads = (window_width * soft[:, 1:2] / proposal_set.beta).clamp_min(0.5)
-        importance = soft[:, 2:3]
-        gates = soft[:, 3:4]
-        distance = (historical_positions.unsqueeze(0) - centers) / spreads
-        kernels = torch.exp(-0.5 * distance.square())
-        proposal_occupancy = gates * (1.0 - torch.exp(-importance * kernels))
-        proposal_occupancy = proposal_occupancy.clamp(0.0, 1.0 - 1e-6)
-        collective_occupancy = 1.0 - torch.prod(1.0 - proposal_occupancy, dim=0)
-        coverage_reward = torch.sum(teacher_history.to(soft.dtype) * collective_occupancy)
-        coverage_loss = 1.0 - coverage_reward
+        coverage_loss, coverage_reward = _absolute_teacher_coverage(
+            teacher_history,
+            collective_occupancy,
+        )
 
         soft_hidden = self._finish_layer_with_soft_history(
             target_layer,
@@ -1645,6 +1677,8 @@ class HuggingFaceQwen2Reader:
             "soft_utility": float(rolling_loss - soft_loss.detach()),
             "soft_hard_utility_gap": float(selected_loss - soft_loss.detach()),
             "teacher_historical_attention_mass": float(teacher_weights[:rolling_start].sum()),
+            "teacher_historical_attention_covered_mass": float(coverage_reward.detach()),
+            "teacher_historical_attention_uncovered_mass": float(coverage_loss.detach()),
             "historical_windows": windows,
             "historical_occurrences": selection.occurrence_count,
             "historical_unique_tokens": selection.unique_count,

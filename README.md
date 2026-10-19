@@ -231,6 +231,13 @@ gathers do not transmit address gradients. Fixed gamma and beta are the delibera
 implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
 ignored settings.
 
+The eligible historical slice retains its **absolute mass from the teacher's full causal
+attention distribution**. It is not renormalized after working memory is removed. Coverage loss is
+the absolute historical mass left uncovered, `sum_i a_i (1 - p_i)`: a query that assigns negligible
+attention outside working memory therefore creates negligible coverage pressure. The existing
+proposal gates remain free to deactivate historical reads when the downstream utility signal finds
+them unhelpful; training does not impose full `R` utilization.
+
 After dense activation, training advances each stream once through coherent causal rollout
 segments. K/V and recurrent S continue across target positions and optimizer updates; selector
 weights stay fixed within a segment and change only at its boundary. Target positions are
@@ -308,6 +315,32 @@ losses, identity mismatches, or resource exhaustion; preserve resumable artifact
 changing the frozen protocol. `heatfield_initial.json` remains an incomplete earlier design draft.
 Codex must not run CUDA workloads. Configuration validation, status, and summarization do not
 import the model runtime or initialize CUDA.
+
+The completed pilot remains identified by source revision `4285d5f` and its unchanged approved
+configuration. Post-hoc descriptive inspection found only five directly supervised targets per
+layer. Across early/middle/late training thirds, mean teacher historical mass was 0.467/0.416/0.460,
+while 93.1%/94.6%/94.2% of target proposals passed the gate and hard retrieval used
+93.0%/94.9%/94.9% of `R`. Held-out trained-S utilization stayed near 96% in every third; active
+centers remained concentrated near normalized position 0.5 with standard deviation about 0.082.
+This combination is consistent with the normalized teacher objective rewarding historical
+coverage even when absolute historical value varied; it is diagnostic evidence, not a causal or
+generalization claim.
+
+The fixed-offset control has a separate boundary artifact. At activation position 6144, the
+eligible history ends at 2049. Of its 64 offsets, 48 are at least 6144 and clamp to token zero, so
+48 proposals repeatedly read the same initial eight-token window. Those reads consume 384 of the
+512 historical occurrences while covering only eight unique tokens (376 duplicate
+occurrences). This helps explain the control's strong early and poor late position dependence and
+must not be interpreted as 64 distinct regions.
+
+`configs/heatfield_learning_followup.json` is a new `draft_not_authorized` comparison using the
+same frozen model, data boundaries, W/T, J/R, and evaluation stream. It changes only the corrected
+objective's source identity and increases `targets_per_rollout` from 3 to 24. Forty causal rollouts
+therefore provide 960 target-local objectives, exactly 40 per transformer layer instead of five,
+distributed across the full post-transition trajectory. Target-local dense teacher and utility
+work is expected to increase approximately eightfold; rollout construction, evaluation work, and
+checkpoint state size are otherwise unchanged. Reusing the held-out stream preserves pilot
+comparability but cannot establish generalization.
 
 ## Configuration and artifacts
 

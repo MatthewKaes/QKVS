@@ -139,10 +139,13 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_are_valid_and_pilot_is_approved() -> None:
+def test_checked_in_configurations_preserve_pilot_and_keep_followup_draft() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
-    learning_study = validate_config_file("configs/heatfield_learning_study.json")
+    pilot_path = Path("configs/heatfield_learning_study.json")
+    followup_path = Path("configs/heatfield_learning_followup.json")
+    learning_study = validate_config_file(pilot_path)
+    followup = validate_config_file(followup_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -164,6 +167,30 @@ def test_checked_in_configurations_are_valid_and_pilot_is_approved() -> None:
         "experiment": "heatfield_long_context_learning_study",
         "status": "approved",
     }
+    assert hashlib.sha256(pilot_path.read_bytes()).hexdigest() == (
+        "32e35fc0a06907e39c2c917ea1fdedb54f52ff7c4773df5d350fd0d01c02bc66"
+    )
+    assert followup["valid"]
+    assert not followup["runnable"]
+    assert followup["experiment"] == "heatfield_absolute_mass_learning_followup"
+    assert followup["status"] == "draft_not_authorized"
+    assert (
+        "configuration is not authorized for harness execution" in followup["not_runnable_reasons"]
+    )
+
+    pilot = json.loads(pilot_path.read_text())
+    denser = json.loads(followup_path.read_text())
+    assert denser["run"]["id"] != pilot["run"]["id"]
+    assert denser["model"] == pilot["model"]
+    assert denser["data"] == pilot["data"]
+    assert denser["attention"] == pilot["attention"]
+    assert denser["selection"] == pilot["selection"]
+    assert denser["training"] == {
+        **pilot["training"],
+        "targets_per_rollout": 24,
+    }
+    assert denser["training"]["steps"] * denser["training"]["targets_per_rollout"] == 960
+    assert 960 // 24 == 40
 
 
 def test_pinned_huggingface_text_configuration_is_runnable_in_schema() -> None:

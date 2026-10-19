@@ -1094,6 +1094,11 @@ def _train_learned_policy(
                 "streaming": {
                     "rollout_tokens": training["rollout_tokens"],
                     "targets_per_rollout": training["targets_per_rollout"],
+                    "effective_supervised_targets": len(history),
+                    "effective_supervised_targets_per_layer": {
+                        str(layer): sum(record["layer"] == layer for record in history)
+                        for layer in range(reader.model.config.num_hidden_layers)
+                    },
                     "next_positions": {
                         stream_id: state.next_position for stream_id, state in states.items()
                     },
