@@ -55,6 +55,7 @@ _LEGACY_REUSABLE_POLICIES = {"rolling", "fixed_offsets", "full_qkv"}
 _SNAPSHOT_STUDY_KIND = "unconstrained_snapshot_compressibility"
 _SNAPSHOT_EXECUTION_VERSION = "qwen2-h1a-current-token-v1"
 _SNAPSHOT_HISTOGRAM_BINS = 20
+_SNAPSHOT_PROBABILITY_TOLERANCE = 1e-6
 
 
 def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -1618,9 +1619,13 @@ def _run_snapshot_study(
                                 "snapshot probe read accounting does not match selection"
                             )
                         sparse_log_probs = torch.log_softmax(probe.logits.float(), dim=-1)
+                        sparse_probabilities = sparse_log_probs.exp()
                         divergence = torch.sum(
                             reference_probabilities * (reference_log_probs - sparse_log_probs)
                         ).clamp_min(0.0)
+                        probability_overlap = torch.minimum(
+                            reference_probabilities, sparse_probabilities
+                        ).sum()
                         loss_delta = probe.loss.float() - reference.loss.float()
                         logit_error = (probe.logits.float() - reference.logits.float()).abs().max()
                         loss_error = (probe.loss.float() - reference.loss.float()).abs()
@@ -1628,6 +1633,7 @@ def _run_snapshot_study(
                             torch.stack(
                                 (
                                     divergence,
+                                    probability_overlap,
                                     probe.loss.float(),
                                     loss_delta,
                                     probe.prediction.float(),
@@ -1714,15 +1720,22 @@ def _run_snapshot_study(
                     for candidate, values in zip(candidate_records, materialized, strict=True):
                         if not all(math.isfinite(value) for value in values):
                             raise RuntimeError("snapshot candidate measurement is nonfinite")
+                        if not (
+                            -_SNAPSHOT_PROBABILITY_TOLERANCE
+                            <= values[1]
+                            <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
+                        ):
+                            raise RuntimeError("snapshot probability overlap is outside [0, 1]")
                         candidate.update(
                             {
                                 "kl_divergence_nats": values[0],
-                                "sparse_next_token_loss": values[1],
-                                "next_token_ce_delta_nats": values[2],
-                                "sparse_top_one_prediction": int(values[3]),
-                                "top_one_agreement": int(values[3]) == int(reference_values[1]),
-                                "full_logit_max_abs_error": values[4],
-                                "full_loss_abs_error": values[5],
+                                "probability_distribution_overlap": values[1],
+                                "sparse_next_token_loss": values[2],
+                                "next_token_ce_delta_nats": values[3],
+                                "sparse_top_one_prediction": int(values[4]),
+                                "top_one_agreement": int(values[4]) == int(reference_values[1]),
+                                "full_logit_max_abs_error": values[5],
+                                "full_loss_abs_error": values[6],
                             }
                         )
                     summary = summarize_snapshot_trial_set(
@@ -1764,6 +1777,8 @@ def _run_snapshot_study(
                         if (
                             dense_candidate["full_logit_max_abs_error"] > tolerance["logit_atol"]
                             or dense_candidate["full_loss_abs_error"] > tolerance["loss_atol"]
+                            or abs(dense_candidate["probability_distribution_overlap"] - 1.0)
+                            > _SNAPSHOT_PROBABILITY_TOLERANCE
                         ):
                             raise RuntimeError("100% snapshot candidate does not match full QKV")
                     observation = {

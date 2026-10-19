@@ -187,6 +187,7 @@ def test_snapshot_summaries_report_discovered_and_not_found_without_impossibilit
             "requested_sampled_fraction": 0.25,
             "realized_sampled_fraction": 0.25,
             "kl_divergence_nats": 0.2,
+            "probability_distribution_overlap": 0.99,
             "next_token_ce_delta_nats": 0.1,
             "top_one_agreement": False,
             "selected_token_occurrences": 4,
@@ -199,6 +200,7 @@ def test_snapshot_summaries_report_discovered_and_not_found_without_impossibilit
             "requested_sampled_fraction": 0.25,
             "realized_sampled_fraction": 0.20,
             "kl_divergence_nats": 0.3,
+            "probability_distribution_overlap": 0.9996,
             "next_token_ce_delta_nats": -0.1,
             "top_one_agreement": True,
             "selected_token_occurrences": 3,
@@ -213,6 +215,18 @@ def test_snapshot_summaries_report_discovered_and_not_found_without_impossibilit
     )
 
     assert summary["successful_candidate_fraction"] == {"0.1": 0.0, "0.25": 0.5}
+    assert summary["overlap_successful_candidate_fraction"] == {
+        "0.9999": 0.0,
+        "0.9995": 0.5,
+        "0.995": 0.5,
+        "0.95": 1.0,
+    }
+    assert summary["probability_distribution_overlap"] == {
+        "minimum": 0.99,
+        "median": 0.99,
+        "mean": 0.9948,
+        "maximum": 0.9996,
+    }
     assert frontiers["frontiers_by_position"]["7"]["0.1"] == {
         "status": "not_found",
         "smallest_discovered_fraction": None,
@@ -302,11 +316,11 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     }
     assert h1a == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "h1a_unconstrained_snapshot_compressibility",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
     h1a_specification = json.loads(h1a_path.read_text())
     assert all(
@@ -551,6 +565,12 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     partial = json.loads(partial_output.read_text())
     assert len(partial["snapshot_prefixes"]) == 1
     assert len(partial["snapshot_observations"]) == 1
+    partial_observation_path = partial_output.parent / partial["snapshot_observations"][0]["path"]
+    partial_observation = json.loads(partial_observation_path.read_text())
+    partial_overlaps = [
+        candidate["probability_distribution_overlap"]
+        for candidate in partial_observation["candidates"]
+    ]
     partial_status = status(partial_output)
     assert partial_status["completed_units"] == 2
     assert partial_status["total_units"] == 6
@@ -587,6 +607,30 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert all(len(record["candidates"]) == 1 for record in dense)
     assert all(record["candidates"][0]["full_logit_max_abs_error"] == 0.0 for record in dense)
     assert all(record["candidates"][0]["full_loss_abs_error"] == 0.0 for record in dense)
+    assert all(
+        record["candidates"][0]["probability_distribution_overlap"] == pytest.approx(1.0, abs=1e-6)
+        for record in dense
+    )
+    assert all(
+        -1e-6 <= candidate["probability_distribution_overlap"] <= 1.0 + 1e-6
+        for observation in observations
+        for candidate in observation["candidates"]
+    )
+    resumed_partial = next(
+        observation
+        for observation in observations
+        if observation["position"] == partial_observation["position"]
+        and observation["requested_sampling_percentage"]
+        == partial_observation["requested_sampling_percentage"]
+    )
+    assert [
+        candidate["probability_distribution_overlap"] for candidate in resumed_partial["candidates"]
+    ] == partial_overlaps
+    assert all(
+        set(observation["summary"]["overlap_successful_candidate_fraction"])
+        == {"0.9999", "0.9995", "0.995", "0.95"}
+        for observation in observations
+    )
     assert all(
         candidate["selected_token_occurrences"]
         == candidate["actual_gathered_key_occurrences"]

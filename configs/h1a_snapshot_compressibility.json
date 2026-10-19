@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "h1a_unconstrained_snapshot_compressibility",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "h1a-unconstrained-snapshot-compressibility",
     "seed": 20261019

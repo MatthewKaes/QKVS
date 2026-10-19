@@ -411,9 +411,12 @@ current token is mandatory. A 100% candidate deterministically selects every cau
 must match the full-QKV logits and loss within the declared numerical tolerance.
 
 Each completed position/fraction trial set is written atomically outside the manifest. Candidate
-records contain KL divergence `KL(p_full || p_sparse)`, next-token loss delta, top-one agreement,
-realized occurrence fraction, read/block counts, per-layer reconstruction seeds, and compact
-location histograms. Full block ranges are retained for the best candidate. Configured
+records contain KL divergence `KL(p_full || p_sparse)`, probability-distribution overlap
+`sum_v min(p_full[v], p_sparse[v])`, next-token loss delta, top-one agreement, realized occurrence
+fraction, read/block counts, per-layer reconstruction seeds, and compact location histograms. The
+overlap is computed from the same float32 distributions as KL, and summaries report descriptive
+success fractions at `0.9999`, `0.9995`, `0.995`, and `0.95`; those thresholds are not run gates.
+Full block ranges are retained for the best candidate. Configured
 `trial_start` and count ranges permit later run identities to add nonoverlapping observations
 without replacing prior trial-set artifacts. A typical record is:
 
@@ -424,6 +427,7 @@ without replacing prior trial-set artifacts. A typical record is:
   "requested_sampled_fraction": 0.1,
   "realized_sampled_fraction": 0.1001,
   "kl_divergence_nats": 0.012,
+  "probability_distribution_overlap": 0.997,
   "next_token_ce_delta_nats": -0.004,
   "top_one_agreement": true,
   "candidate_seed": 123,
@@ -434,9 +438,9 @@ without replacing prior trial-set artifacts. A typical record is:
 
 Frontiers report the smallest fraction found by the configured random search at each KL tolerance.
 Failure to observe a qualifying sample is recorded as `not_found`, never as theoretical
-impossibility. `configs/h1a_snapshot_compressibility.json` contains the proposed seven positions,
-ten sampling percentages, 200 trials, and four descriptive KL thresholds. It remains
-`draft_not_authorized`; after independent approval, the human command would be:
+impossibility. `configs/h1a_snapshot_compressibility.json` contains the seven positions, ten
+sampling percentages, 200 trials, and four descriptive KL thresholds. It is `approved` for one
+human-initiated exploratory GPU study. The command is:
 
 ```bash
 ./run.sh configs/h1a_snapshot_compressibility.json
@@ -491,6 +495,6 @@ concurrent run.
 `configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
 `configs/heatfield_hard_aligned_corrected_study.json` identifies the completed correction;
 `configs/heatfield_full_qkvs_learning_study.json` identifies the unauthorized full-QKVS training
-draft; `configs/h1a_snapshot_compressibility.json` identifies the unauthorized H1a snapshot study.
+draft; `configs/h1a_snapshot_compressibility.json` identifies the approved H1a snapshot study.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

@@ -6,6 +6,8 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
+_SNAPSHOT_OVERLAP_THRESHOLDS = (0.9999, 0.9995, 0.995, 0.95)
+
 
 def _mean(values: Iterable[float]) -> float:
     collected = list(values)
@@ -341,6 +343,7 @@ def summarize_snapshot_trial_set(
     if not candidates:
         raise ValueError("snapshot trial summary requires candidate observations")
     divergences = [float(candidate["kl_divergence_nats"]) for candidate in candidates]
+    overlaps = [float(candidate["probability_distribution_overlap"]) for candidate in candidates]
     loss_deltas = [float(candidate["next_token_ce_delta_nats"]) for candidate in candidates]
     realized = [float(candidate["realized_sampled_fraction"]) for candidate in candidates]
     best = min(
@@ -364,6 +367,12 @@ def summarize_snapshot_trial_set(
             "mean": _mean(divergences),
             "maximum": max(divergences),
         },
+        "probability_distribution_overlap": {
+            "minimum": min(overlaps),
+            "median": _quantile(overlaps, 0.5),
+            "mean": _mean(overlaps),
+            "maximum": max(overlaps),
+        },
         "next_token_ce_delta_nats": {
             "minimum": min(loss_deltas),
             "median": _quantile(loss_deltas, 0.5),
@@ -384,6 +393,13 @@ def summarize_snapshot_trial_set(
             )
             for tolerance in fidelity_tolerances
         },
+        "overlap_successful_candidate_fraction": {
+            _tolerance_key(threshold): _mean(
+                float(candidate["probability_distribution_overlap"] >= threshold)
+                for candidate in candidates
+            )
+            for threshold in _SNAPSHOT_OVERLAP_THRESHOLDS
+        },
         "mean_selected_token_occurrences": _mean(
             candidate["selected_token_occurrences"] for candidate in candidates
         ),
@@ -402,6 +418,7 @@ def summarize_snapshot_trial_set(
                 "requested_sampled_fraction",
                 "realized_sampled_fraction",
                 "kl_divergence_nats",
+                "probability_distribution_overlap",
                 "next_token_ce_delta_nats",
                 "top_one_agreement",
             )
