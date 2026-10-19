@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "heatfield_absolute_mass_learning_followup",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "heatfield-absolute-mass-learning-followup",
     "seed": 20261018

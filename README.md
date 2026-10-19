@@ -172,8 +172,9 @@ synthetic transformer. The same reader interface also supports frozen Hugging Fa
 `Qwen2ForCausalLM` full-attention checkpoints, including grouped-query attention and the
 checkpoint's positional and normalization modules. A pretrained run additionally requires a
 pinned model and tokenizer revision, an explicit execution dtype, a SHA-256-pinned UTF-8 source,
-and fixed token boundaries. The checked-in long-context study is approved for one exploratory,
-human-initiated GPU pilot; this authorization does not extend to follow-up runs or protocol changes.
+and fixed token boundaries. Each checked-in approved long-context configuration authorizes one
+specific exploratory, human-initiated GPU run; authorization does not extend to parameter changes
+or additional runs.
 
 The Qwen2 adapter writes each layer's position-rotated K/V once, then gathers only the actual
 historical occurrences and mandatory rolling window used by that layer's ordinary Q/K/V
@@ -333,14 +334,18 @@ eligible history ends at 2049. Of its 64 offsets, 48 are at least 6144 and clamp
 occurrences). This helps explain the control's strong early and poor late position dependence and
 must not be interpreted as 64 distinct regions.
 
-`configs/heatfield_learning_followup.json` is a new `draft_not_authorized` comparison using the
+`configs/heatfield_learning_followup.json` is `approved` for one human-initiated exploratory
+comparison using the
 same frozen model, data boundaries, W/T, J/R, and evaluation stream. It changes only the corrected
 objective's source identity and increases `targets_per_rollout` from 3 to 24. Forty causal rollouts
 therefore provide 960 target-local objectives, exactly 40 per transformer layer instead of five,
 distributed across the full post-transition trajectory. Target-local dense teacher and utility
 work is expected to increase approximately eightfold; rollout construction, evaluation work, and
 checkpoint state size are otherwise unchanged. Reusing the held-out stream preserves pilot
-comparability but cannot establish generalization.
+comparability but cannot establish generalization or separately attribute any change to coverage
+calibration versus supervision density. Stop on nonfinite values, identity mismatch, or resource
+exhaustion; resume only unchanged artifacts and never alter the frozen protocol to finish a failed
+run.
 
 ## Configuration and artifacts
 
@@ -366,6 +371,7 @@ width and erased before every redraw. Redirected output receives one line per wo
 heartbeat writes. Completed counts advance only after the corresponding artifact is written
 atomically. `qkvs status` reports the same phase breakdown for an interrupted or concurrent run.
 
-`configs/heatfield_learning_study.json` is the sole approved exploratory learning pilot. Passing
-CPU smoke tests, completing this pilot, or observing a favorable region does not establish that
-learned S converges, generalizes, or improves hard next-token prediction.
+`configs/heatfield_learning_study.json` identifies the completed pilot;
+`configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up.
+Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
+that learned S converges, generalizes, or improves hard next-token prediction.

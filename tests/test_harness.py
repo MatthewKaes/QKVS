@@ -139,7 +139,7 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_preserve_pilot_and_keep_followup_draft() -> None:
+def test_checked_in_configurations_preserve_pilot_and_authorize_frozen_followup() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     pilot_path = Path("configs/heatfield_learning_study.json")
@@ -170,13 +170,14 @@ def test_checked_in_configurations_preserve_pilot_and_keep_followup_draft() -> N
     assert hashlib.sha256(pilot_path.read_bytes()).hexdigest() == (
         "32e35fc0a06907e39c2c917ea1fdedb54f52ff7c4773df5d350fd0d01c02bc66"
     )
-    assert followup["valid"]
-    assert not followup["runnable"]
-    assert followup["experiment"] == "heatfield_absolute_mass_learning_followup"
-    assert followup["status"] == "draft_not_authorized"
-    assert (
-        "configuration is not authorized for harness execution" in followup["not_runnable_reasons"]
-    )
+    assert followup == {
+        "valid": True,
+        "runnable": True,
+        "errors": [],
+        "not_runnable_reasons": [],
+        "experiment": "heatfield_absolute_mass_learning_followup",
+        "status": "approved",
+    }
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -185,10 +186,18 @@ def test_checked_in_configurations_preserve_pilot_and_keep_followup_draft() -> N
     assert denser["data"] == pilot["data"]
     assert denser["attention"] == pilot["attention"]
     assert denser["selection"] == pilot["selection"]
+    assert denser["evaluation"] == pilot["evaluation"]
+    assert denser["execution"] == pilot["execution"]
     assert denser["training"] == {
         **pilot["training"],
         "targets_per_rollout": 24,
     }
+    assert [
+        boundary["stop_token"] - boundary["start_token"]
+        for boundary in denser["data"]["boundaries"]
+    ] == [16384, 16384]
+    assert len(denser["selection"]["conditions"]) == 5
+    assert denser["training"]["steps"] == 40
     assert denser["training"]["steps"] * denser["training"]["targets_per_rollout"] == 960
     assert 960 // 24 == 40
 
