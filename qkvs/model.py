@@ -346,9 +346,7 @@ class _LayerKVCache:
         base_mask = index < self.length
         if bool(base_mask.all()):
             return self.storage[:, : self.length].index_select(1, index)
-        if bool(base_mask.any()) and not bool(
-            torch.equal(index, torch.sort(index, stable=True).values)
-        ):
+        if bool((~base_mask[:-1] & base_mask[1:]).any()):
             raise ValueError("branched cache indices must keep base entries before overlays")
         pieces = []
         if bool(base_mask.any()):
@@ -490,6 +488,7 @@ _TRAINING_SCALAR_METRICS = (
     "rolling_next_token_loss",
     "hard_selected_next_token_loss",
     "hard_utility",
+    "target_layer_marginal_utility",
     "soft_utility",
     "soft_hard_utility_gap",
     "teacher_historical_attention_mass",
@@ -1021,8 +1020,45 @@ class HuggingFaceQwen2Reader:
         key_cache: list[list[Tensor] | _LayerKVCache],
         value_cache: list[list[Tensor] | _LayerKVCache],
         rolling: tuple[int, ...] | Tensor,
+        policy: LearnedHeatFieldPolicy | None = None,
+        policy_states: list[PolicyState] | None = None,
+        lower_layer_selection: Tensor | None = None,
+        position: int | None = None,
+        historical_token_budget: int | None = None,
+        window_width: int | None = None,
     ) -> Tensor:
         backbone = self.model.model
+        qkvs_downstream = policy is not None
+        if qkvs_downstream != (policy_states is not None):
+            raise ValueError("downstream QKVS policy and state must be supplied together")
+        if qkvs_downstream and (
+            position is None
+            or historical_token_budget is None
+            or window_width is None
+            or len(policy_states) != len(backbone.layers)
+        ):
+            raise ValueError("downstream QKVS continuation is incomplete")
+        branch_states = None
+        branch_lower = None
+        if qkvs_downstream:
+            branch_states = [
+                PolicyState(
+                    tuple(state.centers),
+                    state.recurrent.detach().clone() if state.recurrent is not None else None,
+                )
+                for state in policy_states
+            ]
+            branch_lower = (
+                lower_layer_selection.detach().clone()
+                if lower_layer_selection is not None
+                else None
+            )
+        rolling_index = (
+            rolling.to(device=hidden.device, dtype=torch.long)
+            if isinstance(rolling, Tensor)
+            else torch.tensor(rolling, device=hidden.device, dtype=torch.long)
+        )
+        history_end = position - len(rolling) + 1 if position is not None else None
         for layer_index in range(start_layer, len(backbone.layers)):
             layer = backbone.layers[layer_index]
             branch_keys = (
@@ -1035,21 +1071,60 @@ class HuggingFaceQwen2Reader:
                 if isinstance(value_cache[layer_index], _LayerKVCache)
                 else list(value_cache[layer_index])
             )
-            residual, _, query = self._append_layer_kv(
+            residual, normalized, query = self._append_layer_kv(
                 layer,
                 hidden,
                 position_embeddings,
                 branch_keys,
                 branch_values,
             )
+            if qkvs_downstream:
+                with torch.no_grad():
+                    proposal_set = policy.propose(
+                        SelectionContext(
+                            position=position,
+                            layer=layer_index,
+                            history_end=history_end,
+                            hidden=normalized[0, 0].detach(),
+                            lower_layer=branch_lower,
+                        ),
+                        branch_states[layer_index],
+                    )
+                    selection = resolve_proposals(
+                        proposal_set.proposals,
+                        history_end=history_end,
+                        window_width=window_width,
+                        historical_token_budget=historical_token_budget,
+                        beta=proposal_set.beta,
+                    )
+                    recurrent = proposal_set.state.recurrent
+                    branch_states[layer_index] = PolicyState(
+                        proposal_set.state.centers,
+                        recurrent.detach().clone() if recurrent is not None else None,
+                    )
+                    branch_lower = (
+                        proposal_set.soft_parameters.detach().clone()
+                        if proposal_set.soft_parameters is not None
+                        else None
+                    )
+                    historical_index = torch.tensor(
+                        selection.indices,
+                        device=hidden.device,
+                        dtype=torch.long,
+                    )
+                    actual_indices = torch.cat((historical_index, rolling_index))
+                occurrence_limit = len(rolling) + historical_token_budget
+            else:
+                actual_indices = rolling_index
+                occurrence_limit = len(rolling)
             hidden, _, _ = self._finish_layer(
                 layer,
                 residual,
                 query,
                 branch_keys,
                 branch_values,
-                rolling,
-                occurrence_limit=len(rolling),
+                actual_indices,
+                occurrence_limit=occurrence_limit,
             )
         return self.model.lm_head(backbone.norm(hidden))[0, 0]
 
@@ -1726,6 +1801,8 @@ class HuggingFaceQwen2Reader:
     def _heatfield_objective_from_proposal(
         self,
         stream: TokenStream,
+        policy: LearnedHeatFieldPolicy,
+        policy_states: list[PolicyState],
         proposal_set: Any,
         *,
         position: int,
@@ -1741,12 +1818,20 @@ class HuggingFaceQwen2Reader:
         coverage_weight: float,
         utility_weight: float,
         utility_gradient_estimator: str,
+        predictive_continuation: str,
         device: torch.device,
     ) -> tuple[Tensor, dict[str, Any], tuple[int, ...]]:
         if proposal_set.soft_parameters is None:
             raise RuntimeError("learned policy did not provide differentiable proposals")
         if utility_gradient_estimator not in {"soft_occupancy", "hard_multiplicity_ste"}:
             raise ValueError("unsupported utility-gradient estimator")
+        if predictive_continuation not in {"rolling", "qkvs"}:
+            raise ValueError("unsupported predictive continuation")
+        if (
+            predictive_continuation == "qkvs"
+            and utility_gradient_estimator != "hard_multiplicity_ste"
+        ):
+            raise ValueError("QKVS predictive continuation requires the hard-aligned estimator")
         rolling_start = rolling[0]
         selection = resolve_proposals(
             proposal_set.proposals,
@@ -1758,6 +1843,16 @@ class HuggingFaceQwen2Reader:
         target = torch.tensor([stream.tokens[position + 1]], device=device)
         target_layer = self.model.model.layers[layer_index]
         rolling_index = torch.tensor(rolling, device=device, dtype=torch.long)
+        downstream_arguments: dict[str, Any] = {}
+        if predictive_continuation == "qkvs":
+            downstream_arguments = {
+                "policy": policy,
+                "policy_states": policy_states,
+                "lower_layer_selection": proposal_set.soft_parameters.detach(),
+                "position": position,
+                "historical_token_budget": historical_token_budget,
+                "window_width": window_width,
+            }
 
         with torch.no_grad():
             rolling_hidden, _, _ = self._finish_layer(
@@ -1776,6 +1871,7 @@ class HuggingFaceQwen2Reader:
                 key_cache=key_cache,
                 value_cache=value_cache,
                 rolling=rolling_index,
+                **downstream_arguments,
             )
             rolling_loss = torch.nn.functional.cross_entropy(rolling_logits.unsqueeze(0), target)
             selected_indices = (*selection.indices, *rolling)
@@ -1796,6 +1892,7 @@ class HuggingFaceQwen2Reader:
                 key_cache=key_cache,
                 value_cache=value_cache,
                 rolling=rolling_index,
+                **downstream_arguments,
             )
             selected_loss = torch.nn.functional.cross_entropy(selected_logits.unsqueeze(0), target)
 
@@ -1868,6 +1965,7 @@ class HuggingFaceQwen2Reader:
             key_cache=key_cache,
             value_cache=value_cache,
             rolling=rolling_index,
+            **downstream_arguments,
         )
         surrogate_loss = torch.nn.functional.cross_entropy(surrogate_logits.unsqueeze(0), target)
         utility_surrogate = surrogate_loss - rolling_loss.detach()
@@ -1882,6 +1980,7 @@ class HuggingFaceQwen2Reader:
             "rolling_next_token_loss": rolling_loss.detach(),
             "hard_selected_next_token_loss": selected_loss.detach(),
             "hard_utility": (rolling_loss - selected_loss).detach(),
+            "target_layer_marginal_utility": (rolling_loss - selected_loss).detach(),
             "soft_utility": (rolling_loss - surrogate_loss.detach()).detach(),
             "soft_hard_utility_gap": (selected_loss - surrogate_loss.detach()).detach(),
             "teacher_historical_attention_mass": teacher_weights[:rolling_start].sum().detach(),
@@ -1898,6 +1997,9 @@ class HuggingFaceQwen2Reader:
             "proposal_parameters": soft.detach(),
             "coverage_overlap_alpha": 0.0,
             "utility_gradient_estimator": utility_gradient_estimator,
+            "predictive_utility_scope": "target_layer_marginal",
+            "predictive_continuation": predictive_continuation,
+            "full_trajectory_utility_measured": False,
             "trajectory": "learned_hard_detached",
             "temporal_credit_assignment": "target_step_only",
         }
@@ -1921,6 +2023,7 @@ class HuggingFaceQwen2Reader:
         snapshot_ownership: str = "train",
         prefill_chunk_tokens: int = 128,
         utility_gradient_estimator: str = "soft_occupancy",
+        predictive_continuation: str = "rolling",
     ) -> tuple[Tensor, dict[str, Any]]:
         """Build one truncated causal S objective while the reader remains frozen."""
 
@@ -2113,6 +2216,8 @@ class HuggingFaceQwen2Reader:
         )
         objective, metrics, _ = self._heatfield_objective_from_proposal(
             stream,
+            policy,
+            policy_states,
             proposal_set,
             position=position,
             layer_index=layer_index,
@@ -2127,6 +2232,7 @@ class HuggingFaceQwen2Reader:
             coverage_weight=coverage_weight,
             utility_weight=utility_weight,
             utility_gradient_estimator=utility_gradient_estimator,
+            predictive_continuation=predictive_continuation,
             device=device,
         )
         metrics.update(
@@ -2157,6 +2263,7 @@ class HuggingFaceQwen2Reader:
         utility_weight: float,
         device: torch.device,
         utility_gradient_estimator: str = "soft_occupancy",
+        predictive_continuation: str = "rolling",
     ) -> tuple[list[Tensor], list[dict[str, Any]]]:
         """Advance one causal segment with fixed S weights and target-local gradients."""
 
@@ -2218,6 +2325,8 @@ class HuggingFaceQwen2Reader:
                     objective, target_metrics, selected_indices = (
                         self._heatfield_objective_from_proposal(
                             stream,
+                            policy,
+                            state.policy_states,
                             proposal_set,
                             position=position,
                             layer_index=layer_index,
@@ -2232,6 +2341,7 @@ class HuggingFaceQwen2Reader:
                             coverage_weight=coverage_weight,
                             utility_weight=utility_weight,
                             utility_gradient_estimator=utility_gradient_estimator,
+                            predictive_continuation=predictive_continuation,
                             device=device,
                         )
                     )

@@ -178,17 +178,19 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_preserve_failed_run_and_authorize_correction() -> None:
+def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_training() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     pilot_path = Path("configs/heatfield_learning_study.json")
     followup_path = Path("configs/heatfield_learning_followup.json")
     hard_aligned_path = Path("configs/heatfield_hard_aligned_study.json")
     corrected_path = Path("configs/heatfield_hard_aligned_corrected_study.json")
+    full_qkvs_path = Path("configs/heatfield_full_qkvs_learning_study.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
     corrected = validate_config_file(corrected_path)
+    full_qkvs = validate_config_file(full_qkvs_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -243,11 +245,23 @@ def test_checked_in_configurations_preserve_failed_run_and_authorize_correction(
         "experiment": "heatfield_corrected_hard_aligned_learning_study",
         "status": "approved",
     }
+    assert hashlib.sha256(corrected_path.read_bytes()).hexdigest() == (
+        "b36379abda410a6e4003cc2c16b6deaa46bb6abf327f4e047e93a8fc65f9252b"
+    )
+    assert full_qkvs == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "heatfield_full_qkvs_predictive_learning_study",
+        "status": "draft_not_authorized",
+    }
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
     hard = json.loads(hard_aligned_path.read_text())
     fixed = json.loads(corrected_path.read_text())
+    full = json.loads(full_qkvs_path.read_text())
     assert denser["run"]["id"] != pilot["run"]["id"]
     assert denser["model"] == pilot["model"]
     assert denser["data"] == pilot["data"]
@@ -292,9 +306,35 @@ def test_checked_in_configurations_preserve_failed_run_and_authorize_correction(
     assert fixed["training"] == hard["training"]
     assert fixed["evaluation"] == hard["evaluation"]
     assert fixed["execution"] == hard["execution"]
+    assert full["run"] == {
+        **fixed["run"],
+        "id": "heatfield-full-qkvs-predictive-learning-study",
+    }
+    assert full["model"] == fixed["model"]
+    assert full["data"] == fixed["data"]
+    assert full["attention"] == fixed["attention"]
+    assert full["selection"] == fixed["selection"]
+    assert full["training"] == {
+        **fixed["training"],
+        "predictive_continuation": "qkvs",
+    }
+    assert full["evaluation"] == fixed["evaluation"]
+    assert full["execution"] == fixed["execution"]
 
     invalid = json.loads(json.dumps(hard))
     invalid["training"]["utility_gradient_estimator"] = "unsupported"
+    assert (
+        "learned heat-field training configuration is incomplete"
+        in validate_config(invalid)["not_runnable_reasons"]
+    )
+    invalid = json.loads(json.dumps(full))
+    invalid["training"]["predictive_continuation"] = "unsupported"
+    assert (
+        "learned heat-field training configuration is incomplete"
+        in validate_config(invalid)["not_runnable_reasons"]
+    )
+    invalid = json.loads(json.dumps(full))
+    invalid["training"]["utility_gradient_estimator"] = "soft_occupancy"
     assert (
         "learned heat-field training configuration is incomplete"
         in validate_config(invalid)["not_runnable_reasons"]

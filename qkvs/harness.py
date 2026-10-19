@@ -936,6 +936,12 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             or training.get("coverage_weight", 0) + training.get("utility_weight", 0) <= 0
             or training.get("utility_gradient_estimator", "soft_occupancy")
             not in {"soft_occupancy", "hard_multiplicity_ste"}
+            or training.get("predictive_continuation", "rolling") not in {"rolling", "qkvs"}
+            or (
+                training.get("predictive_continuation", "rolling") == "qkvs"
+                and training.get("utility_gradient_estimator", "soft_occupancy")
+                != "hard_multiplicity_ste"
+            )
             or training.get("position_schedule") != "streaming_stratified"
             or training.get("layer_schedule") != "round_robin"
         ):
@@ -1423,6 +1429,7 @@ def _train_learned_policy(
             coverage_weight=float(training["coverage_weight"]),
             utility_weight=float(training["utility_weight"]),
             utility_gradient_estimator=training.get("utility_gradient_estimator", "soft_occupancy"),
+            predictive_continuation=training.get("predictive_continuation", "rolling"),
             device=device,
         )
         if not objectives:
@@ -1493,6 +1500,7 @@ def _train_learned_policy(
                     "utility_gradient_estimator": training.get(
                         "utility_gradient_estimator", "soft_occupancy"
                     ),
+                    "predictive_continuation": training.get("predictive_continuation", "rolling"),
                     "effective_supervised_targets": len(history),
                     "effective_supervised_targets_per_layer": {
                         str(layer): sum(record["layer"] == layer for record in history)

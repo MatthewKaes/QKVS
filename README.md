@@ -261,6 +261,16 @@ remain detached, so gradients apply only to selected target token/layers rather 
 temporal credit assignment. Atomic checkpoints include the exact post-transition training K/V, S
 state, position, optimizer, and policy, and may resume only the same identified trajectory.
 
+Training may set `predictive_continuation` to `qkvs` so a supervised target is completed with the
+same per-layer S proposals and bounded hard K/V reads as deployed QKVS. The selected and rolling
+counterfactual branches fork the current K/V and recurrent selector state; only the target layer's
+historical read differs, while downstream layers independently execute their normal causal S
+decisions with cross-layer refinement. Those non-target selector decisions stay detached, but the
+frozen downstream transformer remains differentiable back to the target layer's STE output. The
+reported utility is therefore the **target-layer marginal effect on the complete current-token
+QKVS loss**, conditional on the already constructed causal trajectory. It is not a full-trajectory
+intervention and provides no gradient through prior tokens or non-target selector choices.
+
 `full_qkv` is an explicit reference continuation: it restores the same dense prefill at `T`, then
 reads the complete causal cache on the same ground-truth stream. It is deliberately unbounded and
 is never reported as an `R`-matched control. Its next-token loss is a reference measurement, not a
@@ -378,6 +388,12 @@ nonfinite values, forward discrepancy, identity mismatch, or resource exhaustion
 ./run.sh configs/heatfield_hard_aligned_corrected_study.json
 ```
 
+`configs/heatfield_full_qkvs_learning_study.json` is a separate `draft_not_authorized` study. It
+preserves the corrected pilot's frozen model, data, W/T/J/R, gamma/beta, 40 streaming updates, 960
+target-layer objectives, and evaluation controls. Its only training change is
+`predictive_continuation: qkvs`, and its distinct run ID prevents reuse of the completed selector
+checkpoint. It must not be executed without independent authorization.
+
 ## Configuration and artifacts
 
 Configurations keep proposal count, window width, and historical token-occurrence budget separate.
@@ -425,6 +441,8 @@ concurrent run.
 `configs/heatfield_learning_study.json` identifies the completed pilot;
 `configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up;
 `configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
-`configs/heatfield_hard_aligned_corrected_study.json` identifies the approved correction.
+`configs/heatfield_hard_aligned_corrected_study.json` identifies the completed correction;
+`configs/heatfield_full_qkvs_learning_study.json` identifies the unauthorized full-QKVS training
+draft.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

@@ -789,6 +789,8 @@ def _configured_heatfield_policy(*, gate_raw: float, layers: int = 2) -> Learned
                 )
             )
         )
+        for decoder in policy.decoders[1:]:
+            decoder[-1].bias.view(2, 4)[:, 3].fill_(gate_raw)
     return policy
 
 
@@ -798,6 +800,7 @@ def _hard_aligned_objective(
     historical_token_budget: int,
     dtype: torch.dtype = torch.float32,
     layers: int = 2,
+    predictive_continuation: str = "rolling",
 ) -> tuple[torch.Tensor, dict[str, object], LearnedHeatFieldPolicy]:
     reader = _qwen_reader(dtype, layers=layers)
     policy = _configured_heatfield_policy(gate_raw=gate_raw, layers=layers)
@@ -824,6 +827,7 @@ def _hard_aligned_objective(
         dense_snapshot=snapshot,
         snapshot_ownership="train",
         utility_gradient_estimator="hard_multiplicity_ste",
+        predictive_continuation=predictive_continuation,
     )
     return objective, metrics, policy
 
@@ -837,14 +841,19 @@ def test_hard_multiplicity_estimator_matches_duplicate_hard_reads_and_has_gradie
     loss_atol: float,
     layers: int,
 ) -> None:
+    predictive_continuation = "qkvs" if layers == 24 else "rolling"
     objective, metrics, policy = _hard_aligned_objective(
         gate_raw=4.0,
         historical_token_budget=4,
         dtype=dtype,
         layers=layers,
+        predictive_continuation=predictive_continuation,
     )
 
     assert metrics["utility_gradient_estimator"] == "hard_multiplicity_ste"
+    assert metrics["predictive_continuation"] == predictive_continuation
+    assert metrics["predictive_utility_scope"] == "target_layer_marginal"
+    assert not metrics["full_trajectory_utility_measured"]
     assert metrics["historical_windows"] == ((1, 3), (0, 2))
     assert metrics["historical_occurrences"] == 4
     assert metrics["historical_unique_tokens"] == 3
@@ -868,6 +877,7 @@ def test_hard_multiplicity_estimator_matches_duplicate_hard_reads_and_has_gradie
         historical_token_budget=2,
         dtype=dtype,
         layers=layers,
+        predictive_continuation=predictive_continuation,
     )
     assert budgeted["historical_windows"] == ((1, 3),)
     assert budgeted["historical_occurrences"] == 2
@@ -882,6 +892,7 @@ def test_hard_multiplicity_estimator_matches_rolling_when_all_gates_are_inactive
         historical_token_budget=4,
         dtype=torch.bfloat16,
         layers=24,
+        predictive_continuation="qkvs",
     )
 
     assert torch.isfinite(objective)
@@ -894,6 +905,155 @@ def test_hard_multiplicity_estimator_matches_rolling_when_all_gates_are_inactive
     assert metrics["hard_forward_loss_atol"] == 5e-3
     assert metrics["utility_forward_logit_max_abs_error"] == 0.0
     assert metrics["utility_forward_loss_abs_error"] == 0.0
+
+
+def test_full_depth_bfloat16_training_matches_normal_current_token_qkvs(monkeypatch) -> None:
+    reader = _qwen_reader(torch.bfloat16, layers=24)
+    policy = _configured_heatfield_policy(gate_raw=4.0, layers=24)
+    reference_policy = _configured_heatfield_policy(gate_raw=4.0, layers=24)
+    reference_policy.load_state_dict(policy.state_dict())
+    stream = _stream(tuple(index % 32 for index in range(10)))
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
+
+    normal_logits = []
+    hook = reader.model.lm_head.register_forward_hook(
+        lambda _module, _inputs, output: normal_logits.append(output[0, 0].detach().clone())
+    )
+    scores = reader.execute(
+        stream,
+        reference_policy,
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        device=torch.device("cpu"),
+        activation_tokens=6,
+        dense_snapshot=snapshot,
+        snapshot_ownership="train",
+    )
+    hook.remove()
+
+    proposal_contexts = []
+    original_propose = policy.propose
+
+    def tracked_propose(context, state):
+        proposal_contexts.append(context)
+        return original_propose(context, state)
+
+    monkeypatch.setattr(policy, "propose", tracked_propose)
+    downstream_indices = []
+    original_gather = model_module._gather_cache_occurrences
+
+    def tracked_gather(cache, indices, *, occurrence_limit):
+        gathered = original_gather(cache, indices, occurrence_limit=occurrence_limit)
+        if (
+            isinstance(cache, model_module._LayerKVCache)
+            and cache.overlay
+            and isinstance(indices, torch.Tensor)
+        ):
+            downstream_indices.append(indices.detach().cpu().tolist())
+        return gathered
+
+    monkeypatch.setattr(model_module, "_gather_cache_occurrences", tracked_gather)
+    training_logits = []
+    hook = reader.model.lm_head.register_forward_hook(
+        lambda _module, _inputs, output: training_logits.append(output[0, 0].detach().clone())
+    )
+    objective, metrics = reader.heatfield_training_objective(
+        stream,
+        policy,
+        position=6,
+        layer_index=0,
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        coverage_weight=0.0,
+        utility_weight=1.0,
+        device=torch.device("cpu"),
+        activation_tokens=6,
+        dense_snapshot=snapshot,
+        snapshot_ownership="train",
+        utility_gradient_estimator="hard_multiplicity_ste",
+        predictive_continuation="qkvs",
+    )
+    hook.remove()
+
+    reference_score = next(score for score in scores if score.position == 6)
+    assert len(normal_logits) == len(stream.tokens) - 1 - 6
+    assert len(training_logits) == 3
+    assert torch.equal(training_logits[1], normal_logits[0])
+    assert torch.equal(training_logits[2], normal_logits[0])
+    assert metrics["hard_selected_next_token_loss"] == reference_score.loss
+    assert metrics["utility_forward_logit_max_abs_error"] == 0.0
+    assert metrics["utility_forward_loss_abs_error"] == 0.0
+    assert metrics["historical_windows"] == ((1, 3), (0, 2))
+    assert metrics["overlap_occurrences"] == 1
+    assert downstream_indices
+    assert any(len(indices) > 2 for indices in downstream_indices)
+    assert all(indices[-2:] == [5, 6] for indices in downstream_indices)
+    assert all(all(index < 5 for index in indices[:-2]) for indices in downstream_indices)
+    assert all(
+        context.lower_layer is not None and not context.lower_layer.requires_grad
+        for context in proposal_contexts
+        if context.layer > 0
+    )
+
+    objective.backward()
+    target_gradient = policy.decoders[0][-1].bias.grad.view(2, 4)
+    assert torch.isfinite(target_gradient).all()
+    assert all(torch.count_nonzero(target_gradient[:, field]) for field in (0, 1, 2, 3))
+    assert all(
+        parameter.grad is None
+        for decoder in policy.decoders[1:]
+        for parameter in decoder.parameters()
+    )
+    assert all(parameter.grad is None for parameter in reader.model.parameters())
+
+
+def test_full_qkvs_training_objective_is_suffix_causal() -> None:
+    reader = _qwen_reader()
+    first_policy = _configured_heatfield_policy(gate_raw=4.0)
+    second_policy = _configured_heatfield_policy(gate_raw=4.0)
+    second_policy.load_state_dict(first_policy.state_dict())
+    first = _stream((1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    second = _stream((1, 2, 3, 4, 5, 6, 7, 8, 31, 30))
+    snapshot = reader.dense_prefill(
+        first,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
+
+    def objective(stream, policy):
+        return reader.heatfield_training_objective(
+            stream,
+            policy,
+            position=6,
+            layer_index=0,
+            rolling_tokens=2,
+            historical_token_budget=4,
+            window_width=2,
+            coverage_weight=1.0,
+            utility_weight=1.0,
+            device=torch.device("cpu"),
+            activation_tokens=6,
+            dense_snapshot=snapshot,
+            snapshot_ownership="train",
+            utility_gradient_estimator="hard_multiplicity_ste",
+            predictive_continuation="qkvs",
+        )
+
+    first_objective, first_metrics = objective(first, first_policy)
+    second_objective, second_metrics = objective(second, second_policy)
+
+    assert torch.equal(first_objective.detach(), second_objective.detach())
+    assert first_metrics == second_metrics
 
 
 def test_learned_gates_can_decline_all_historical_retrieval() -> None:
@@ -1000,6 +1160,85 @@ def test_training_rollout_batches_metrics_and_reuses_gather_indices(monkeypatch)
         for index in range(0, len(tensor_indices), 2)
     )
     assert sum(indices is None for indices in gathered_indices) >= 6
+
+
+def test_qkvs_training_intervention_branches_do_not_mutate_rollout_state() -> None:
+    reader = _qwen_reader()
+    policy = _configured_heatfield_policy(gate_raw=4.0)
+    control_policy = _configured_heatfield_policy(gate_raw=4.0)
+    control_policy.load_state_dict(policy.state_dict())
+    stream = _stream(tuple(index % 32 for index in range(14)))
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
+    state = reader.new_heatfield_rollout_state(
+        stream,
+        snapshot,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+        prefill_chunk_tokens=128,
+    )
+    control_state = reader.new_heatfield_rollout_state(
+        stream,
+        snapshot,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+        prefill_chunk_tokens=128,
+    )
+
+    objectives, metrics = reader.heatfield_training_rollout(
+        stream,
+        policy,
+        state,
+        stop_position=10,
+        target_layers={6: 0, 9: 1},
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        coverage_weight=1.0,
+        utility_weight=1.0,
+        device=torch.device("cpu"),
+        utility_gradient_estimator="hard_multiplicity_ste",
+        predictive_continuation="qkvs",
+    )
+    control_objectives, control_metrics = reader.heatfield_training_rollout(
+        stream,
+        control_policy,
+        control_state,
+        stop_position=10,
+        target_layers={},
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        coverage_weight=1.0,
+        utility_weight=1.0,
+        device=torch.device("cpu"),
+        utility_gradient_estimator="hard_multiplicity_ste",
+        predictive_continuation="qkvs",
+    )
+
+    assert len(objectives) == len(metrics) == 2
+    assert control_objectives == control_metrics == []
+    assert state.next_position == control_state.next_position == 10
+    assert all(
+        torch.equal(cache.snapshot(), control.snapshot())
+        for cache, control in zip(state.key_cache, control_state.key_cache, strict=True)
+    )
+    assert all(
+        torch.equal(cache.snapshot(), control.snapshot())
+        for cache, control in zip(state.value_cache, control_state.value_cache, strict=True)
+    )
+    for actual, control in zip(state.policy_states, control_state.policy_states, strict=True):
+        assert actual.centers == control.centers
+        assert torch.equal(actual.recurrent, control.recurrent)
 
 
 def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> None:
@@ -1190,6 +1429,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
             "coverage_weight": 1.0,
             "utility_weight": 0.1,
             "utility_gradient_estimator": "hard_multiplicity_ste",
+            "predictive_continuation": "qkvs",
             "checkpoint_interval": 1,
             "rollout_tokens": 4,
             "targets_per_rollout": 3,
@@ -1297,8 +1537,12 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
         "1": 3,
     }
     assert first["training"]["streaming"]["utility_gradient_estimator"] == "hard_multiplicity_ste"
+    assert first["training"]["streaming"]["predictive_continuation"] == "qkvs"
     assert all(
         record["utility_gradient_estimator"] == "hard_multiplicity_ste"
+        and record["predictive_continuation"] == "qkvs"
+        and record["predictive_utility_scope"] == "target_layer_marginal"
+        and not record["full_trajectory_utility_measured"]
         and record["utility_forward_logit_max_abs_error"] <= record["hard_forward_logit_atol"]
         and record["utility_forward_loss_abs_error"] <= record["hard_forward_loss_atol"]
         for record in first["training"]["history"]
