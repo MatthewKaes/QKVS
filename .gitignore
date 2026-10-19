@@ -8,3 +8,4 @@ __pycache__/
 artifacts/checkpoints/
 artifacts/cache/
 artifacts/profiles/
+artifacts/results/
