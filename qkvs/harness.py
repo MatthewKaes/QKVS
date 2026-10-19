@@ -34,12 +34,12 @@ _ERASE_LINE = "\r\x1b[2K"
 
 def _progress_bar(current: int, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
     if total <= 0:
-        filled = width
-    else:
-        filled = width * min(current, total) // total
-        if current > 0:
-            filled = max(1, filled)
-    return "#" * filled + " " * (width - filled)
+        return "█" * width
+    bounded = max(0, min(current, total))
+    thirds = (width * 3 * bounded + total // 2) // total
+    full, partial = divmod(thirds, 3)
+    partial_glyph = ("", "▒", "▓")[partial]
+    return "█" * full + partial_glyph + " " * (width - full - bool(partial))
 
 
 def _progress_line(

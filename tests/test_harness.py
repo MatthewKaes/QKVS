@@ -12,6 +12,7 @@ import pytest
 
 from qkvs.harness import (
     _Progress,
+    _progress_bar,
     _progress_counts,
     _progress_line,
     _tokenized_text_streams,
@@ -42,10 +43,10 @@ def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, mo
 
 def test_progress_line_is_short_enough_to_never_wrap() -> None:
     line = _progress_line(3, 384, "heatfield / stream-002", 65, spinner="/", columns=80)
-    assert line.startswith("/ [   3 / 384 ] [#")
+    assert line.startswith("/ [   3 / 384 ] [▒")
     bar = line.split("] [", maxsplit=1)[1].split("]", maxsplit=1)[0]
     assert len(bar) == 24
-    assert set(bar) <= {"#", " "}
+    assert set(bar) <= {"█", "▓", "▒", " "}
     assert "00:01:05" in line
     assert line.endswith("heatfield / stream-002")
     assert len(line) <= 79
@@ -53,6 +54,16 @@ def test_progress_line_is_short_enough_to_never_wrap() -> None:
     narrow = _progress_line(3, 384, "heatfield / stream-002", 65, columns=60)
     assert "00:01:05" in narrow
     assert len(narrow) <= 59
+
+
+def test_progress_bar_uses_third_cell_resolution() -> None:
+    assert _progress_bar(0, 9, width=3) == "   "
+    assert _progress_bar(1, 9, width=3) == "▒  "
+    assert _progress_bar(2, 9, width=3) == "▓  "
+    assert _progress_bar(3, 9, width=3) == "█  "
+    assert _progress_bar(4, 9, width=3) == "█▒ "
+    assert _progress_bar(5, 9, width=3) == "█▓ "
+    assert _progress_bar(9, 9, width=3) == "███"
 
 
 def test_interactive_progress_spins_on_one_erased_terminal_row() -> None:
