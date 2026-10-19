@@ -601,7 +601,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert fresh_v2["model"] == cell_extension["model"] == position_extension["model"]
     assert fresh_v2["data"] == cell_extension["data"] == position_extension["data"]
     assert len(fresh_positions) == len(set(fresh_positions)) == 200
-    assert fresh_positions == sorted(fresh_positions, reverse=True)
+    assert fresh_positions == sorted(fresh_positions)
     assert min(fresh_positions) >= 512
     assert max(fresh_positions) < 32767
     assert fresh_v2["study"]["trial_start"] == 0
@@ -635,6 +635,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert 100 not in fresh_v2["study"]["sampling_percentages"]
     assert "dense_parity_tolerance" not in fresh_v2["study"]
     assert "reuse_dense_snapshots_from" not in fresh_v2["study"]
+    assert fresh_v2["study"]["dense_snapshot_strategy"] == "largest_prefix_slice"
     assert fresh_v2["study"]["retain_dense_snapshots"] is False
     assert {
         position
@@ -642,7 +643,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         for position in cohort
     } == set(fresh_positions)
     blue_noise = fresh_v2["study"]["position_selection"]
-    assert blue_noise["execution_order"] == "descending_context_length"
+    assert blue_noise["execution_order"] == "ascending_context_length"
     generator = np.random.Generator(np.random.PCG64(blue_noise["seed"]))
     regenerated_blue_noise = []
     proposals = 0
@@ -655,9 +656,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         ):
             regenerated_blue_noise.append(candidate)
     assert proposals == blue_noise["accepted_after_proposals"]
-    assert sorted(regenerated_blue_noise, reverse=True) == fresh_positions
+    assert sorted(regenerated_blue_noise) == fresh_positions
     assert min(
-        left - right for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
+        right - left for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
     ) >= blue_noise["minimum_spacing_tokens"]
     assert fresh_v2["run"]["id"] not in {
         cell_extension["run"]["id"],
@@ -1181,6 +1182,63 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert "reused_from" not in reused["snapshot_prefixes"]["9"]
     assert reused["snapshot_prefixes"]["9"]["retained"] is False
     assert not list((reused_output.parent / "snapshot_prefixes").glob("*.pt"))
+
+    slice_specification = json.loads(json.dumps(specification))
+    slice_specification["run"]["id"] = "snapshot-harness-largest-prefix-smoke"
+    slice_specification["study"]["positions"] = [3, 7, 9]
+    slice_specification["study"]["trial_start"] = 0
+    slice_specification["study"]["trials_per_fraction"] = 1
+    slice_specification["study"]["retain_dense_snapshots"] = False
+    slice_specification["study"]["dense_snapshot_strategy"] = "largest_prefix_slice"
+    slice_config = tmp_path / "snapshot-slice-config.json"
+    slice_config.write_text(json.dumps(slice_specification), encoding="utf-8")
+    computed_dense_positions.clear()
+    original_derive_snapshot = reader.derive_dense_causal_snapshot
+    derived_positions = []
+
+    def tracked_derive_snapshot(*args, **kwargs):
+        derived_positions.append(kwargs["position"])
+        return original_derive_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "derive_dense_causal_snapshot", tracked_derive_snapshot)
+    slice_probe_calls = 0
+
+    def interrupted_slice_probe(*args, **kwargs):
+        nonlocal slice_probe_calls
+        slice_probe_calls += 1
+        if slice_probe_calls == 1:
+            raise RuntimeError("test interruption after dense master snapshot")
+        return original_probe(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "snapshot_probe", interrupted_slice_probe)
+    with pytest.raises(RuntimeError, match="after dense master snapshot"):
+        run_experiment(
+            slice_config,
+            device="cpu",
+            output_root=tmp_path / "slice-results",
+            allow_dirty_source=True,
+            snapshot_csv=tmp_path / "slice-feasibility.csv",
+        )
+    assert computed_dense_positions == [9]
+    assert len(list((tmp_path / "slice-results").rglob("*.pt"))) == 1
+
+    monkeypatch.setattr(reader, "snapshot_probe", original_probe)
+    slice_output, sliced = run_experiment(
+        slice_config,
+        device="cpu",
+        output_root=tmp_path / "slice-results",
+        allow_dirty_source=True,
+        snapshot_csv=tmp_path / "slice-feasibility.csv",
+    )
+    assert sliced["complete"]
+    assert computed_dense_positions == [9]
+    assert derived_positions == [3, 3, 7]
+    assert set(sliced["snapshot_prefixes"]) == {"9"}
+    assert sliced["snapshot_prefixes"]["9"]["derived_positions"] == 2
+    assert sliced["snapshot_prefixes"]["9"]["retained"] is False
+    assert not list((slice_output.parent / "snapshot_prefixes").glob("*.pt"))
+    slice_status = status(slice_output)
+    assert slice_status["completed_units"] == slice_status["total_units"] == 7
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:

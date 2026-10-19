@@ -1373,6 +1373,52 @@ class HuggingFaceQwen2Reader:
         )
         return snapshot
 
+    def derive_dense_causal_snapshot(
+        self,
+        source: DenseCausalSnapshot,
+        stream: TokenStream,
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int = 128,
+    ) -> DenseCausalSnapshot:
+        """Derive an earlier causal prefix by slicing an immutable later snapshot."""
+
+        if position > source.next_position:
+            raise ValueError("derived dense snapshot cannot extend its source")
+        self._validate_dense_causal_snapshot(
+            source,
+            stream,
+            position=source.next_position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        prefix = stream.tokens[:position]
+        snapshot = DenseCausalSnapshot(
+            identity=self._dense_causal_snapshot_identity(
+                prefix,
+                position=position,
+                device=device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            ),
+            prefix_tokens=prefix,
+            next_position=position,
+            key_cache=tuple(cache[:, :position] for cache in source.key_cache),
+            value_cache=tuple(cache[:, :position] for cache in source.value_cache),
+        )
+        self._validate_dense_causal_snapshot(
+            snapshot,
+            stream,
+            position=position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        return snapshot
+
     def save_dense_causal_snapshot(
         self,
         snapshot: DenseCausalSnapshot,

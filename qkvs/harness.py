@@ -256,7 +256,12 @@ def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[
     if specification.get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
         positions = specification["study"]["positions"]
         fractions = specification["study"]["sampling_percentages"]
-        prefix_total = len(positions)
+        prefix_total = (
+            1
+            if specification["study"].get("dense_snapshot_strategy")
+            == "largest_prefix_slice"
+            else len(positions)
+        )
         trial_total = len(positions) * len(fractions)
         phases = {
             "snapshot_prefixes": (
@@ -822,6 +827,11 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             not isinstance(reuse_dense_snapshots_from, str) or not reuse_dense_snapshots_from
         ):
             errors.append("snapshot dense reuse source must be a nonempty path")
+        dense_snapshot_strategy = study.get("dense_snapshot_strategy", "independent")
+        if dense_snapshot_strategy not in {"independent", "largest_prefix_slice"}:
+            errors.append("snapshot dense_snapshot_strategy is unsupported")
+        if dense_snapshot_strategy == "largest_prefix_slice" and reuse_dense_snapshots_from:
+            errors.append("largest-prefix slicing cannot combine with external dense reuse")
         if not isinstance(study.get("retain_dense_snapshots", True), bool):
             errors.append("snapshot retain_dense_snapshots must be boolean")
         if study.get("sampling_algorithm") not in {
@@ -2210,7 +2220,62 @@ def _run_snapshot_study(
     base_seed = specification["run"]["seed"]
     trial_start = study["trial_start"]
     sampling_algorithm = study["sampling_algorithm"]
+    dense_snapshot_strategy = study.get("dense_snapshot_strategy", "independent")
+    master_snapshot = None
+    master_position = max(study["positions"])
+    master_position_key = str(master_position)
+    master_path = (
+        output.parent
+        / "snapshot_prefixes"
+        / f"{stream.stream_id}-position-{master_position:08d}.pt"
+    )
     try:
+        if dense_snapshot_strategy == "largest_prefix_slice":
+            master_record = result["snapshot_prefixes"].get(master_position_key)
+            if master_record is None:
+                progress.start_job(f"dense master snapshot / position {master_position}")
+                if master_path.exists():
+                    master_snapshot = reader.load_dense_causal_snapshot(
+                        master_path,
+                        stream,
+                        position=master_position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                else:
+                    master_snapshot = reader.dense_causal_snapshot(
+                        stream,
+                        position=master_position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                    reader.save_dense_causal_snapshot(master_snapshot, master_path)
+                result["snapshot_prefixes"][master_position_key] = {
+                    "path": os.path.relpath(master_path, output.parent),
+                    "artifact_sha256": _sha256(master_path),
+                    "identity": master_snapshot.identity,
+                    "retained": True,
+                    "derived_positions": len(study["positions"]) - 1,
+                }
+                _write_json(output, result)
+                progress.complete_job()
+            else:
+                if (
+                    (output.parent / master_record["path"]).resolve() != master_path.resolve()
+                    or not master_path.is_file()
+                    or master_record.get("artifact_sha256") != _sha256(master_path)
+                ):
+                    raise ValueError("saved dense master snapshot artifact does not match")
+                master_snapshot = reader.load_dense_causal_snapshot(
+                    master_path,
+                    stream,
+                    position=master_position,
+                    device=device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
         for position in study["positions"]:
             position_key = str(position)
             position_complete = all(
@@ -2218,6 +2283,8 @@ def _run_snapshot_study(
                 for percentage in study["sampling_percentages"]
             )
             if position_complete:
+                if dense_snapshot_strategy == "largest_prefix_slice":
+                    continue
                 prefix_record = result["snapshot_prefixes"].get(position_key)
                 if (
                     not retain_dense_snapshots
@@ -2237,7 +2304,21 @@ def _run_snapshot_study(
             )
             reused_prefix = reuse_prefixes.get(position)
             prefix_record = result["snapshot_prefixes"].get(position_key)
-            if prefix_record is None:
+            if dense_snapshot_strategy == "largest_prefix_slice":
+                snapshot = (
+                    master_snapshot
+                    if position == master_position
+                    else reader.derive_dense_causal_snapshot(
+                        master_snapshot,
+                        stream,
+                        position=position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                )
+                prefix_path = master_path
+            elif prefix_record is None:
                 progress.start_job(f"dense snapshot / position {position}")
                 reused_from = None
                 if reused_prefix is not None:
@@ -2541,11 +2622,19 @@ def _run_snapshot_study(
                 result["complete"] = len(completed) == expected_trial_sets
                 _write_json(output, result)
                 progress.complete_job()
-            if not retain_dense_snapshots and reused_prefix is None:
+            if (
+                dense_snapshot_strategy == "independent"
+                and not retain_dense_snapshots
+                and reused_prefix is None
+            ):
                 prefix_path.unlink(missing_ok=True)
                 result["snapshot_prefixes"][position_key]["retained"] = False
                 _write_json(output, result)
             del state, snapshot, reference
+        if dense_snapshot_strategy == "largest_prefix_slice" and not retain_dense_snapshots:
+            master_path.unlink(missing_ok=True)
+            result["snapshot_prefixes"][master_position_key]["retained"] = False
+            _write_json(output, result)
     finally:
         progress.close()
     return output, load_run(output)

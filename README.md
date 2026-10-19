@@ -494,9 +494,11 @@ for 200 positions over `[512, 32767)`, with a 112-token minimum separation. It e
 coverage values from 10% through 99.5%, including half-percentage resolution in the likely-hit
 region. The 100% sampled candidate is omitted; the full-QKV reference required to calculate KL is
 still evaluated once per position. Completed-position prefix snapshots are discarded so the 200
-fresh prefixes do not accumulate on disk. Positions execute from largest to smallest context so
-scaling problems surface at the start of the study. The authorized command writes the initially
-absent CSV:
+fresh prefixes do not accumulate on disk. Positions execute from smallest to largest context. The
+reader first builds the largest dense causal prefix once, then derives every requested position by
+slicing that immutable K/V state instead of replaying the prefix. The master snapshot remains
+available for resume until the study completes, then is discarded. The authorized command writes
+the initially absent CSV:
 
 ```bash
 ./run.sh configs/h1a_kl_0_01_blue_noise_v2.json \

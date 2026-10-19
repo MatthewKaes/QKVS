@@ -210,6 +210,39 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         ownership="snapshot-test",
         prefill_chunk_tokens=2,
     )
+    later_snapshot = reader.dense_causal_snapshot(
+        first,
+        position=8,
+        device=torch.device("cpu"),
+        ownership="snapshot-test",
+        prefill_chunk_tokens=2,
+    )
+    derived_snapshot = reader.derive_dense_causal_snapshot(
+        later_snapshot,
+        first,
+        position=6,
+        device=torch.device("cpu"),
+        ownership="snapshot-test",
+        prefill_chunk_tokens=2,
+    )
+    assert derived_snapshot.identity == snapshot.identity
+    assert derived_snapshot.prefix_tokens == snapshot.prefix_tokens
+    assert all(
+        torch.equal(derived, direct)
+        for derived, direct in zip(
+            derived_snapshot.key_cache,
+            snapshot.key_cache,
+            strict=True,
+        )
+    )
+    assert all(
+        torch.equal(derived, direct)
+        for derived, direct in zip(
+            derived_snapshot.value_cache,
+            snapshot.value_cache,
+            strict=True,
+        )
+    )
     input_calls = {"embedding": 0, "rope": 0}
     embedding_hook = reader.model.model.embed_tokens.register_forward_hook(
         lambda _module, _inputs, _output: input_calls.__setitem__(
