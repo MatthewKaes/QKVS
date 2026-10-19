@@ -487,15 +487,13 @@ the requested plain CSV, while `result.json` retains compact identity, resume, a
 frontier metadata. Each CSV row carries its run, source revision, configuration hash, and sampler
 identity. The harness does not write per-cell JSON or retain raw candidate trials.
 
-The two fresh 500-trial v2 configurations are `draft_not_authorized` and have new run identities:
-`configs/h1a_kl_0_01_existing_cells_v2.json` covers the existing 60 positions and
-`configs/h1a_kl_0_01_position_extension_v2.json` covers the 50 new positions. After independent
-authorization, both write into one initially absent CSV:
+The fresh 500-trial v2 configuration is `draft_not_authorized` with a new run identity.
+`configs/h1a_kl_0_01_fresh_v2.json` covers all 110 positions and twelve coverage percentages in
+one study. It reuses the 60 compatible immutable dense prefixes and computes the remaining 50.
+After independent authorization, one command writes the initially absent CSV:
 
 ```bash
-./run.sh configs/h1a_kl_0_01_existing_cells_v2.json \
-  docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv
-./run.sh configs/h1a_kl_0_01_position_extension_v2.json \
+./run.sh configs/h1a_kl_0_01_fresh_v2.json \
   docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv
 ```
 

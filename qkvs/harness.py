@@ -2116,13 +2116,16 @@ def _run_snapshot_study(
         for position in study["positions"]:
             record = reuse_result.get("snapshot_prefixes", {}).get(str(position))
             if record is None:
-                raise ValueError("dense snapshot reuse source does not contain every position")
+                continue
             prefix_path = (reuse_result_path.parent / record["path"]).resolve()
             reuse_prefixes[position] = (prefix_path, record)
+        if not reuse_prefixes:
+            raise ValueError("dense snapshot reuse source contains none of the requested positions")
         reuse_identity = {
             "configured_path": reuse_source,
             "run_id": reuse_result["run_id"],
             "result_sha256": _sha256(reuse_result_path),
+            "positions": sorted(reuse_prefixes),
         }
     expected = {
         "config": specification,

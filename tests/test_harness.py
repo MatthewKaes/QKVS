@@ -297,8 +297,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_replication_path = Path("configs/h1a_independent_document_replication.json")
     h1a_cell_extension_path = Path("configs/h1a_kl_0_01_existing_cell_extension.json")
     h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
-    h1a_existing_v2_path = Path("configs/h1a_kl_0_01_existing_cells_v2.json")
-    h1a_position_v2_path = Path("configs/h1a_kl_0_01_position_extension_v2.json")
+    h1a_fresh_v2_path = Path("configs/h1a_kl_0_01_fresh_v2.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -309,8 +308,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_replication = validate_config_file(h1a_replication_path)
     h1a_cell_extension = validate_config_file(h1a_cell_extension_path)
     h1a_position_extension = validate_config_file(h1a_position_extension_path)
-    h1a_existing_v2 = validate_config_file(h1a_existing_v2_path)
-    h1a_position_v2 = validate_config_file(h1a_position_v2_path)
+    h1a_fresh_v2 = validate_config_file(h1a_fresh_v2_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -416,20 +414,12 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_position_extension",
         "status": "approved",
     }
-    assert h1a_existing_v2 == {
+    assert h1a_fresh_v2 == {
         "valid": True,
         "runnable": False,
         "errors": [],
         "not_runnable_reasons": ["configuration is not authorized for harness execution"],
-        "experiment": "h1a_kl_0_01_existing_cells_v2",
-        "status": "draft_not_authorized",
-    }
-    assert h1a_position_v2 == {
-        "valid": True,
-        "runnable": False,
-        "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
-        "experiment": "h1a_kl_0_01_position_extension_v2",
+        "experiment": "h1a_kl_0_01_fresh_v2",
         "status": "draft_not_authorized",
     }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
@@ -469,8 +459,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     replication = json.loads(h1a_replication_path.read_text())
     cell_extension = json.loads(h1a_cell_extension_path.read_text())
     position_extension = json.loads(h1a_position_extension_path.read_text())
-    existing_v2 = json.loads(h1a_existing_v2_path.read_text())
-    position_v2 = json.loads(h1a_position_v2_path.read_text())
+    fresh_v2 = json.loads(h1a_fresh_v2_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -604,25 +593,30 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     )
     assert regenerated_extension == extension_positions
 
-    assert existing_v2["model"] == cell_extension["model"]
-    assert existing_v2["data"] == cell_extension["data"]
-    assert existing_v2["study"]["positions"] == expansion_positions
-    assert existing_v2["study"]["trial_start"] == 0
-    assert existing_v2["study"]["trials_per_fraction"] == 500
-    assert existing_v2["study"]["expected_candidate_passes"] == 60 * (11 * 500 + 1)
-    assert existing_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
-    assert existing_v2["study"]["reuse_dense_snapshots_from"] == (
+    fresh_positions = fresh_v2["study"]["positions"]
+    assert fresh_v2["model"] == cell_extension["model"] == position_extension["model"]
+    assert fresh_v2["data"] == cell_extension["data"] == position_extension["data"]
+    assert len(fresh_positions) == len(set(fresh_positions)) == 110
+    assert set(fresh_positions) == set(expansion_positions) | set(extension_positions)
+    assert fresh_v2["study"]["trial_start"] == 0
+    assert fresh_v2["study"]["trials_per_fraction"] == 500
+    assert fresh_v2["study"]["expected_candidate_passes"] == 110 * (11 * 500 + 1)
+    assert fresh_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
+    assert fresh_v2["study"]["sampling_percentages"] == expansion["study"][
+        "sampling_percentages"
+    ]
+    assert fresh_v2["study"]["reuse_dense_snapshots_from"] == (
         "../artifacts/results/h1a-context-density-expansion"
     )
-    assert position_v2["model"] == position_extension["model"]
-    assert position_v2["data"] == position_extension["data"]
-    assert position_v2["study"]["positions"] == extension_positions
-    assert position_v2["study"]["trial_start"] == 0
-    assert position_v2["study"]["trials_per_fraction"] == 500
-    assert position_v2["study"]["expected_candidate_passes"] == 50 * (11 * 500 + 1)
-    assert position_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
-    assert existing_v2["run"]["id"] != cell_extension["run"]["id"]
-    assert position_v2["run"]["id"] != position_extension["run"]["id"]
+    assert {
+        position
+        for cohort in fresh_v2["study"]["position_cohorts"].values()
+        for position in cohort
+    } == set(fresh_positions)
+    assert fresh_v2["run"]["id"] not in {
+        cell_extension["run"]["id"],
+        position_extension["run"]["id"],
+    }
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -1102,16 +1096,21 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
 
     reuse_specification = json.loads(json.dumps(specification))
     reuse_specification["run"]["id"] = "snapshot-harness-reuse-smoke"
+    reuse_specification["study"]["positions"] = [3, 7, 9]
     reuse_specification["study"]["trial_start"] = 3
     reuse_specification["study"]["trials_per_fraction"] = 1
     reuse_specification["study"]["reuse_dense_snapshots_from"] = str(output)
     reuse_config = tmp_path / "snapshot-reuse-config.json"
     reuse_config.write_text(json.dumps(reuse_specification), encoding="utf-8")
 
-    def unexpected_dense_snapshot(*args, **kwargs):
-        raise AssertionError("reused dense snapshots must not be recomputed")
+    original_dense_snapshot = reader.dense_causal_snapshot
+    computed_dense_positions = []
 
-    monkeypatch.setattr(reader, "dense_causal_snapshot", unexpected_dense_snapshot)
+    def tracked_dense_snapshot(*args, **kwargs):
+        computed_dense_positions.append(kwargs["position"])
+        return original_dense_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "dense_causal_snapshot", tracked_dense_snapshot)
     reused_output, reused = run_experiment(
         reuse_config,
         device="cpu",
@@ -1124,12 +1123,16 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         "configured_path": str(output),
         "run_id": "snapshot-harness-smoke",
         "result_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+        "positions": [3, 7],
     }
+    assert computed_dense_positions == [9]
     assert all(
-        record["reused_from"]["run_id"] == "snapshot-harness-smoke"
-        for record in reused["snapshot_prefixes"].values()
+        reused["snapshot_prefixes"][str(position)]["reused_from"]["run_id"]
+        == "snapshot-harness-smoke"
+        for position in (3, 7)
     )
-    assert not (reused_output.parent / "snapshot_prefixes").exists()
+    assert "reused_from" not in reused["snapshot_prefixes"]["9"]
+    assert len(list((reused_output.parent / "snapshot_prefixes").glob("*.pt"))) == 1
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:
