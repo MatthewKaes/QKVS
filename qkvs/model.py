@@ -8,12 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
 from qkvs.selection import (
     LearnedHeatFieldPolicy,
     PolicyState,
+    RandomBlockSelectionBatch,
     SelectionContext,
     SelectionPolicy,
     resolve_proposals,
@@ -92,6 +94,14 @@ class SnapshotProbeResult:
     selected_positions_per_layer: tuple[int, ...]
     gathered_keys_per_layer: tuple[int, ...]
     gathered_values_per_layer: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SnapshotProbeBatchResult:
+    logits: Tensor
+    losses: Tensor
+    predictions: Tensor
+    occurrence_counts: tuple[tuple[int, ...], ...]
 
 
 def _device_matches_request(actual: torch.device, requested: torch.device) -> bool:
@@ -1755,6 +1765,83 @@ class HuggingFaceQwen2Reader:
             )
         return tuple(selections)
 
+    def prepare_snapshot_block_selection_batch(
+        self,
+        block_batch: RandomBlockSelectionBatch,
+        *,
+        position: int,
+        device: torch.device,
+    ) -> tuple[SnapshotProbeSelection, ...]:
+        """Expand native sampled blocks directly into device token indices."""
+
+        layer_count = len(self.model.model.layers)
+        if block_batch.layer_count != layer_count:
+            raise ValueError("snapshot block batch must provide every model layer")
+        if block_batch.available_positions != position + 1:
+            raise ValueError("snapshot block batch does not match the probe position")
+        selection_count = block_batch.candidate_count * layer_count
+        if len(block_batch.block_offsets) != selection_count + 1:
+            raise ValueError("snapshot block batch offsets do not match its selections")
+
+        blocks = torch.tensor(block_batch.selected_blocks, dtype=torch.long, device=device)
+        block_counts = torch.tensor(
+            np.diff(block_batch.block_offsets),
+            dtype=torch.long,
+            device=device,
+        )
+        alignments = torch.tensor(
+            block_batch.boundary_alignments,
+            dtype=torch.long,
+            device=device,
+        )
+        selection_ids = torch.repeat_interleave(
+            torch.arange(selection_count, dtype=torch.long, device=device),
+            block_counts,
+            output_size=len(block_batch.selected_blocks),
+        )
+        block_alignments = alignments.index_select(0, selection_ids)
+        aligned = block_alignments.ne(0)
+        first_aligned = aligned & blocks.eq(0)
+        starts = torch.where(
+            first_aligned,
+            0,
+            torch.where(
+                aligned,
+                block_alignments + (blocks - 1) * block_batch.block_width,
+                blocks * block_batch.block_width,
+            ),
+        )
+        stops = torch.minimum(
+            starts + block_batch.block_width,
+            torch.full_like(starts, block_batch.available_positions),
+        )
+        stops = torch.where(first_aligned, block_alignments, stops)
+        lengths = stops - starts
+        block_token_offsets = torch.cumsum(lengths, dim=0) - lengths
+        total_occurrences = int(block_batch.selected_token_counts.sum())
+        indices = torch.repeat_interleave(
+            starts - block_token_offsets,
+            lengths,
+            output_size=total_occurrences,
+        ) + torch.arange(total_occurrences, dtype=torch.long, device=device)
+
+        occurrence_counts = tuple(int(value) for value in block_batch.selected_token_counts)
+        base_counts = tuple(int(value) for value in block_batch.base_occurrence_counts)
+        expanded_layers = iter(indices.split(occurrence_counts))
+        selections = []
+        for candidate_index in range(block_batch.candidate_count):
+            start = candidate_index * layer_count
+            stop = start + layer_count
+            selections.append(
+                SnapshotProbeSelection(
+                    position=position,
+                    layers=tuple(next(expanded_layers) for _ in range(layer_count)),
+                    occurrence_counts=occurrence_counts[start:stop],
+                    base_occurrence_counts=base_counts[start:stop],
+                )
+            )
+        return tuple(selections)
+
     def snapshot_probe_batch(
         self,
         stream: TokenStream,
@@ -1763,7 +1850,7 @@ class HuggingFaceQwen2Reader:
         position: int,
         selected_positions: tuple[SnapshotProbeSelection, ...],
         device: torch.device,
-    ) -> tuple[SnapshotProbeResult, ...]:
+    ) -> SnapshotProbeBatchResult:
         """Evaluate independent current-token branches as one transformer batch."""
 
         if not selected_positions:
@@ -1841,16 +1928,13 @@ class HuggingFaceQwen2Reader:
             )
             predictions = logits.argmax(dim=-1)
 
-        return tuple(
-            SnapshotProbeResult(
-                logits=logits[index].detach(),
-                loss=losses[index].detach(),
-                prediction=predictions[index].detach(),
-                selected_positions_per_layer=selection.occurrence_counts,
-                gathered_keys_per_layer=selection.occurrence_counts,
-                gathered_values_per_layer=selection.occurrence_counts,
-            )
-            for index, selection in enumerate(selected_positions)
+        return SnapshotProbeBatchResult(
+            logits=logits.detach(),
+            losses=losses.detach(),
+            predictions=predictions.detach(),
+            occurrence_counts=tuple(
+                selection.occurrence_counts for selection in selected_positions
+            ),
         )
 
     def snapshot_probe(

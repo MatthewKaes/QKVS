@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config, Qwen2ForCausalLM
@@ -21,7 +22,10 @@ from qkvs.selection import (
     ProposalSet,
     RollingOnlyPolicy,
     SelectionContext,
+    derive_random_block_seed,
     resolve_proposals,
+    sample_uniform_random_block_batch,
+    sample_uniform_random_blocks,
 )
 
 _PINNED_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -345,6 +349,47 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         selected_positions=batch_selections,
         device=torch.device("cpu"),
     )
+    native_seeds = np.asarray(
+        [
+            [derive_random_block_seed(83, candidate, layer) for layer in range(2)]
+            for candidate in range(2)
+        ],
+        dtype=np.uint64,
+    )
+    native_blocks = sample_uniform_random_block_batch(
+        available_positions=7,
+        block_width=2,
+        requested_fraction=0.5,
+        seeds=native_seeds,
+    )
+    native_selections = reader.prepare_snapshot_block_selection_batch(
+        native_blocks,
+        position=6,
+        device=torch.device("cpu"),
+    )
+    scalar_native_selections = tuple(
+        reader.prepare_snapshot_selection(
+            tuple(
+                sample_uniform_random_blocks(
+                    available_positions=7,
+                    block_width=2,
+                    requested_fraction=0.5,
+                    seed=int(native_seeds[candidate, layer]),
+                ).contiguous_ranges
+                for layer in range(2)
+            ),
+            position=6,
+            device=torch.device("cpu"),
+        )
+        for candidate in range(2)
+    )
+    for native, scalar in zip(native_selections, scalar_native_selections, strict=True):
+        assert native.occurrence_counts == scalar.occurrence_counts
+        assert native.base_occurrence_counts == scalar.base_occurrence_counts
+        assert all(
+            torch.equal(native_layer, scalar_layer)
+            for native_layer, scalar_layer in zip(native.layers, scalar.layers, strict=True)
+        )
     sparse_selection = ((0, 1), (2, 3))
     sparse = reader.snapshot_probe(
         first,
@@ -375,16 +420,21 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
     reader.model.to.assert_not_called()
     assert torch.equal(compact_candidate.logits, explicit_candidate.logits)
     assert torch.equal(compact_candidate.loss, explicit_candidate.loss)
-    for scalar, batched in zip(
-        (compact_candidate, alternate_candidate),
-        batch_candidates,
-        strict=True,
-    ):
-        torch.testing.assert_close(batched.logits, scalar.logits, rtol=0.0, atol=1e-6)
-        torch.testing.assert_close(batched.loss, scalar.loss, rtol=0.0, atol=1e-6)
-        assert torch.equal(batched.prediction, scalar.prediction)
-        assert batched.gathered_keys_per_layer == scalar.gathered_keys_per_layer
-        assert batched.gathered_values_per_layer == scalar.gathered_values_per_layer
+    for index, scalar in enumerate((compact_candidate, alternate_candidate)):
+        torch.testing.assert_close(
+            batch_candidates.logits[index],
+            scalar.logits,
+            rtol=0.0,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            batch_candidates.losses[index],
+            scalar.loss,
+            rtol=0.0,
+            atol=1e-6,
+        )
+        assert torch.equal(batch_candidates.predictions[index], scalar.prediction)
+        assert batch_candidates.occurrence_counts[index] == scalar.gathered_keys_per_layer
     assert compact_candidate.gathered_keys_per_layer == (5, 4)
     assert compact_candidate.gathered_values_per_layer == (5, 4)
     assert dense_candidate.gathered_keys_per_layer == (7, 7)
@@ -470,12 +520,11 @@ def test_snapshot_probe_batch_matches_full_depth_bfloat16_without_repeating_gqa_
     )
 
     reader._repeat_kv.assert_not_called()
-    for scalar, batched in zip(scalar_results, batch_results, strict=True):
-        assert torch.equal(batched.logits, scalar.logits)
-        assert torch.equal(batched.loss, scalar.loss)
-        assert torch.equal(batched.prediction, scalar.prediction)
-        assert batched.gathered_keys_per_layer == scalar.gathered_keys_per_layer
-        assert batched.gathered_values_per_layer == scalar.gathered_values_per_layer
+    for index, scalar in enumerate(scalar_results):
+        assert torch.equal(batch_results.logits[index], scalar.logits)
+        assert torch.equal(batch_results.losses[index], scalar.loss)
+        assert torch.equal(batch_results.predictions[index], scalar.prediction)
+        assert batch_results.occurrence_counts[index] == scalar.gathered_keys_per_layer
 
 
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))

@@ -183,27 +183,41 @@ class RandomBlockSelection:
         return self.selected_token_count / self.available_positions
 
 
+@dataclass(frozen=True)
+class RandomBlockSelectionBatch:
+    """Native block arrays for a candidate-major, layer-major selection batch."""
+
+    selected_blocks: np.ndarray
+    block_offsets: np.ndarray
+    boundary_alignments: np.ndarray
+    selected_token_counts: np.ndarray
+    base_occurrence_counts: np.ndarray
+    candidate_count: int
+    layer_count: int
+    available_positions: int
+    block_width: int
+    requested_fraction: float
+
+    @property
+    def candidate_occurrence_counts(self) -> np.ndarray:
+        return self.selected_token_counts.reshape(self.candidate_count, self.layer_count).sum(
+            axis=1
+        )
+
+
 def derive_random_block_seed(base_seed: int, *coordinates: int) -> int:
     encoded = json.dumps((base_seed, *coordinates), separators=(",", ":")).encode()
     return int.from_bytes(hashlib.sha256(encoded).digest()[:8], "big")
 
 
-def sample_uniform_random_blocks(
+def _sample_uniform_random_block_array(
     *,
     available_positions: int,
     block_width: int,
     requested_fraction: float,
     seed: int,
-    algorithm: str = RANDOM_BLOCK_SAMPLER_VERSION,
-) -> RandomBlockSelection:
-    """Sample aligned causal blocks uniformly without replacement or overlap."""
-
-    if available_positions <= 0 or block_width <= 0:
-        raise ValueError("random block sampling dimensions must be positive")
-    if not 0.0 < requested_fraction <= 1.0:
-        raise ValueError("random block sampling fraction must lie in (0, 1]")
-    if algorithm not in RANDOM_BLOCK_SAMPLER_VERSIONS:
-        raise ValueError("random block sampling algorithm is unsupported")
+    algorithm: str,
+) -> tuple[np.ndarray, int, int]:
     if requested_fraction == 1.0:
         alignment = 0
     elif algorithm == LEGACY_RANDOM_BLOCK_SAMPLER_VERSION:
@@ -250,6 +264,55 @@ def sample_uniform_random_blocks(
             selected_blocks = np.flatnonzero(selected_mask)
         selected_blocks = selected_blocks.astype(np.int64, copy=False)
     selected_blocks.setflags(write=False)
+    return selected_blocks, alignment, aligned_block_count
+
+
+def _selected_block_token_count(
+    selected_blocks: np.ndarray,
+    *,
+    boundary_alignment: int,
+    aligned_block_count: int,
+    available_positions: int,
+    block_width: int,
+) -> int:
+    total = len(selected_blocks) * block_width
+    if int(selected_blocks[0]) == 0:
+        first_stop = boundary_alignment or min(block_width, available_positions)
+        total += first_stop - block_width
+    last_block = aligned_block_count - 1
+    if last_block and int(selected_blocks[-1]) == last_block:
+        start = (
+            boundary_alignment + (last_block - 1) * block_width
+            if boundary_alignment
+            else last_block * block_width
+        )
+        total += min(available_positions, start + block_width) - start - block_width
+    return total
+
+
+def sample_uniform_random_blocks(
+    *,
+    available_positions: int,
+    block_width: int,
+    requested_fraction: float,
+    seed: int,
+    algorithm: str = RANDOM_BLOCK_SAMPLER_VERSION,
+) -> RandomBlockSelection:
+    """Sample aligned causal blocks uniformly without replacement or overlap."""
+
+    if available_positions <= 0 or block_width <= 0:
+        raise ValueError("random block sampling dimensions must be positive")
+    if not 0.0 < requested_fraction <= 1.0:
+        raise ValueError("random block sampling fraction must lie in (0, 1]")
+    if algorithm not in RANDOM_BLOCK_SAMPLER_VERSIONS:
+        raise ValueError("random block sampling algorithm is unsupported")
+    selected_blocks, alignment, aligned_block_count = _sample_uniform_random_block_array(
+        available_positions=available_positions,
+        block_width=block_width,
+        requested_fraction=requested_fraction,
+        seed=seed,
+        algorithm=algorithm,
+    )
     return RandomBlockSelection(
         selected_blocks=selected_blocks,
         seed=seed,
@@ -257,6 +320,79 @@ def sample_uniform_random_blocks(
         available_positions=available_positions,
         block_width=block_width,
         aligned_block_count=aligned_block_count,
+        requested_fraction=requested_fraction,
+    )
+
+
+def sample_uniform_random_block_batch(
+    *,
+    available_positions: int,
+    block_width: int,
+    requested_fraction: float,
+    seeds: np.ndarray,
+    algorithm: str = RANDOM_BLOCK_SAMPLER_VERSION,
+) -> RandomBlockSelectionBatch:
+    """Sample a candidate/layer grid without materializing Python token ranges."""
+
+    if available_positions <= 0 or block_width <= 0:
+        raise ValueError("random block sampling dimensions must be positive")
+    if not 0.0 < requested_fraction <= 1.0:
+        raise ValueError("random block sampling fraction must lie in (0, 1]")
+    if algorithm not in RANDOM_BLOCK_SAMPLER_VERSIONS:
+        raise ValueError("random block sampling algorithm is unsupported")
+    if seeds.ndim != 2 or not seeds.shape[0] or not seeds.shape[1]:
+        raise ValueError("random block batch seeds must be a nonempty candidate/layer matrix")
+
+    selected_arrays: list[np.ndarray] = []
+    block_counts = np.empty(seeds.size, dtype=np.int64)
+    alignments = np.empty(seeds.size, dtype=np.int64)
+    selected_token_counts = np.empty(seeds.size, dtype=np.int64)
+    base_occurrence_counts = np.empty(seeds.size, dtype=np.int64)
+    for index, raw_seed in enumerate(seeds.flat):
+        selected, alignment, aligned_block_count = _sample_uniform_random_block_array(
+            available_positions=available_positions,
+            block_width=block_width,
+            requested_fraction=requested_fraction,
+            seed=int(raw_seed),
+            algorithm=algorithm,
+        )
+        selected_arrays.append(selected)
+        block_counts[index] = len(selected)
+        alignments[index] = alignment
+        token_count = _selected_block_token_count(
+            selected,
+            boundary_alignment=alignment,
+            aligned_block_count=aligned_block_count,
+            available_positions=available_positions,
+            block_width=block_width,
+        )
+        selected_token_counts[index] = token_count
+        base_occurrence_counts[index] = token_count - int(
+            int(selected[-1]) == aligned_block_count - 1
+        )
+
+    block_offsets = np.empty(seeds.size + 1, dtype=np.int64)
+    block_offsets[0] = 0
+    np.cumsum(block_counts, out=block_offsets[1:])
+    selected_blocks = np.concatenate(selected_arrays)
+    for value in (
+        selected_blocks,
+        block_offsets,
+        alignments,
+        selected_token_counts,
+        base_occurrence_counts,
+    ):
+        value.setflags(write=False)
+    return RandomBlockSelectionBatch(
+        selected_blocks=selected_blocks,
+        block_offsets=block_offsets,
+        boundary_alignments=alignments,
+        selected_token_counts=selected_token_counts,
+        base_occurrence_counts=base_occurrence_counts,
+        candidate_count=seeds.shape[0],
+        layer_count=seeds.shape[1],
+        available_positions=available_positions,
+        block_width=block_width,
         requested_fraction=requested_fraction,
     )
 

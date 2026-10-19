@@ -226,16 +226,25 @@ class _Progress:
             self.active_job = job
             self.job_fraction = fraction
 
-    def complete_job(self) -> None:
+    def complete_job(self, *, durable: bool = True) -> None:
         with self.lock:
             if not self.running:
                 raise RuntimeError("cannot complete progress without an active job")
-            if self.advances:
+            if durable and self.advances:
                 self.completed += 1
             self.running = False
             self.advances = False
             self.job_fraction = 1.0
             self.active_job = None
+        self.render()
+
+    def commit_units(self, count: int) -> None:
+        if count < 0:
+            raise ValueError("committed progress count must be nonnegative")
+        with self.lock:
+            if self.running:
+                raise RuntimeError("cannot commit progress while a job is active")
+            self.completed = min(self.completed + count, self.total)
         self.render()
 
     def close(self) -> None:
@@ -889,6 +898,25 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             errors.append("execution.prefill_chunk_tokens must be a positive integer")
         if not _positive_integer(execution.get("snapshot_candidate_batch_size", 1)):
             errors.append("execution.snapshot_candidate_batch_size must be a positive integer")
+        if not _positive_integer(execution.get("snapshot_candidate_batch_max_size", 1)):
+            errors.append("execution.snapshot_candidate_batch_max_size must be a positive integer")
+        token_budget = execution.get("snapshot_candidate_batch_token_budget")
+        if token_budget is not None and not _positive_integer(token_budget):
+            errors.append(
+                "execution.snapshot_candidate_batch_token_budget must be a positive integer"
+            )
+        if (
+            "snapshot_candidate_batch_size" in execution
+            and "snapshot_candidate_batch_max_size" in execution
+        ):
+            errors.append("snapshot candidate batch size controls are mutually exclusive")
+        if not _positive_integer(execution.get("snapshot_checkpoint_candidates", 1)):
+            errors.append("execution.snapshot_checkpoint_candidates must be a positive integer")
+        if execution.get("snapshot_selection_representation", "ranges") not in {
+            "ranges",
+            "native_blocks",
+        }:
+            errors.append("execution.snapshot_selection_representation is unsupported")
         reasons: list[str] = []
         if status not in {"harness_verification", "approved"}:
             reasons.append("configuration is not authorized for harness execution")
@@ -2088,9 +2116,14 @@ def _run_snapshot_study(
     output_root: str | Path | None,
     snapshot_csv: str | Path | None,
 ) -> tuple[Path, dict[str, Any]]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    import numpy as np
+
     from qkvs.model import TokenStream
     from qkvs.selection import (
         derive_random_block_seed,
+        sample_uniform_random_block_batch,
         sample_uniform_random_blocks,
     )
 
@@ -2103,15 +2136,37 @@ def _run_snapshot_study(
         support_positions=tuple(stream_record["support_positions"]),
     )
     study = specification["study"]
-    candidate_batch_size = specification["execution"].get(
-        "snapshot_candidate_batch_size",
-        1,
+    execution = specification["execution"]
+    candidate_batch_max_size = execution.get(
+        "snapshot_candidate_batch_max_size",
+        execution.get("snapshot_candidate_batch_size", 1),
     )
-    snapshot_execution_version = (
-        "qwen2-h1a-current-token-batched-v2"
-        if candidate_batch_size > 1
-        else _SNAPSHOT_EXECUTION_VERSION
-    )
+    candidate_batch_token_budget = execution.get("snapshot_candidate_batch_token_budget")
+    checkpoint_candidates = execution.get("snapshot_checkpoint_candidates", 1)
+    selection_representation = execution.get("snapshot_selection_representation", "ranges")
+    if selection_representation == "native_blocks":
+        snapshot_execution_version = "qwen2-h1a-native-block-batched-v3"
+    elif candidate_batch_max_size > 1:
+        snapshot_execution_version = "qwen2-h1a-current-token-batched-v2"
+    else:
+        snapshot_execution_version = _SNAPSHOT_EXECUTION_VERSION
+
+    def snapshot_candidate_batch_size(position: int, requested_fraction: float) -> int:
+        batch_size = candidate_batch_max_size
+        if candidate_batch_token_budget is not None:
+            selected_tokens = max(
+                1,
+                math.ceil(
+                    (position + 1) * requested_fraction / study["block_width"]
+                )
+                * study["block_width"],
+            )
+            batch_size = min(
+                batch_size,
+                max(1, candidate_batch_token_budget // selected_tokens),
+            )
+        return batch_size
+
     output = _result_path(specification, output_root=output_root)
     snapshot_csv_path = Path(snapshot_csv).resolve() if snapshot_csv is not None else None
     if snapshot_csv_path is None:
@@ -2232,6 +2287,27 @@ def _run_snapshot_study(
     trial_start = study["trial_start"]
     sampling_algorithm = study["sampling_algorithm"]
     dense_snapshot_strategy = study.get("dense_snapshot_strategy", "independent")
+    pending_feasibility_rows: list[dict[str, Any]] = []
+    pending_checkpoint_units = 0
+    pending_checkpoint_candidates = 0
+
+    def checkpoint_snapshot_cells() -> None:
+        nonlocal pending_checkpoint_units, pending_checkpoint_candidates
+        if not pending_checkpoint_units:
+            return
+        result["snapshot_observations"].sort(
+            key=lambda item: (
+                item["position"],
+                item["requested_sampling_percentage"],
+            )
+        )
+        _write_json(output, result)
+        _append_snapshot_feasibility_rows(snapshot_csv_path, pending_feasibility_rows)
+        progress.commit_units(pending_checkpoint_units)
+        pending_feasibility_rows.clear()
+        pending_checkpoint_units = 0
+        pending_checkpoint_candidates = 0
+
     master_snapshot = None
     master_position = max(study["positions"])
     master_position_key = str(master_position)
@@ -2239,6 +2315,11 @@ def _run_snapshot_study(
         output.parent
         / "snapshot_prefixes"
         / f"{stream.stream_id}-position-{master_position:08d}.pt"
+    )
+    selection_producer = (
+        ThreadPoolExecutor(max_workers=1)
+        if selection_representation == "native_blocks"
+        else None
     )
     try:
         if dense_snapshot_strategy == "largest_prefix_slice":
@@ -2474,79 +2555,53 @@ def _run_snapshot_study(
                 else:
                     candidate_records = []
                     candidate_values: list[Any] = []
-                    for batch_start in range(0, trial_count, candidate_batch_size):
-                        batch_stop = min(trial_count, batch_start + candidate_batch_size)
-                        batch_metadata = []
-                        layer_range_batches = []
-                        for trial_offset in range(batch_start, batch_stop):
-                            trial_id = trial_start + trial_offset
-                            candidate_seed = derive_random_block_seed(
-                                base_seed,
-                                position,
-                                _snapshot_fraction_coordinate(percentage),
-                                trial_id,
-                            )
-                            layer_samples = tuple(
-                                sample_uniform_random_blocks(
-                                    available_positions=position + 1,
-                                    block_width=study["block_width"],
-                                    requested_fraction=requested_fraction,
-                                    seed=derive_random_block_seed(candidate_seed, layer_index),
-                                    algorithm=sampling_algorithm,
-                                )
-                                for layer_index in range(reader.model.config.num_hidden_layers)
-                            )
-                            layer_range_batches.append(
-                                tuple(sample.contiguous_ranges for sample in layer_samples)
-                            )
-                            batch_metadata.append(
-                                (
-                                    trial_id,
-                                    candidate_seed,
-                                    sum(sample.selected_token_count for sample in layer_samples),
-                                )
-                            )
+                    cell_batch_size = snapshot_candidate_batch_size(
+                        position,
+                        requested_fraction,
+                    )
 
-                        if candidate_batch_size == 1:
-                            prepared_selection = reader.prepare_snapshot_selection(
-                                layer_range_batches[0],
-                                position=position,
-                                device=device,
+                    def record_probe_batch(
+                        probe_batch: Any,
+                        trial_ids: Any,
+                        candidate_seeds: Any,
+                        selected_occurrence_counts: Any,
+                        *,
+                        candidate_records: list[dict[str, Any]],
+                        candidate_values: list[Any],
+                        position: int,
+                        requested_fraction: float,
+                        reference: Any,
+                        reference_probabilities: Any,
+                        reference_log_probs: Any,
+                    ) -> None:
+                        if isinstance(probe_batch, tuple):
+                            probe_logits = torch.stack([probe.logits for probe in probe_batch])
+                            probe_losses = torch.stack(
+                                [probe.loss.float() for probe in probe_batch]
                             )
-                            probes = (
-                                reader.snapshot_probe(
-                                    stream,
-                                    state,
-                                    position=position,
-                                    selected_positions=prepared_selection,
-                                    device=device,
-                                ),
+                            probe_predictions = torch.stack(
+                                [probe.prediction.float() for probe in probe_batch]
+                            )
+                            occurrence_counts = tuple(
+                                probe.gathered_keys_per_layer for probe in probe_batch
                             )
                         else:
-                            prepared_selections = reader.prepare_snapshot_selection_batch(
-                                tuple(layer_range_batches),
-                                position=position,
-                                device=device,
-                            )
-                            probes = reader.snapshot_probe_batch(
-                                stream,
-                                state,
-                                position=position,
-                                selected_positions=prepared_selections,
-                                device=device,
-                            )
+                            probe_logits = probe_batch.logits
+                            probe_losses = probe_batch.losses.float()
+                            probe_predictions = probe_batch.predictions.float()
+                            occurrence_counts = probe_batch.occurrence_counts
 
-                        for probe, (trial_id, candidate_seed, selected_occurrences) in zip(
-                            probes,
-                            batch_metadata,
+                        for counts, trial_id, candidate_seed, selected_occurrences in zip(
+                            occurrence_counts,
+                            trial_ids,
+                            candidate_seeds,
+                            selected_occurrence_counts,
                             strict=True,
                         ):
-                            gathered_keys = sum(probe.gathered_keys_per_layer)
-                            gathered_values = sum(probe.gathered_values_per_layer)
-                            if (
-                                gathered_keys != selected_occurrences
-                                or gathered_values != selected_occurrences
-                            ):
+                            trial_id = int(trial_id)
+                            candidate_seed = int(candidate_seed)
+                            selected_occurrences = int(selected_occurrences)
+                            if sum(counts) != selected_occurrences:
                                 raise RuntimeError(
                                     "snapshot probe read accounting does not match selection"
                                 )
@@ -2562,11 +2617,6 @@ def _run_snapshot_study(
                                 }
                             )
 
-                        probe_logits = torch.stack([probe.logits for probe in probes])
-                        probe_losses = torch.stack([probe.loss.float() for probe in probes])
-                        probe_predictions = torch.stack(
-                            [probe.prediction.float() for probe in probes]
-                        )
                         sparse_log_probs = torch.log_softmax(probe_logits.float(), dim=-1)
                         sparse_probabilities = sparse_log_probs.exp()
                         divergences = torch.sum(
@@ -2597,11 +2647,194 @@ def _run_snapshot_study(
                                 dim=-1,
                             )
                         )
-                        progress.update_job(
-                            f"snapshot {position} / {float(percentage):g}% / "
-                            f"trial {batch_stop}/{trial_count}",
-                            fraction=batch_stop / trial_count,
+
+                    if selection_representation == "native_blocks":
+                        layer_count = reader.model.config.num_hidden_layers
+                        fraction_coordinate = _snapshot_fraction_coordinate(percentage)
+
+                        def prepare_native_batch(
+                            batch_start: int,
+                            batch_stop: int,
+                            *,
+                            layer_count: int,
+                            position: int,
+                            fraction_coordinate: int,
+                            requested_fraction: float,
+                        ) -> Any:
+                            trial_ids = np.arange(
+                                trial_start + batch_start,
+                                trial_start + batch_stop,
+                                dtype=np.int64,
+                            )
+                            candidate_seeds = np.empty(len(trial_ids), dtype=np.uint64)
+                            layer_seeds = np.empty(
+                                (len(trial_ids), layer_count),
+                                dtype=np.uint64,
+                            )
+                            for candidate_index, trial_id in enumerate(trial_ids):
+                                candidate_seed = derive_random_block_seed(
+                                    base_seed,
+                                    position,
+                                    fraction_coordinate,
+                                    int(trial_id),
+                                )
+                                candidate_seeds[candidate_index] = candidate_seed
+                                for layer_index in range(layer_count):
+                                    layer_seeds[candidate_index, layer_index] = (
+                                        derive_random_block_seed(candidate_seed, layer_index)
+                                    )
+                            block_batch = sample_uniform_random_block_batch(
+                                available_positions=position + 1,
+                                block_width=study["block_width"],
+                                requested_fraction=requested_fraction,
+                                seeds=layer_seeds,
+                                algorithm=sampling_algorithm,
+                            )
+                            return trial_ids, candidate_seeds, block_batch
+
+                        batch_spans = tuple(
+                            (batch_start, min(trial_count, batch_start + cell_batch_size))
+                            for batch_start in range(0, trial_count, cell_batch_size)
                         )
+                        if selection_producer is None:
+                            raise RuntimeError("native block selection producer is unavailable")
+                        pending_batch = selection_producer.submit(
+                            prepare_native_batch,
+                            *batch_spans[0],
+                            layer_count=layer_count,
+                            position=position,
+                            fraction_coordinate=fraction_coordinate,
+                            requested_fraction=requested_fraction,
+                        )
+                        for batch_index, (_batch_start, batch_stop) in enumerate(batch_spans):
+                            trial_ids, candidate_seeds, block_batch = pending_batch.result()
+                            if batch_index + 1 < len(batch_spans):
+                                pending_batch = selection_producer.submit(
+                                    prepare_native_batch,
+                                    *batch_spans[batch_index + 1],
+                                    layer_count=layer_count,
+                                    position=position,
+                                    fraction_coordinate=fraction_coordinate,
+                                    requested_fraction=requested_fraction,
+                                )
+                            prepared_selections = reader.prepare_snapshot_block_selection_batch(
+                                block_batch,
+                                position=position,
+                                device=device,
+                            )
+                            probes = reader.snapshot_probe_batch(
+                                stream,
+                                state,
+                                position=position,
+                                selected_positions=prepared_selections,
+                                device=device,
+                            )
+                            record_probe_batch(
+                                probes,
+                                trial_ids,
+                                candidate_seeds,
+                                block_batch.candidate_occurrence_counts,
+                                candidate_records=candidate_records,
+                                candidate_values=candidate_values,
+                                position=position,
+                                requested_fraction=requested_fraction,
+                                reference=reference,
+                                reference_probabilities=reference_probabilities,
+                                reference_log_probs=reference_log_probs,
+                            )
+                            progress.update_job(
+                                f"snapshot {position} / {float(percentage):g}% / "
+                                f"trial {batch_stop}/{trial_count}",
+                                fraction=batch_stop / trial_count,
+                            )
+                    else:
+                        for batch_start in range(0, trial_count, cell_batch_size):
+                            batch_stop = min(trial_count, batch_start + cell_batch_size)
+                            batch_metadata = []
+                            layer_range_batches = []
+                            for trial_offset in range(batch_start, batch_stop):
+                                trial_id = trial_start + trial_offset
+                                candidate_seed = derive_random_block_seed(
+                                    base_seed,
+                                    position,
+                                    _snapshot_fraction_coordinate(percentage),
+                                    trial_id,
+                                )
+                                layer_samples = tuple(
+                                    sample_uniform_random_blocks(
+                                        available_positions=position + 1,
+                                        block_width=study["block_width"],
+                                        requested_fraction=requested_fraction,
+                                        seed=derive_random_block_seed(
+                                            candidate_seed,
+                                            layer_index,
+                                        ),
+                                        algorithm=sampling_algorithm,
+                                    )
+                                    for layer_index in range(
+                                        reader.model.config.num_hidden_layers
+                                    )
+                                )
+                                layer_range_batches.append(
+                                    tuple(sample.contiguous_ranges for sample in layer_samples)
+                                )
+                                batch_metadata.append(
+                                    (
+                                        trial_id,
+                                        candidate_seed,
+                                        sum(
+                                            sample.selected_token_count
+                                            for sample in layer_samples
+                                        ),
+                                    )
+                                )
+
+                            if cell_batch_size == 1:
+                                prepared_selection = reader.prepare_snapshot_selection(
+                                    layer_range_batches[0],
+                                    position=position,
+                                    device=device,
+                                )
+                                probes = (
+                                    reader.snapshot_probe(
+                                        stream,
+                                        state,
+                                        position=position,
+                                        selected_positions=prepared_selection,
+                                        device=device,
+                                    ),
+                                )
+                            else:
+                                prepared_selections = reader.prepare_snapshot_selection_batch(
+                                    tuple(layer_range_batches),
+                                    position=position,
+                                    device=device,
+                                )
+                                probes = reader.snapshot_probe_batch(
+                                    stream,
+                                    state,
+                                    position=position,
+                                    selected_positions=prepared_selections,
+                                    device=device,
+                                )
+                            record_probe_batch(
+                                probes,
+                                (record[0] for record in batch_metadata),
+                                (record[1] for record in batch_metadata),
+                                (record[2] for record in batch_metadata),
+                                candidate_records=candidate_records,
+                                candidate_values=candidate_values,
+                                position=position,
+                                requested_fraction=requested_fraction,
+                                reference=reference,
+                                reference_probabilities=reference_probabilities,
+                                reference_log_probs=reference_log_probs,
+                            )
+                            progress.update_job(
+                                f"snapshot {position} / {float(percentage):g}% / "
+                                f"trial {batch_stop}/{trial_count}",
+                                fraction=batch_stop / trial_count,
+                            )
                     materialized = torch.cat(candidate_values).cpu().tolist()
                     for candidate, values in zip(candidate_records, materialized, strict=True):
                         if not all(math.isfinite(value) for value in values):
@@ -2657,18 +2890,7 @@ def _run_snapshot_study(
                         "trial_count": trial_count,
                         "feasibility": feasibility,
                     }
-                if snapshot_csv_path is not None:
-                    _append_snapshot_feasibility_rows(
-                        snapshot_csv_path,
-                        observation["feasibility"],
-                    )
                 result["snapshot_observations"].append(observation)
-                result["snapshot_observations"].sort(
-                    key=lambda item: (
-                        item["position"],
-                        item["requested_sampling_percentage"],
-                    )
-                )
                 observations.append(observation)
                 completed.add(unit)
                 result["snapshot_summary"] = _update_snapshot_frontiers(
@@ -2678,22 +2900,33 @@ def _run_snapshot_study(
                     tolerances=fidelity_tolerances,
                 )
                 result["complete"] = len(completed) == expected_trial_sets
-                _write_json(output, result)
-                progress.complete_job()
+                pending_feasibility_rows.extend(observation["feasibility"])
+                pending_checkpoint_units += 1
+                pending_checkpoint_candidates += trial_count
+                progress.complete_job(durable=False)
+                if (
+                    pending_checkpoint_candidates >= checkpoint_candidates
+                    or result["complete"]
+                ):
+                    checkpoint_snapshot_cells()
             if (
                 dense_snapshot_strategy == "independent"
                 and not retain_dense_snapshots
                 and reused_prefix is None
             ):
+                checkpoint_snapshot_cells()
                 prefix_path.unlink(missing_ok=True)
                 result["snapshot_prefixes"][position_key]["retained"] = False
                 _write_json(output, result)
             del state, snapshot, reference
+        checkpoint_snapshot_cells()
         if dense_snapshot_strategy == "largest_prefix_slice" and not retain_dense_snapshots:
             master_path.unlink(missing_ok=True)
             result["snapshot_prefixes"][master_position_key]["retained"] = False
             _write_json(output, result)
     finally:
+        if selection_producer is not None:
+            selection_producer.shutdown(wait=True, cancel_futures=True)
         progress.close()
     return output, load_run(output)
 

@@ -482,14 +482,18 @@ The native `uniform-aligned-blocks-v2` sampler is reserved for fresh studies. It
 pinned PCG64 generator and samples the smaller of the selected or omitted aligned-block sets, then
 reconstructs the selected set in causal order. Its seed-to-candidate mapping intentionally differs
 from v1 while preserving uniform sampling without replacement. New v2 snapshot execution is
-aggregate-only: every completed position/coverage cell appends its KL feasibility row directly to
-the requested plain CSV, while `result.json` retains compact identity, resume, and discovered-
-frontier metadata. Each CSV row carries its run, source revision, configuration hash, and sampler
-identity. The harness does not write per-cell JSON or retain raw candidate trials. Configured
-snapshot candidate batches preserve each trial's seed and selected occurrences while executing
-independent current-token branches together. Padding is excluded from attention, and grouped-query
-attention reads the model's two K/V heads directly instead of materializing fourteen repeated
-heads. Batched execution has a separate identity and is never reused as serial predictive data.
+aggregate-only: completed KL feasibility rows go directly to the requested plain CSV, while
+`result.json` retains compact identity, resume, and discovered-frontier metadata. Each CSV row
+carries its run, source revision, configuration hash, and sampler identity. The harness does not
+write per-cell JSON or retain raw candidate trials. Configured candidate batches preserve each
+trial's seed and selected occurrences while executing independent current-token branches together.
+Padding is excluded from attention, and grouped-query attention reads the model's two K/V heads
+directly instead of materializing fourteen repeated heads. Batched execution has a separate
+identity and is never reused as serial predictive data. Future snapshot configurations can select
+native block arrays, adaptive token-budgeted batches, a bounded CPU producer, and buffered
+durability without changing the v2 sampler's candidate mapping. Native block execution constructs
+no Python token-range tuples. Buffered durability writes the CSV and manifest only after the
+configured number of candidates and may recompute at most that many after interruption.
 
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.

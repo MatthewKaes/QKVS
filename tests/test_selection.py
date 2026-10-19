@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 
+import numpy as np
 import pytest
 import torch
 
@@ -16,6 +17,7 @@ from qkvs.selection import (
     SelectionContext,
     derive_random_block_seed,
     resolve_proposals,
+    sample_uniform_random_block_batch,
     sample_uniform_random_blocks,
     validate_historical_selection,
 )
@@ -98,6 +100,46 @@ def test_uniform_random_blocks_keep_one_position_and_dense_control_is_exact() ->
     assert dense.indices == tuple(range(17))
     assert dense.ranges == ((0, 8), (8, 16), (16, 17))
     assert dense.realized_fraction == 1.0
+
+
+@pytest.mark.parametrize("requested_fraction", (0.1, 0.5, 0.99, 1.0))
+def test_native_random_block_batch_preserves_scalar_samples(requested_fraction) -> None:
+    seeds = np.asarray(
+        [
+            [derive_random_block_seed(71, candidate, layer) for layer in range(3)]
+            for candidate in range(4)
+        ],
+        dtype=np.uint64,
+    )
+    batch = sample_uniform_random_block_batch(
+        available_positions=101,
+        block_width=8,
+        requested_fraction=requested_fraction,
+        seeds=seeds,
+    )
+
+    expected_occurrences = np.empty_like(batch.selected_token_counts)
+    expected_base = np.empty_like(batch.base_occurrence_counts)
+    for selection_index, seed in enumerate(seeds.flat):
+        scalar = sample_uniform_random_blocks(
+            available_positions=101,
+            block_width=8,
+            requested_fraction=requested_fraction,
+            seed=int(seed),
+        )
+        start = batch.block_offsets[selection_index]
+        stop = batch.block_offsets[selection_index + 1]
+        assert np.array_equal(batch.selected_blocks[start:stop], scalar.selected_blocks)
+        assert batch.boundary_alignments[selection_index] == scalar.boundary_alignment
+        expected_occurrences[selection_index] = scalar.selected_token_count
+        expected_base[selection_index] = scalar.selected_token_count - int(100 in scalar.indices)
+
+    assert np.array_equal(batch.selected_token_counts, expected_occurrences)
+    assert np.array_equal(batch.base_occurrence_counts, expected_base)
+    assert np.array_equal(
+        batch.candidate_occurrence_counts,
+        expected_occurrences.reshape(4, 3).sum(axis=1),
+    )
 
 
 def test_compact_uniform_random_blocks_preserve_v1_samples_exactly() -> None:

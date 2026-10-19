@@ -635,10 +635,22 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert fresh_v2["study"]["dense_snapshot_strategy"] == "largest_prefix_slice"
     assert fresh_v2["study"]["retain_dense_snapshots"] is False
     assert fresh_v2["execution"]["snapshot_candidate_batch_size"] == 32
-    invalid_batch = json.loads(json.dumps(fresh_v2))
-    invalid_batch["execution"]["snapshot_candidate_batch_size"] = 0
+    assert "snapshot_checkpoint_candidates" not in fresh_v2["execution"]
+    optimized = json.loads(json.dumps(fresh_v2))
+    optimized["execution"].pop("snapshot_candidate_batch_size")
+    optimized["execution"].update(
+        {
+            "snapshot_candidate_batch_max_size": 128,
+            "snapshot_candidate_batch_token_budget": 1_048_576,
+            "snapshot_checkpoint_candidates": 50_000,
+            "snapshot_selection_representation": "native_blocks",
+        }
+    )
+    assert validate_config(optimized)["runnable"]
+    invalid_batch = json.loads(json.dumps(optimized))
+    invalid_batch["execution"]["snapshot_candidate_batch_max_size"] = 0
     assert (
-        "execution.snapshot_candidate_batch_size must be a positive integer"
+        "execution.snapshot_candidate_batch_max_size must be a positive integer"
         in validate_config(invalid_batch)["errors"]
     )
     assert {
@@ -1201,7 +1213,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     slice_specification["study"]["trials_per_fraction"] = 3
     slice_specification["study"]["retain_dense_snapshots"] = False
     slice_specification["study"]["dense_snapshot_strategy"] = "largest_prefix_slice"
-    slice_specification["execution"]["snapshot_candidate_batch_size"] = 2
+    slice_specification["execution"]["snapshot_candidate_batch_max_size"] = 4
+    slice_specification["execution"]["snapshot_candidate_batch_token_budget"] = 16
+    slice_specification["execution"]["snapshot_checkpoint_candidates"] = 6
+    slice_specification["execution"]["snapshot_selection_representation"] = "native_blocks"
     slice_config = tmp_path / "snapshot-slice-config.json"
     slice_config.write_text(json.dumps(slice_specification), encoding="utf-8")
     computed_dense_positions.clear()
@@ -1213,15 +1228,16 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         return original_derive_snapshot(*args, **kwargs)
 
     monkeypatch.setattr(reader, "derive_dense_causal_snapshot", tracked_derive_snapshot)
-    original_batch_probe = reader.snapshot_probe_batch
+    base_batch_probe = reader.snapshot_probe_batch
     candidate_batch_sizes = []
 
     def tracked_batch_probe(*args, **kwargs):
         candidate_batch_sizes.append(len(kwargs["selected_positions"]))
-        return original_batch_probe(*args, **kwargs)
+        return base_batch_probe(*args, **kwargs)
 
     monkeypatch.setattr(reader, "snapshot_probe_batch", tracked_batch_probe)
     slice_probe_calls = 0
+    slice_fsync_start = fsync_calls
 
     def interrupted_slice_probe(*args, **kwargs):
         nonlocal slice_probe_calls
@@ -1251,16 +1267,87 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         snapshot_csv=tmp_path / "slice-feasibility.csv",
     )
     assert sliced["complete"]
-    assert sliced["snapshot_execution_version"] == "qwen2-h1a-current-token-batched-v2"
+    assert sliced["snapshot_execution_version"] == "qwen2-h1a-native-block-batched-v3"
     assert computed_dense_positions == [9]
     assert derived_positions == [3, 3, 7]
-    assert candidate_batch_sizes == [2, 1, 1] * 3
+    assert candidate_batch_sizes == [3, 1] * 3
+    assert fsync_calls - slice_fsync_start == 2
     assert set(sliced["snapshot_prefixes"]) == {"9"}
     assert sliced["snapshot_prefixes"]["9"]["derived_positions"] == 2
     assert sliced["snapshot_prefixes"]["9"]["retained"] is False
     assert not list((slice_output.parent / "snapshot_prefixes").glob("*.pt"))
     slice_status = status(slice_output)
     assert slice_status["completed_units"] == slice_status["total_units"] == 7
+    for position in (3, 7):
+        for percentage in (25, 100):
+            serial_rows = next(
+                record["feasibility"]
+                for record in resumed["snapshot_observations"]
+                if record["position"] == position
+                and record["requested_sampling_percentage"] == percentage
+            )
+            native_rows = next(
+                record["feasibility"]
+                for record in sliced["snapshot_observations"]
+                if record["position"] == position
+                and record["requested_sampling_percentage"] == percentage
+            )
+            for serial_row, native_row in zip(serial_rows, native_rows, strict=True):
+                for field in (
+                    "realized_sampled_fraction_minimum",
+                    "realized_sampled_fraction_mean",
+                    "realized_sampled_fraction_maximum",
+                    "success_count",
+                    "attempts",
+                    "success_probability",
+                ):
+                    assert native_row[field] == serial_row[field]
+
+    buffered_specification = json.loads(json.dumps(slice_specification))
+    buffered_specification["run"]["id"] = "snapshot-harness-buffered-checkpoint-smoke"
+    buffered_specification["study"]["positions"] = [3]
+    buffered_config = tmp_path / "snapshot-buffered-config.json"
+    buffered_config.write_text(json.dumps(buffered_specification), encoding="utf-8")
+    buffered_csv = tmp_path / "snapshot-buffered-feasibility.csv"
+    buffered_batch_probe = reader.snapshot_probe_batch
+    buffered_probe_calls = 0
+
+    def interrupted_buffered_probe(*args, **kwargs):
+        nonlocal buffered_probe_calls
+        buffered_probe_calls += 1
+        if buffered_probe_calls == 2:
+            raise RuntimeError("test interruption before buffered checkpoint")
+        return buffered_batch_probe(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "snapshot_probe_batch", interrupted_buffered_probe)
+    with pytest.raises(RuntimeError, match="before buffered checkpoint"):
+        run_experiment(
+            buffered_config,
+            device="cpu",
+            output_root=tmp_path / "buffered-results",
+            allow_dirty_source=True,
+            snapshot_csv=buffered_csv,
+        )
+    buffered_output = (
+        tmp_path
+        / "buffered-results"
+        / "snapshot-harness-buffered-checkpoint-smoke"
+        / "result.json"
+    )
+    buffered_partial = json.loads(buffered_output.read_text())
+    assert buffered_partial["snapshot_observations"] == []
+    assert not buffered_csv.exists()
+
+    monkeypatch.setattr(reader, "snapshot_probe_batch", buffered_batch_probe)
+    _, buffered = run_experiment(
+        buffered_config,
+        device="cpu",
+        output_root=tmp_path / "buffered-results",
+        allow_dirty_source=True,
+        snapshot_csv=buffered_csv,
+    )
+    assert buffered["complete"]
+    assert len(buffered["snapshot_observations"]) == 2
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:
