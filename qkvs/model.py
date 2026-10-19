@@ -495,6 +495,7 @@ _TRAINING_SCALAR_METRICS = (
     "teacher_historical_attention_mass",
     "teacher_historical_attention_covered_mass",
     "teacher_historical_attention_uncovered_mass",
+    "utility_forward_logit_max_abs_error",
     "utility_forward_loss_abs_error",
 )
 
@@ -538,11 +539,19 @@ def _validate_hard_forward_parity(records: list[dict[str, Any]], dtype: torch.dt
         if record["utility_gradient_estimator"] != "hard_multiplicity_ste":
             continue
         record["hard_forward_loss_atol"] = tolerance
-        error = record["utility_forward_loss_abs_error"]
-        if not math.isfinite(error) or error > tolerance:
+        record["hard_forward_logit_atol"] = tolerance
+        loss_error = record["utility_forward_loss_abs_error"]
+        logit_error = record["utility_forward_logit_max_abs_error"]
+        if (
+            not math.isfinite(loss_error)
+            or not math.isfinite(logit_error)
+            or loss_error > tolerance
+            or logit_error > tolerance
+        ):
             raise RuntimeError(
-                "hard-multiplicity forward loss does not match the explicit hard gather "
-                f"(absolute error {error:.8g}, tolerance {tolerance:.8g})"
+                "hard-aligned forward does not match the explicit hard gather "
+                f"(logit max absolute error {logit_error:.8g}, "
+                f"loss absolute error {loss_error:.8g}, tolerance {tolerance:.8g})"
             )
 
 
@@ -965,6 +974,7 @@ class HuggingFaceQwen2Reader:
         query: Tensor,
         key_cache: list[Tensor] | _LayerKVCache,
         value_cache: list[Tensor] | _LayerKVCache,
+        hard_hidden: Tensor,
         hard_multiplicity: Tensor,
         soft_multiplicity: Tensor,
         rolling: tuple[int, ...],
@@ -991,29 +1001,16 @@ class HuggingFaceQwen2Reader:
             device=query.device,
             dtype=soft_multiplicity.dtype,
         )
-        hard_availability = torch.cat((hard_multiplicity, rolling_multiplicity))
         soft_availability = torch.cat((soft_multiplicity, rolling_multiplicity))
-        hard_bias = torch.where(
-            hard_availability > 0,
-            hard_availability.clamp_min(1.0).log(),
-            torch.full_like(hard_availability, torch.finfo(hard_availability.dtype).min),
-        )
-        hard_weights = torch.softmax(
-            attention_logits + hard_bias.unsqueeze(0),
-            dim=-1,
-            dtype=torch.float32,
-        ).to(query.dtype)
         soft_weights = torch.softmax(
             attention_logits + soft_availability.clamp_min(1e-6).log().unsqueeze(0),
             dim=-1,
             dtype=torch.float32,
         ).to(query.dtype)
-        hard_context = torch.einsum("hn,hnd->hd", hard_weights, values)
         soft_context = torch.einsum("hn,hnd->hd", soft_weights, values)
-        context = soft_context + (hard_context - soft_context).detach()
-        hidden = residual + attention.o_proj(context.reshape(1, 1, -1).contiguous())
-        residual = hidden
-        return residual + layer.mlp(layer.post_attention_layernorm(hidden))
+        soft_hidden = residual + attention.o_proj(soft_context.reshape(1, 1, -1).contiguous())
+        soft_hidden = soft_hidden + layer.mlp(layer.post_attention_layernorm(soft_hidden))
+        return hard_hidden.detach() + (soft_hidden - soft_hidden.detach())
 
     def _complete_current_token(
         self,
@@ -1859,6 +1856,7 @@ class HuggingFaceQwen2Reader:
                 query,
                 key_cache[layer_index],
                 value_cache[layer_index],
+                selected_hidden,
                 hard_multiplicity,
                 soft_multiplicity,
                 rolling,
@@ -1889,6 +1887,9 @@ class HuggingFaceQwen2Reader:
             "teacher_historical_attention_mass": teacher_weights[:rolling_start].sum().detach(),
             "teacher_historical_attention_covered_mass": coverage_reward.detach(),
             "teacher_historical_attention_uncovered_mass": coverage_loss.detach(),
+            "utility_forward_logit_max_abs_error": (selected_logits - surrogate_logits.detach())
+            .abs()
+            .max(),
             "utility_forward_loss_abs_error": (selected_loss - surrogate_loss.detach()).abs(),
             "historical_windows": windows,
             "historical_occurrences": selection.occurrence_count,

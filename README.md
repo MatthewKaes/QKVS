@@ -231,12 +231,13 @@ Training keeps Q/K/V frozen. A dense offline teacher supplies historical attenti
 the differentiable collective occupancy `1 - product(1 - q)` with alpha zero so redundant soft
 overlap earns no additional coverage. The original `soft_occupancy` utility estimator remains
 available. The alternative `hard_multiplicity_ste` estimator executes the ordinary resolver in its
-forward pass, converts every selected occurrence into a per-token count, and adds log-counts to
-attention logits. This is mathematically equivalent to repeating a K/V occurrence, so overlap and
-duplicates retain their actual softmax weight. Its backward pass substitutes Gaussian proposal
-multiplicities whose continuous center, spread, importance, and gate contributions are capped to
-the configured `R`. The explicit hard-gather loss is checked at every target with absolute
-tolerance `1e-5` for FP32 and `5e-3` for FP16/BF16.
+forward pass and retains the explicit occurrence-ordered K/V gather, including duplicate BF16
+reads. A parallel differentiable branch uses Gaussian proposal multiplicities whose continuous
+center, spread, importance, and gate contributions are capped to the configured `R`. The complete
+hard target-layer output is combined with the exactly zero forward correction
+`soft_hidden - soft_hidden.detach()`, so downstream logits use the real hard result while gradients
+follow the soft branch. Complete logits and loss are checked against a separate explicit hard
+execution at every target with absolute tolerance `1e-5` for FP32 and `5e-3` for FP16/BF16.
 
 This straight-through gradient is deliberately biased: it smooths integer window rounding, the
 gate threshold, importance sorting, and whole-window budget skips. It therefore does not estimate
@@ -360,18 +361,18 @@ calibration versus supervision density. Stop on nonfinite values, identity misma
 exhaustion; resume only unchanged artifacts and never alter the frozen protocol to finish a failed
 run.
 
-`configs/heatfield_hard_aligned_study.json` is approved for one human-initiated exploratory GPU
-comparison. Relative to the absolute-mass follow-up, it preserves the model and data identities,
-seed, W/T/J/R, 40 streaming updates, 960 target-layer objectives, and all five evaluation
-conditions; only the utility-gradient estimator changes to `hard_multiplicity_ste`. Compare its
-trained S with the previous absolute-mass model on the same held-out stream. Compatible predictive
-baselines may be reused by identity, but performance measurements remain fresh. Because the
-held-out stream is reused, this is a controlled development comparison rather than an independent
-generalization test. The human-started command is:
+`configs/heatfield_hard_aligned_study.json` identifies the approved but failed first hard-aligned
+attempt. At source revision `f54c84b`, its BF16 parity guard stopped before training with loss error
+`0.0390625`; its partial artifacts and configuration remain immutable and must not be resumed under
+changed source.
 
-```bash
-./run.sh configs/heatfield_hard_aligned_study.json
-```
+`configs/heatfield_hard_aligned_corrected_study.json` is a separate `draft_not_authorized`
+correction. It preserves the failed attempt's model and data identities, seed, W/T/J/R, 40
+streaming updates, 960 target-layer objectives, and all five evaluation conditions. Its distinct
+run ID prevents the failed partial run from being resumed. The reused held-out stream makes any
+future authorized execution a controlled development comparison, not an independent
+generalization test; compatible predictive baselines may be reused by identity, while performance
+measurements remain fresh.
 
 ## Configuration and artifacts
 
@@ -419,6 +420,7 @@ concurrent run.
 
 `configs/heatfield_learning_study.json` identifies the completed pilot;
 `configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up;
-`configs/heatfield_hard_aligned_study.json` identifies the approved hard-aligned exploratory study.
+`configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
+`configs/heatfield_hard_aligned_corrected_study.json` identifies the unauthorized correction.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

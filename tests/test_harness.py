@@ -178,15 +178,17 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_preserve_prior_runs_and_authorize_hard_aligned_study() -> None:
+def test_checked_in_configurations_preserve_failed_run_and_draft_corrected_study() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     pilot_path = Path("configs/heatfield_learning_study.json")
     followup_path = Path("configs/heatfield_learning_followup.json")
     hard_aligned_path = Path("configs/heatfield_hard_aligned_study.json")
+    corrected_path = Path("configs/heatfield_hard_aligned_corrected_study.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
+    corrected = validate_config_file(corrected_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -230,10 +232,22 @@ def test_checked_in_configurations_preserve_prior_runs_and_authorize_hard_aligne
         "experiment": "heatfield_hard_aligned_learning_study",
         "status": "approved",
     }
+    assert hashlib.sha256(hard_aligned_path.read_bytes()).hexdigest() == (
+        "badc55865c1ffab1c526222ded6b054a8d3c94b3b94e0f578c07b1f31876c96c"
+    )
+    assert corrected == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "heatfield_corrected_hard_aligned_learning_study",
+        "status": "draft_not_authorized",
+    }
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
     hard = json.loads(hard_aligned_path.read_text())
+    fixed = json.loads(corrected_path.read_text())
     assert denser["run"]["id"] != pilot["run"]["id"]
     assert denser["model"] == pilot["model"]
     assert denser["data"] == pilot["data"]
@@ -267,6 +281,17 @@ def test_checked_in_configurations_preserve_prior_runs_and_authorize_hard_aligne
         **denser["training"],
         "utility_gradient_estimator": "hard_multiplicity_ste",
     }
+    assert fixed["run"] == {
+        **hard["run"],
+        "id": "heatfield-corrected-hard-aligned-learning-study",
+    }
+    assert fixed["model"] == hard["model"]
+    assert fixed["data"] == hard["data"]
+    assert fixed["attention"] == hard["attention"]
+    assert fixed["selection"] == hard["selection"]
+    assert fixed["training"] == hard["training"]
+    assert fixed["evaluation"] == hard["evaluation"]
+    assert fixed["execution"] == hard["execution"]
 
     invalid = json.loads(json.dumps(hard))
     invalid["training"]["utility_gradient_estimator"] = "unsupported"
