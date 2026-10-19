@@ -1326,6 +1326,7 @@ class HuggingFaceQwen2Reader:
         pending_scores: list[tuple[int, int, Tensor, Tensor, tuple[AccessRecord, ...]]] = []
         stream_token_ids = torch.tensor(stream.tokens, device=device)
         absolute_positions = torch.arange(len(stream.tokens), device=device)
+        layer_invariant_selection = getattr(policy, "layer_invariant", False)
 
         with torch.inference_mode():
             for position in range(start_position, len(stream.tokens) - 1):
@@ -1335,6 +1336,9 @@ class HuggingFaceQwen2Reader:
                 position_embeddings = backbone.rotary_emb(hidden, position_ids)
                 token_accesses: list[AccessRecord] = []
                 lower_layer_selection = None
+                rolling_start = max(0, position - rolling_tokens + 1)
+                rolling = tuple(range(rolling_start, position + 1))
+                shared_selection = None
 
                 for layer_index, layer in enumerate(backbone.layers):
                     residual, normalized, query = self._append_layer_kv(
@@ -1345,8 +1349,6 @@ class HuggingFaceQwen2Reader:
                         value_cache[layer_index],
                     )
 
-                    rolling_start = max(0, position - rolling_tokens + 1)
-                    rolling = tuple(range(rolling_start, position + 1))
                     if diagnostic_full_history or getattr(policy, "full_qkv", False):
                         historical: tuple[int, ...] = ()
                         historical_windows = ((0, rolling_start),) if rolling_start else ()
@@ -1358,26 +1360,37 @@ class HuggingFaceQwen2Reader:
                         occurrence_limit = None
                         attention_mode = "full_qkv"
                     else:
-                        proposal_set = policy.propose(
-                            SelectionContext(
-                                position=position,
-                                layer=layer_index,
+                        if shared_selection is None:
+                            proposal_set = policy.propose(
+                                SelectionContext(
+                                    position=position,
+                                    layer=layer_index,
+                                    history_end=rolling_start,
+                                    hidden=normalized[0, 0],
+                                    lower_layer=lower_layer_selection,
+                                ),
+                                policy_states[layer_index],
+                            )
+                            selection = resolve_proposals(
+                                proposal_set.proposals,
                                 history_end=rolling_start,
-                                hidden=normalized[0, 0],
-                                lower_layer=lower_layer_selection,
-                            ),
-                            policy_states[layer_index],
-                        )
+                                window_width=window_width,
+                                historical_token_budget=historical_token_budget,
+                                beta=proposal_set.beta,
+                            )
+                            historical = selection.indices
+                            actual_indices = torch.tensor(
+                                (*historical, *rolling),
+                                device=device,
+                                dtype=torch.long,
+                            )
+                            if layer_invariant_selection:
+                                shared_selection = proposal_set, selection, actual_indices
+                        else:
+                            proposal_set, selection, actual_indices = shared_selection
+                            historical = selection.indices
                         policy_states[layer_index] = proposal_set.state
                         lower_layer_selection = proposal_set.soft_parameters
-                        selection = resolve_proposals(
-                            proposal_set.proposals,
-                            history_end=rolling_start,
-                            window_width=window_width,
-                            historical_token_budget=historical_token_budget,
-                            beta=proposal_set.beta,
-                        )
-                        historical = selection.indices
                         historical_windows = tuple(
                             (window[0], window[-1] + 1) for window in selection.windows if window
                         )
@@ -1385,7 +1398,6 @@ class HuggingFaceQwen2Reader:
                         spreads = tuple(proposal.spread for proposal in proposal_set.proposals)
                         weights = tuple(proposal.weight for proposal in proposal_set.proposals)
                         active = tuple(proposal.active for proposal in proposal_set.proposals)
-                        actual_indices = (*historical, *rolling)
                         occurrence_limit = rolling_tokens + historical_token_budget
                         attention_mode = "bounded"
                     hidden, gathered_keys, gathered_values = self._finish_layer(

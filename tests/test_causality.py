@@ -599,6 +599,69 @@ def test_qwen2_actual_reads_are_causal_and_layer_specific() -> None:
                 assert bool(access.proposal_weights) == (score.position % 3 == 0)
 
 
+def test_layer_invariant_reader_reuses_one_index_tensor_per_token(monkeypatch) -> None:
+    class CountingFixedOffsetPolicy(FixedOffsetPolicy):
+        def __init__(self, offsets):
+            super().__init__(offsets)
+            self.calls = []
+
+        def propose(self, context, state):
+            self.calls.append((context.position, context.layer))
+            return super().propose(context, state)
+
+    class LayerwiseFixedOffsetPolicy:
+        def __init__(self, offsets):
+            self.delegate = FixedOffsetPolicy(offsets)
+            self.calls = 0
+
+        def propose(self, context, state):
+            self.calls += 1
+            return self.delegate.propose(context, state)
+
+    reader = _qwen_reader()
+    stream = _stream(tuple(index % 32 for index in range(16)))
+    policy = CountingFixedOffsetPolicy((6, 9))
+    gathered_indices = []
+    original_gather = model_module._gather_cache_occurrences
+
+    def counted_gather(cache, indices, *, occurrence_limit):
+        if isinstance(cache, model_module._LayerKVCache) and indices is not None:
+            gathered_indices.append(indices)
+        return original_gather(cache, indices, occurrence_limit=occurrence_limit)
+
+    monkeypatch.setattr(model_module, "_gather_cache_occurrences", counted_gather)
+    shared = reader.execute(
+        stream,
+        policy,
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    post_transition_tokens = len(stream.tokens) - 1 - 6
+    layer_count = reader.model.config.num_hidden_layers
+    assert policy.calls == [(position, 0) for position in range(6, len(stream.tokens) - 1)]
+    assert len(gathered_indices) == post_transition_tokens * layer_count * 2
+    calls_per_token = layer_count * 2
+    for start in range(0, len(gathered_indices), calls_per_token):
+        token_indices = gathered_indices[start : start + calls_per_token]
+        assert all(indices is token_indices[0] for indices in token_indices)
+
+    layerwise_policy = LayerwiseFixedOffsetPolicy((6, 9))
+    layerwise = reader.execute(
+        stream,
+        layerwise_policy,
+        rolling_tokens=4,
+        activation_tokens=6,
+        historical_token_budget=2,
+        window_width=1,
+        device=torch.device("cpu"),
+    )
+    assert layerwise_policy.calls == post_transition_tokens * layer_count
+    assert [score.as_dict() for score in shared] == [score.as_dict() for score in layerwise]
+
+
 def test_qwen2_future_suffix_cannot_change_prior_scores_or_accesses() -> None:
     prefix = (1, 2, 3, 4, 5, 6, 7)
     first = _stream((*prefix, 8, 9, 10))

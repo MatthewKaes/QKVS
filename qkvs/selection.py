@@ -66,6 +66,8 @@ class SelectionPolicy(Protocol):
 
 
 class RollingOnlyPolicy:
+    layer_invariant = True
+
     def propose(self, context: SelectionContext, state: PolicyState) -> ProposalSet:
         del context
         return ProposalSet((), state)
@@ -83,6 +85,8 @@ class FullQKVPolicy:
 
 class FixedOffsetPolicy:
     """A bounded control that proposes fixed distances behind the current token."""
+
+    layer_invariant = True
 
     def __init__(self, offsets: tuple[int, ...]) -> None:
         if not offsets or any(offset <= 0 for offset in offsets):
