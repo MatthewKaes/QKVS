@@ -796,6 +796,11 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
                 or expected_candidate_passes != calculated_candidate_passes
             ):
                 errors.append("snapshot expected candidate passes do not match the study grid")
+        reuse_dense_snapshots_from = study.get("reuse_dense_snapshots_from")
+        if reuse_dense_snapshots_from is not None and (
+            not isinstance(reuse_dense_snapshots_from, str) or not reuse_dense_snapshots_from
+        ):
+            errors.append("snapshot dense reuse source must be a nonempty path")
         if study.get("sampling_algorithm") != "uniform-aligned-blocks-v1":
             errors.append("snapshot sampling_algorithm is unsupported")
         tolerances = study.get("fidelity_tolerances_nats")
@@ -1831,6 +1836,39 @@ def _run_snapshot_study(
     )
     study = specification["study"]
     output = _result_path(specification, output_root=output_root)
+    reuse_prefixes: dict[int, tuple[Path, dict[str, Any]]] = {}
+    reuse_identity = None
+    reuse_source = study.get("reuse_dense_snapshots_from")
+    if reuse_source is not None:
+        configured_reuse_path = Path(reuse_source)
+        reuse_result_path = resolve_run(
+            configured_reuse_path
+            if configured_reuse_path.is_absolute()
+            else (config_path.parent / configured_reuse_path).resolve()
+        )
+        reuse_result = _load_json(reuse_result_path)
+        if (
+            not reuse_result.get("complete")
+            or reuse_result.get("config", {}).get("study", {}).get("kind") != _SNAPSHOT_STUDY_KIND
+            or reuse_result.get("model_identity") != model_identity
+            or reuse_result.get("data_identity") != data_identity
+            or reuse_result.get("device") != str(device)
+            or reuse_result.get("snapshot_execution_version") != _SNAPSHOT_EXECUTION_VERSION
+            or len(reuse_result.get("streams", [])) != 1
+            or reuse_result["streams"][0].get("token_sha256") != stream_record["token_sha256"]
+        ):
+            raise ValueError("dense snapshot reuse source is incompatible with this study")
+        for position in study["positions"]:
+            record = reuse_result.get("snapshot_prefixes", {}).get(str(position))
+            if record is None:
+                raise ValueError("dense snapshot reuse source does not contain every position")
+            prefix_path = (reuse_result_path.parent / record["path"]).resolve()
+            reuse_prefixes[position] = (prefix_path, record)
+        reuse_identity = {
+            "configured_path": reuse_source,
+            "run_id": reuse_result["run_id"],
+            "result_sha256": _sha256(reuse_result_path),
+        }
     expected = {
         "config": specification,
         "config_sha256": _sha256(config_path),
@@ -1840,6 +1878,8 @@ def _run_snapshot_study(
         "device": str(device),
         "snapshot_execution_version": _SNAPSHOT_EXECUTION_VERSION,
     }
+    if reuse_identity is not None:
+        expected["dense_snapshot_reuse"] = reuse_identity
     if output.exists():
         result = _load_json(output)
         if {key: result.get(key) for key in expected} != expected or result.get(
@@ -1893,15 +1933,36 @@ def _run_snapshot_study(
     try:
         for position in study["positions"]:
             position_key = str(position)
-            prefix_path = (
+            local_prefix_path = (
                 output.parent
                 / "snapshot_prefixes"
                 / f"{stream.stream_id}-position-{position:08d}.pt"
             )
+            reused_prefix = reuse_prefixes.get(position)
             prefix_record = result["snapshot_prefixes"].get(position_key)
             if prefix_record is None:
                 progress.start_job(f"dense snapshot / position {position}")
-                if prefix_path.exists():
+                reused_from = None
+                if reused_prefix is not None:
+                    prefix_path, reused_record = reused_prefix
+                    if not prefix_path.is_file() or reused_record.get("artifact_sha256") != _sha256(
+                        prefix_path
+                    ):
+                        raise ValueError("reused dense causal snapshot artifact does not match")
+                    snapshot = reader.load_dense_causal_snapshot(
+                        prefix_path,
+                        stream,
+                        position=position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                    reused_from = {
+                        "run_id": reuse_identity["run_id"],
+                        "artifact_sha256": reused_record["artifact_sha256"],
+                    }
+                elif local_prefix_path.exists():
+                    prefix_path = local_prefix_path
                     snapshot = reader.load_dense_causal_snapshot(
                         prefix_path,
                         stream,
@@ -1911,6 +1972,7 @@ def _run_snapshot_study(
                         prefill_chunk_tokens=prefill_chunk_tokens,
                     )
                 else:
+                    prefix_path = local_prefix_path
                     snapshot = reader.dense_causal_snapshot(
                         stream,
                         position=position,
@@ -1919,16 +1981,23 @@ def _run_snapshot_study(
                         prefill_chunk_tokens=prefill_chunk_tokens,
                     )
                     reader.save_dense_causal_snapshot(snapshot, prefix_path)
-                result["snapshot_prefixes"][position_key] = {
-                    "path": str(prefix_path.relative_to(output.parent)),
+                prefix_manifest = {
+                    "path": os.path.relpath(prefix_path, output.parent),
                     "artifact_sha256": _sha256(prefix_path),
                     "identity": snapshot.identity,
                 }
+                if reused_from is not None:
+                    prefix_manifest["reused_from"] = reused_from
+                result["snapshot_prefixes"][position_key] = prefix_manifest
                 _write_json(output, result)
                 progress.complete_job()
             else:
+                prefix_path = (output.parent / prefix_record["path"]).resolve()
+                allowed_paths = {local_prefix_path.resolve()}
+                if reused_prefix is not None:
+                    allowed_paths.add(reused_prefix[0])
                 if (
-                    prefix_record.get("path") != str(prefix_path.relative_to(output.parent))
+                    prefix_path not in allowed_paths
                     or not prefix_path.is_file()
                     or prefix_record.get("artifact_sha256") != _sha256(prefix_path)
                 ):

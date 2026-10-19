@@ -249,6 +249,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_path = Path("configs/h1a_snapshot_compressibility.json")
     h1a_expansion_path = Path("configs/h1a_context_expansion.json")
     h1a_replication_path = Path("configs/h1a_independent_document_replication.json")
+    h1a_cell_extension_path = Path("configs/h1a_kl_0_01_existing_cell_extension.json")
+    h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -257,6 +259,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a = validate_config_file(h1a_path)
     h1a_expansion = validate_config_file(h1a_expansion_path)
     h1a_replication = validate_config_file(h1a_replication_path)
+    h1a_cell_extension = validate_config_file(h1a_cell_extension_path)
+    h1a_position_extension = validate_config_file(h1a_position_extension_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -346,6 +350,22 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_independent_document_replication",
         "status": "draft_not_authorized",
     }
+    assert h1a_cell_extension == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_existing_cell_extension",
+        "status": "draft_not_authorized",
+    }
+    assert h1a_position_extension == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_position_extension",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -381,6 +401,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
 
     expansion = json.loads(h1a_expansion_path.read_text())
     replication = json.loads(h1a_replication_path.read_text())
+    cell_extension = json.loads(h1a_cell_extension_path.read_text())
+    position_extension = json.loads(h1a_position_extension_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -414,14 +436,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     position_selection = expansion["study"]["position_selection"]
     assert position_selection["validated_max_position_embeddings"] == 32768
 
-    def regenerate_positions(start, stop, count, cohort, excluded):
+    def regenerate_positions(start, stop, count, cohort, excluded, selection_seed):
         regenerated = []
         for index in range(count):
             lower = start + index * (stop - start) // count
             upper = start + (index + 1) * (stop - start) // count
-            position = lower + derive_random_block_seed(
-                position_selection["seed"], cohort, index
-            ) % (upper - lower)
+            position = lower + derive_random_block_seed(selection_seed, cohort, index) % (
+                upper - lower
+            )
             while position in excluded or position in regenerated:
                 position = lower + (position - lower + 1) % (upper - lower)
             regenerated.append(position)
@@ -432,12 +454,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         position_selection["stratified_count"],
         1,
         original_positions,
+        position_selection["seed"],
     )
     regenerated_targeted = regenerate_positions(
         *position_selection["targeted_range"],
         position_selection["targeted_count"],
         2,
         original_positions | set(regenerated_stratified),
+        position_selection["seed"],
     )
     assert regenerated_stratified == expansion_cohorts["stratified_512_to_32k"]
     assert regenerated_targeted == expansion_cohorts["targeted_15_5k_to_16k"]
@@ -468,6 +492,49 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "sha256": "b5e88b71a1cda068e9ab1d94344c9d932338ba6da1a66def97a1aecd9cfcc87d",
     }
     assert replication["data"]["source"] != expansion["data"]["source"]
+
+    assert cell_extension["model"] == expansion["model"]
+    assert cell_extension["data"] == expansion["data"]
+    assert cell_extension["execution"] == expansion["execution"]
+    assert cell_extension["study"]["positions"] == expansion_positions
+    assert cell_extension["study"]["position_cohorts"] == expansion_cohorts
+    assert (
+        cell_extension["study"]["sampling_percentages"]
+        == expansion["study"]["sampling_percentages"]
+    )
+    assert cell_extension["study"]["trial_start"] == 400
+    assert cell_extension["study"]["trials_per_fraction"] == 100
+    assert cell_extension["study"]["expected_candidate_passes"] == 60 * (11 * 100 + 1)
+    assert cell_extension["study"]["fidelity_tolerances_nats"] == [0.01]
+    assert cell_extension["study"]["reuse_dense_snapshots_from"] == (
+        "../artifacts/results/h1a-context-density-expansion"
+    )
+
+    extension_positions = position_extension["study"]["positions"]
+    assert len(extension_positions) == len(set(extension_positions)) == 50
+    assert set(extension_positions).isdisjoint(original_positions | set(expansion_positions))
+    assert min(extension_positions) >= 512
+    assert max(extension_positions) <= 32766
+    assert position_extension["model"] == expansion["model"]
+    assert position_extension["data"] == expansion["data"]
+    assert position_extension["execution"] == expansion["execution"]
+    assert (
+        position_extension["study"]["sampling_percentages"]
+        == expansion["study"]["sampling_percentages"]
+    )
+    assert position_extension["study"]["trial_start"] == 0
+    assert position_extension["study"]["trials_per_fraction"] == 500
+    assert position_extension["study"]["expected_candidate_passes"] == 50 * (11 * 500 + 1)
+    assert position_extension["study"]["fidelity_tolerances_nats"] == [0.01]
+    extension_selection = position_extension["study"]["position_selection"]
+    regenerated_extension = regenerate_positions(
+        *extension_selection["stratified_range"],
+        extension_selection["stratified_count"],
+        3,
+        original_positions | set(expansion_positions),
+        extension_selection["seed"],
+    )
+    assert regenerated_extension == extension_positions
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -1067,6 +1134,36 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         allow_dirty_source=True,
     )
     assert repeated == resumed
+
+    reuse_specification = json.loads(json.dumps(specification))
+    reuse_specification["run"]["id"] = "snapshot-harness-reuse-smoke"
+    reuse_specification["study"]["trial_start"] = 3
+    reuse_specification["study"]["trials_per_fraction"] = 1
+    reuse_specification["study"]["reuse_dense_snapshots_from"] = str(output)
+    reuse_config = tmp_path / "snapshot-reuse-config.json"
+    reuse_config.write_text(json.dumps(reuse_specification), encoding="utf-8")
+
+    def unexpected_dense_snapshot(*args, **kwargs):
+        raise AssertionError("reused dense snapshots must not be recomputed")
+
+    monkeypatch.setattr(reader, "dense_causal_snapshot", unexpected_dense_snapshot)
+    reused_output, reused = run_experiment(
+        reuse_config,
+        device="cpu",
+        output_root=tmp_path / "reuse-results",
+        allow_dirty_source=True,
+    )
+    assert reused["complete"]
+    assert reused["dense_snapshot_reuse"] == {
+        "configured_path": str(output),
+        "run_id": "snapshot-harness-smoke",
+        "result_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+    }
+    assert all(
+        record["reused_from"]["run_id"] == "snapshot-harness-smoke"
+        for record in reused["snapshot_prefixes"].values()
+    )
+    assert not (reused_output.parent / "snapshot_prefixes").exists()
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:
