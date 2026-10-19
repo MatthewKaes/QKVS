@@ -1790,19 +1790,65 @@ def export_snapshot_data(
     return manifest
 
 
-def _snapshot_position_histogram(
-    layer_indices: tuple[tuple[int, ...], ...],
+def _snapshot_range_statistics(
+    layer_ranges: tuple[tuple[tuple[int, int], ...], ...],
     *,
     available_positions: int,
-) -> list[int]:
+) -> dict[str, Any]:
     histogram = [0] * _SNAPSHOT_HISTOGRAM_BINS
-    for index in (index for indices in layer_indices for index in indices):
-        bucket = min(
-            _SNAPSHOT_HISTOGRAM_BINS - 1,
-            index * _SNAPSHOT_HISTOGRAM_BINS // available_positions,
+    selected_occurrences = 0
+    historical_occurrences = 0
+    all_ranges: list[tuple[int, int]] = []
+    historical_end = available_positions - 1
+    for ranges in layer_ranges:
+        for start, stop in ranges:
+            length = stop - start
+            selected_occurrences += length
+            historical_occurrences += max(0, min(stop, historical_end) - start)
+            all_ranges.append((start, stop))
+            first_bucket = start * _SNAPSHOT_HISTOGRAM_BINS // available_positions
+            last_bucket = (stop - 1) * _SNAPSHOT_HISTOGRAM_BINS // available_positions
+            for bucket in range(first_bucket, last_bucket + 1):
+                bucket_start = (
+                    bucket * available_positions + _SNAPSHOT_HISTOGRAM_BINS - 1
+                ) // _SNAPSHOT_HISTOGRAM_BINS
+                bucket_stop = (
+                    (bucket + 1) * available_positions + _SNAPSHOT_HISTOGRAM_BINS - 1
+                ) // _SNAPSHOT_HISTOGRAM_BINS
+                histogram[bucket] += max(
+                    0,
+                    min(stop, bucket_stop) - max(start, bucket_start),
+                )
+
+    unique_positions = 0
+    historical_unique_positions = 0
+    merged_start = -1
+    merged_stop = -1
+    for start, stop in sorted(all_ranges):
+        if merged_start < 0:
+            merged_start, merged_stop = start, stop
+        elif start <= merged_stop:
+            merged_stop = max(merged_stop, stop)
+        else:
+            unique_positions += merged_stop - merged_start
+            historical_unique_positions += max(
+                0,
+                min(merged_stop, historical_end) - merged_start,
+            )
+            merged_start, merged_stop = start, stop
+    if merged_start >= 0:
+        unique_positions += merged_stop - merged_start
+        historical_unique_positions += max(
+            0,
+            min(merged_stop, historical_end) - merged_start,
         )
-        histogram[bucket] += 1
-    return histogram
+    return {
+        "selected_occurrences": selected_occurrences,
+        "historical_occurrences": historical_occurrences,
+        "unique_positions": unique_positions,
+        "historical_unique_positions": historical_unique_positions,
+        "histogram": histogram,
+    }
 
 
 def _run_snapshot_study(
@@ -2086,7 +2132,6 @@ def _run_snapshot_study(
                 else:
                     candidate_records: list[dict[str, Any]] = []
                     candidate_values: list[Any] = []
-                    layer_ranges_by_trial: dict[int, list[list[list[int]]]] = {}
                     for trial_offset in range(trial_count):
                         trial_id = trial_start + trial_offset
                         candidate_seed = derive_random_block_seed(
@@ -2104,15 +2149,31 @@ def _run_snapshot_study(
                             )
                             for layer_index in range(reader.model.config.num_hidden_layers)
                         )
-                        layer_indices = tuple(sample.indices for sample in layer_samples)
+                        layer_ranges = tuple(
+                            sample.contiguous_ranges for sample in layer_samples
+                        )
+                        prepared_selection = reader.prepare_snapshot_selection(
+                            layer_ranges,
+                            position=position,
+                            device=device,
+                        )
                         probe = reader.snapshot_probe(
                             stream,
                             state,
                             position=position,
-                            selected_positions=layer_indices,
+                            selected_positions=prepared_selection,
                             device=device,
                         )
-                        selected_occurrences = sum(len(indices) for indices in layer_indices)
+                        range_statistics = _snapshot_range_statistics(
+                            layer_ranges,
+                            available_positions=position + 1,
+                        )
+                        selected_occurrences = range_statistics["selected_occurrences"]
+                        expected_selected_occurrences = sum(
+                            sample.selected_token_count for sample in layer_samples
+                        )
+                        if selected_occurrences != expected_selected_occurrences:
+                            raise RuntimeError("snapshot interval accounting does not match sample")
                         gathered_keys = sum(probe.gathered_keys_per_layer)
                         gathered_values = sum(probe.gathered_values_per_layer)
                         if (
@@ -2146,13 +2207,7 @@ def _run_snapshot_study(
                                 )
                             )
                         )
-                        historical_occurrences = sum(
-                            index < position for indices in layer_indices for index in indices
-                        )
-                        all_positions = {index for indices in layer_indices for index in indices}
-                        historical_positions = {
-                            index for index in all_positions if index < position
-                        }
+                        historical_occurrences = range_statistics["historical_occurrences"]
                         realized_fraction = selected_occurrences / (
                             reader.model.config.num_hidden_layers * (position + 1)
                         )
@@ -2168,8 +2223,12 @@ def _run_snapshot_study(
                                 "historical_token_occurrences": historical_occurrences,
                                 "current_token_layer_reads": selected_occurrences
                                 - historical_occurrences,
-                                "aggregate_unique_positions": len(all_positions),
-                                "historical_unique_positions": len(historical_positions),
+                                "aggregate_unique_positions": range_statistics[
+                                    "unique_positions"
+                                ],
+                                "historical_unique_positions": range_statistics[
+                                    "historical_unique_positions"
+                                ],
                                 "sampled_block_count_per_layer": [
                                     sample.block_count for sample in layer_samples
                                 ],
@@ -2182,7 +2241,7 @@ def _run_snapshot_study(
                                         "seed": sample.seed,
                                         "boundary_alignment": sample.boundary_alignment,
                                         "block_count": sample.block_count,
-                                        "selected_token_count": len(sample.indices),
+                                        "selected_token_count": sample.selected_token_count,
                                         "gathered_key_occurrences": layer_gathered_keys,
                                         "gathered_value_occurrences": layer_gathered_values,
                                     }
@@ -2199,10 +2258,7 @@ def _run_snapshot_study(
                                         )
                                     )
                                 ],
-                                "sampled_position_histogram": _snapshot_position_histogram(
-                                    layer_indices,
-                                    available_positions=position + 1,
-                                ),
+                                "sampled_position_histogram": range_statistics["histogram"],
                                 "trial_id": trial_id,
                                 "candidate_seed": candidate_seed,
                                 "sampling_algorithm": RANDOM_BLOCK_SAMPLER_VERSION,
@@ -2211,10 +2267,6 @@ def _run_snapshot_study(
                                 "actual_gathered_value_occurrences": gathered_values,
                             }
                         )
-                        layer_ranges_by_trial[trial_id] = [
-                            [[start, stop] for start, stop in sample.ranges]
-                            for sample in layer_samples
-                        ]
                         progress.update_job(
                             f"snapshot {position} / {float(percentage):g}% / "
                             f"trial {trial_offset + 1}/{trial_count}",
@@ -2272,8 +2324,24 @@ def _run_snapshot_study(
                         reversed(expected_histogram)
                     )
                     best_trial = summary["best_candidate"]["trial_id"]
-                    summary["best_candidate"]["per_layer_selected_ranges"] = layer_ranges_by_trial[
-                        best_trial
+                    best_candidate_seed = derive_random_block_seed(
+                        base_seed,
+                        position,
+                        _snapshot_fraction_coordinate(percentage),
+                        best_trial,
+                    )
+                    best_layer_samples = tuple(
+                        sample_uniform_random_blocks(
+                            available_positions=position + 1,
+                            block_width=study["block_width"],
+                            requested_fraction=requested_fraction,
+                            seed=derive_random_block_seed(best_candidate_seed, layer_index),
+                        )
+                        for layer_index in range(reader.model.config.num_hidden_layers)
+                    )
+                    summary["best_candidate"]["per_layer_selected_ranges"] = [
+                        [[start, stop] for start, stop in sample.ranges]
+                        for sample in best_layer_samples
                     ]
                     if float(percentage) == 100.0:
                         tolerance = study["dense_parity_tolerance"]

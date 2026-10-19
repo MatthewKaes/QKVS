@@ -217,6 +217,26 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         selected_positions=full_selection,
         device=torch.device("cpu"),
     )
+    compact_ranges = (((0, 2), (4, 7)), ((1, 5),))
+    prepared_selection = reader.prepare_snapshot_selection(
+        compact_ranges,
+        position=6,
+        device=torch.device("cpu"),
+    )
+    compact_candidate = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=prepared_selection,
+        device=torch.device("cpu"),
+    )
+    explicit_candidate = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=((0, 1, 4, 5, 6), (1, 2, 3, 4)),
+        device=torch.device("cpu"),
+    )
     sparse_selection = ((0, 1), (2, 3))
     sparse = reader.snapshot_probe(
         first,
@@ -235,6 +255,10 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
 
     assert torch.equal(reference.logits, dense_candidate.logits)
     assert torch.equal(reference.loss, dense_candidate.loss)
+    assert torch.equal(compact_candidate.logits, explicit_candidate.logits)
+    assert torch.equal(compact_candidate.loss, explicit_candidate.loss)
+    assert compact_candidate.gathered_keys_per_layer == (5, 4)
+    assert compact_candidate.gathered_values_per_layer == (5, 4)
     assert dense_candidate.gathered_keys_per_layer == (7, 7)
     assert dense_candidate.gathered_values_per_layer == (7, 7)
     assert sparse.selected_positions_per_layer == (2, 2)

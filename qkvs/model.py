@@ -70,6 +70,15 @@ class SnapshotProbeState:
 
 
 @dataclass(frozen=True)
+class SnapshotProbeSelection:
+    """Validated device indices expanded from compact nonoverlapping ranges."""
+
+    position: int
+    layers: tuple[Tensor, ...]
+    occurrence_counts: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class SnapshotProbeResult:
     logits: Tensor
     loss: Tensor
@@ -1395,13 +1404,63 @@ class HuggingFaceQwen2Reader:
             value_cache=tuple(cache.to(device) for cache in snapshot.value_cache),
         )
 
+    def prepare_snapshot_selection(
+        self,
+        layer_ranges: tuple[tuple[tuple[int, int], ...], ...],
+        *,
+        position: int,
+        device: torch.device,
+    ) -> SnapshotProbeSelection:
+        """Expand compact causal ranges once without constructing Python token lists."""
+
+        layer_count = len(self.model.model.layers)
+        if len(layer_ranges) != layer_count:
+            raise ValueError("snapshot probe selection must provide every model layer")
+        flattened_ranges: list[tuple[int, int]] = []
+        occurrence_counts: list[int] = []
+        for ranges in layer_ranges:
+            if not ranges:
+                raise ValueError("snapshot probe selections must be nonempty")
+            count = 0
+            previous_stop = 0
+            for range_index, (start, stop) in enumerate(ranges):
+                if (
+                    start < 0
+                    or stop <= start
+                    or stop > position + 1
+                    or (range_index and start < previous_stop)
+                ):
+                    raise ValueError(
+                        "snapshot probe ranges must be ordered nonoverlapping causal intervals"
+                    )
+                flattened_ranges.append((start, stop))
+                count += stop - start
+                previous_stop = stop
+            occurrence_counts.append(count)
+
+        range_tensor = torch.tensor(flattened_ranges, dtype=torch.long, device=device)
+        lengths = range_tensor[:, 1] - range_tensor[:, 0]
+        offsets = torch.cumsum(lengths, dim=0) - lengths
+        total_occurrences = sum(occurrence_counts)
+        indices = torch.repeat_interleave(
+            range_tensor[:, 0] - offsets,
+            lengths,
+            output_size=total_occurrences,
+        ) + torch.arange(total_occurrences, dtype=torch.long, device=device)
+        layers = tuple(indices.split(occurrence_counts))
+        return SnapshotProbeSelection(
+            position=position,
+            layers=layers,
+            occurrence_counts=tuple(occurrence_counts),
+        )
+
     def snapshot_probe(
         self,
         stream: TokenStream,
         state: SnapshotProbeState,
         *,
         position: int,
-        selected_positions: tuple[tuple[int, ...], ...] | None,
+        selected_positions: tuple[tuple[int, ...], ...] | SnapshotProbeSelection | None,
         device: torch.device,
     ) -> SnapshotProbeResult:
         """Evaluate one noncommitting full-token branch from an immutable dense prefix."""
@@ -1417,7 +1476,27 @@ class HuggingFaceQwen2Reader:
             raise ValueError("snapshot probe state does not match the requested causal prefix")
         if position >= len(stream.tokens) - 1:
             raise ValueError("snapshot probe position has no next-token target")
-        if selected_positions is not None:
+        prepared_selection = isinstance(selected_positions, SnapshotProbeSelection)
+        if prepared_selection:
+            if (
+                selected_positions.position != position
+                or len(selected_positions.layers) != layer_count
+                or len(selected_positions.occurrence_counts) != layer_count
+                or any(
+                    indices.ndim != 1
+                    or indices.dtype != torch.long
+                    or indices.device != device
+                    or len(indices) != count
+                    for indices, count in zip(
+                        selected_positions.layers,
+                        selected_positions.occurrence_counts,
+                        strict=True,
+                    )
+                )
+            ):
+                raise ValueError("prepared snapshot selection does not match the probe")
+            selected_layers = selected_positions.layers
+        elif selected_positions is not None:
             if len(selected_positions) != layer_count:
                 raise ValueError("snapshot probe selection must provide every model layer")
             if any(
@@ -1429,6 +1508,9 @@ class HuggingFaceQwen2Reader:
                 raise ValueError(
                     "snapshot probe selections must be nonempty unique causal positions"
                 )
+            selected_layers = selected_positions
+        else:
+            selected_layers = None
         self.model.to(device)
         token_id = torch.tensor([[stream.tokens[position]]], device=device)
         target = torch.tensor([stream.tokens[position + 1]], device=device)
@@ -1458,13 +1540,17 @@ class HuggingFaceQwen2Reader:
                     branch_keys,
                     branch_values,
                 )
-                if selected_positions is None:
+                if selected_layers is None:
                     actual_indices = None
                     occurrence_limit = None
                     selected_count = position + 1
                 else:
-                    indices = selected_positions[layer_index]
-                    actual_indices = torch.tensor(indices, device=device, dtype=torch.long)
+                    indices = selected_layers[layer_index]
+                    actual_indices = (
+                        indices
+                        if prepared_selection
+                        else torch.tensor(indices, device=device, dtype=torch.long)
+                    )
                     occurrence_limit = len(indices)
                     selected_count = len(indices)
                 hidden, key_count, value_count = self._finish_layer(

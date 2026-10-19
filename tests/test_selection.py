@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 import torch
 
@@ -95,6 +97,61 @@ def test_uniform_random_blocks_keep_one_position_and_dense_control_is_exact() ->
     assert dense.indices == tuple(range(17))
     assert dense.ranges == ((0, 8), (8, 16), (16, 17))
     assert dense.realized_fraction == 1.0
+
+
+def test_compact_uniform_random_blocks_preserve_v1_samples_exactly() -> None:
+    def reference_ranges(
+        available_positions: int,
+        block_width: int,
+        requested_fraction: float,
+        seed: int,
+    ) -> tuple[tuple[int, int], ...]:
+        alignment = (
+            0 if requested_fraction == 1.0 else random.Random(seed).randrange(block_width)
+        )
+        ranges: list[tuple[int, int]] = []
+        if alignment:
+            ranges.append((0, min(alignment, available_positions)))
+        start = alignment
+        while start < available_positions:
+            stop = min(available_positions, start + block_width)
+            ranges.append((start, stop))
+            start = stop
+        if requested_fraction == 1.0:
+            return tuple(ranges)
+        generator = random.Random(seed)
+        generator.randrange(block_width)
+        count = max(1, min(len(ranges), round(requested_fraction * len(ranges))))
+        return tuple(
+            ranges[index] for index in sorted(generator.sample(range(len(ranges)), count))
+        )
+
+    for available_positions, block_width, requested_fraction, seed in (
+        (3, 8, 0.01, 5),
+        (100, 8, 0.2, 71),
+        (32_550, 8, 0.99, 991),
+        (17, 8, 1.0, 999),
+    ):
+        sample = sample_uniform_random_blocks(
+            available_positions=available_positions,
+            block_width=block_width,
+            requested_fraction=requested_fraction,
+            seed=seed,
+        )
+        expected_ranges = reference_ranges(
+            available_positions,
+            block_width,
+            requested_fraction,
+            seed,
+        )
+        expected_indices = tuple(
+            position
+            for start, stop in expected_ranges
+            for position in range(start, stop)
+        )
+        assert sample.ranges == expected_ranges
+        assert sample.indices == expected_indices
+        assert sample.selected_token_count == len(expected_indices)
 
 
 def test_resolution_is_direct_causal_and_budgeted() -> None:

@@ -71,20 +71,79 @@ RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v1"
 class RandomBlockSelection:
     """One reproducible nonoverlapping block sample over a causal token range."""
 
-    indices: tuple[int, ...]
-    ranges: tuple[tuple[int, int], ...]
+    selected_blocks: tuple[int, ...]
     seed: int
     boundary_alignment: int
     available_positions: int
+    block_width: int
+    aligned_block_count: int
     requested_fraction: float
 
     @property
     def block_count(self) -> int:
-        return len(self.ranges)
+        return len(self.selected_blocks)
+
+    def block_range(self, block: int) -> tuple[int, int]:
+        if not 0 <= block < self.aligned_block_count:
+            raise IndexError("sampled block is out of range")
+        if self.boundary_alignment:
+            if block == 0:
+                return 0, min(self.boundary_alignment, self.available_positions)
+            start = self.boundary_alignment + (block - 1) * self.block_width
+        else:
+            start = block * self.block_width
+        return start, min(self.available_positions, start + self.block_width)
+
+    @property
+    def ranges(self) -> tuple[tuple[int, int], ...]:
+        return tuple(self.block_range(block) for block in self.selected_blocks)
+
+    @property
+    def contiguous_ranges(self) -> tuple[tuple[int, int], ...]:
+        if not self.selected_blocks:
+            return ()
+        merged: list[tuple[int, int]] = []
+        run_start = self.selected_blocks[0]
+        previous = run_start
+        for block in self.selected_blocks[1:]:
+            if block != previous + 1:
+                merged.append(
+                    (self.block_range(run_start)[0], self.block_range(previous)[1])
+                )
+                run_start = block
+            previous = block
+        merged.append((self.block_range(run_start)[0], self.block_range(previous)[1]))
+        return tuple(merged)
+
+    @property
+    def selected_token_count(self) -> int:
+        if not self.selected_blocks:
+            return 0
+        total = len(self.selected_blocks) * self.block_width
+        selected_edges = []
+        if self.selected_blocks[0] == 0:
+            selected_edges.append(0)
+        last_block = self.aligned_block_count - 1
+        if last_block and self.selected_blocks[-1] == last_block:
+            selected_edges.append(last_block)
+        for block in selected_edges:
+            start, stop = self.block_range(block)
+            total += stop - start - self.block_width
+        return total
+
+    @property
+    def indices(self) -> tuple[int, ...]:
+        """Materialize token positions for compatibility outside snapshot execution."""
+
+        return tuple(
+            position
+            for start, stop in self.contiguous_ranges
+            for position in range(start, stop)
+        )
 
     @property
     def realized_fraction(self) -> float:
-        return len(self.indices) / self.available_positions
+        return self.selected_token_count / self.available_positions
 
 
 def derive_random_block_seed(base_seed: int, *coordinates: int) -> int:
@@ -109,30 +168,31 @@ def sample_uniform_random_blocks(
         alignment = 0
     else:
         alignment = random.Random(seed).randrange(block_width)
-    ranges: list[tuple[int, int]] = []
+    aligned_block_count = (available_positions + block_width - 1) // block_width
     if alignment:
-        ranges.append((0, min(alignment, available_positions)))
-    start = alignment
-    while start < available_positions:
-        stop = min(available_positions, start + block_width)
-        ranges.append((start, stop))
-        start = stop
+        aligned_block_count = 1 + max(
+            0,
+            (available_positions - alignment + block_width - 1) // block_width,
+        )
     if requested_fraction == 1.0:
-        selected_ranges = ranges
+        selected_blocks = tuple(range(aligned_block_count))
     else:
         generator = random.Random(seed)
         generator.randrange(block_width)
-        block_count = max(1, min(len(ranges), round(requested_fraction * len(ranges))))
-        selected_ranges = [
-            ranges[index] for index in sorted(generator.sample(range(len(ranges)), block_count))
-        ]
-    indices = tuple(position for start, stop in selected_ranges for position in range(start, stop))
+        block_count = max(
+            1,
+            min(aligned_block_count, round(requested_fraction * aligned_block_count)),
+        )
+        selected_blocks = tuple(
+            sorted(generator.sample(range(aligned_block_count), block_count))
+        )
     return RandomBlockSelection(
-        indices=indices,
-        ranges=tuple(selected_ranges),
+        selected_blocks=selected_blocks,
         seed=seed,
         boundary_alignment=alignment,
         available_positions=available_positions,
+        block_width=block_width,
+        aligned_block_count=aligned_block_count,
         requested_fraction=requested_fraction,
     )
 

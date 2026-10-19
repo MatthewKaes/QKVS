@@ -19,6 +19,7 @@ from qkvs.harness import (
     _progress_bar,
     _progress_counts,
     _progress_line,
+    _snapshot_range_statistics,
     _tokenized_text_streams,
     export_snapshot_data,
     load_run,
@@ -73,6 +74,34 @@ def test_progress_bar_uses_third_cell_resolution() -> None:
     assert _progress_bar(5, 9, width=3) == "█▓ "
     assert _progress_bar(9, 9, width=3) == "███"
     assert _progress_bar(4.5, 9, width=3) == "█▓ "
+
+
+def test_snapshot_interval_statistics_match_expanded_token_accounting() -> None:
+    layer_ranges = (
+        ((0, 3), (5, 9)),
+        ((2, 7), (9, 11)),
+    )
+    statistics = _snapshot_range_statistics(layer_ranges, available_positions=11)
+    layer_indices = tuple(
+        tuple(position for start, stop in ranges for position in range(start, stop))
+        for ranges in layer_ranges
+    )
+    all_positions = {position for indices in layer_indices for position in indices}
+    histogram = [0] * 20
+    for position in (position for indices in layer_indices for position in indices):
+        histogram[min(19, position * 20 // 11)] += 1
+
+    assert statistics == {
+        "selected_occurrences": sum(len(indices) for indices in layer_indices),
+        "historical_occurrences": sum(
+            position < 10 for indices in layer_indices for position in indices
+        ),
+        "unique_positions": len(all_positions),
+        "historical_unique_positions": len(
+            {position for position in all_positions if position < 10}
+        ),
+        "histogram": histogram,
+    }
 
 
 def test_training_progress_updates_fraction_without_advancing_durable_count() -> None:
