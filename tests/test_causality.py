@@ -134,7 +134,7 @@ def test_same_reader_engine_accepts_rolling_and_bounded_policies() -> None:
     )
 
 
-def _qwen_reader() -> HuggingFaceQwen2Reader:
+def _qwen_reader(dtype: torch.dtype = torch.float32) -> HuggingFaceQwen2Reader:
     torch.manual_seed(29)
     config = Qwen2Config(
         vocab_size=64,
@@ -146,13 +146,13 @@ def _qwen_reader() -> HuggingFaceQwen2Reader:
         max_position_embeddings=64,
         attention_dropout=0.0,
     )
-    model = Qwen2ForCausalLM(config)
+    model = Qwen2ForCausalLM(config).to(dtype=dtype)
     return HuggingFaceQwen2Reader(
         model,
         specification={
             "id": "test-only-random-qwen2",
             "revision": "0" * 40,
-            "dtype": "float32",
+            "dtype": str(dtype).removeprefix("torch."),
             "frozen": True,
         },
     )
@@ -740,6 +740,146 @@ def test_absolute_teacher_coverage_preserves_mass_and_gate_gradients() -> None:
     assert substantial_gradient > 0.0
 
 
+def test_hard_and_soft_multiplicity_preserve_occurrences_and_gradients() -> None:
+    hard = model_module._hard_historical_multiplicity(
+        (1, 2, 1, 2, 2),
+        history_end=6,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    assert hard.tolist() == [0.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+
+    soft = torch.tensor(
+        ((1.2, 1.1, 0.8, 0.7), (4.5, 1.6, 1.2, 0.6)),
+        requires_grad=True,
+    )
+    multiplicity = model_module._soft_historical_multiplicity(
+        soft,
+        history_end=6,
+        window_width=2,
+        historical_token_budget=4,
+        beta=1.25,
+    )
+    assert multiplicity.sum() <= 4.0 + 1e-6
+    (multiplicity * torch.arange(6, dtype=torch.float32).square()).sum().backward()
+    assert soft.grad is not None
+    assert all(torch.count_nonzero(soft.grad[:, field]) for field in (0, 1, 2, 3))
+
+
+def _configured_heatfield_policy(*, gate_raw: float) -> LearnedHeatFieldPolicy:
+    policy = _heatfield_policy()
+    with torch.no_grad():
+        output = policy.decoders[0][-1]
+        output.weight.zero_()
+        output.bias.copy_(
+            torch.tensor(
+                (
+                    2.0,
+                    4.0,
+                    2.0,
+                    gate_raw,
+                    0.0,
+                    4.0,
+                    1.0,
+                    gate_raw,
+                )
+            )
+        )
+    return policy
+
+
+def _hard_aligned_objective(
+    *,
+    gate_raw: float,
+    historical_token_budget: int,
+    dtype: torch.dtype = torch.float32,
+) -> tuple[torch.Tensor, dict[str, object], LearnedHeatFieldPolicy]:
+    reader = _qwen_reader(dtype)
+    policy = _configured_heatfield_policy(gate_raw=gate_raw)
+    stream = _stream(tuple(index % 32 for index in range(10)))
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
+    objective, metrics = reader.heatfield_training_objective(
+        stream,
+        policy,
+        position=6,
+        layer_index=0,
+        rolling_tokens=2,
+        historical_token_budget=historical_token_budget,
+        window_width=2,
+        coverage_weight=0.0,
+        utility_weight=1.0,
+        device=torch.device("cpu"),
+        activation_tokens=6,
+        dense_snapshot=snapshot,
+        snapshot_ownership="train",
+        utility_gradient_estimator="hard_multiplicity_ste",
+    )
+    return objective, metrics, policy
+
+
+@pytest.mark.parametrize(
+    ("dtype", "loss_atol"),
+    ((torch.float32, 1e-5), (torch.bfloat16, 5e-3)),
+)
+def test_hard_multiplicity_estimator_matches_duplicate_hard_reads_and_has_gradients(
+    dtype: torch.dtype,
+    loss_atol: float,
+) -> None:
+    objective, metrics, policy = _hard_aligned_objective(
+        gate_raw=4.0,
+        historical_token_budget=4,
+        dtype=dtype,
+    )
+
+    assert metrics["utility_gradient_estimator"] == "hard_multiplicity_ste"
+    assert metrics["historical_windows"] == ((1, 3), (0, 2))
+    assert metrics["historical_occurrences"] == 4
+    assert metrics["historical_unique_tokens"] == 3
+    assert metrics["overlap_occurrences"] == 1
+    assert metrics["hard_forward_loss_atol"] == loss_atol
+    assert metrics["utility_forward_loss_abs_error"] <= loss_atol
+    assert metrics["soft_next_token_loss"] == pytest.approx(
+        metrics["hard_selected_next_token_loss"],
+        abs=loss_atol,
+    )
+
+    objective.backward()
+    gradient = policy.decoders[0][-1].bias.grad.view(2, 4)
+    assert all(torch.count_nonzero(gradient[:, field]) for field in (0, 1, 3))
+
+    _, budgeted, _ = _hard_aligned_objective(
+        gate_raw=4.0,
+        historical_token_budget=2,
+        dtype=dtype,
+    )
+    assert budgeted["historical_windows"] == ((1, 3),)
+    assert budgeted["historical_occurrences"] == 2
+    assert budgeted["hard_forward_loss_atol"] == loss_atol
+    assert budgeted["utility_forward_loss_abs_error"] <= loss_atol
+
+
+def test_hard_multiplicity_estimator_matches_rolling_when_all_gates_are_inactive() -> None:
+    objective, metrics, _ = _hard_aligned_objective(
+        gate_raw=-4.0,
+        historical_token_budget=4,
+    )
+
+    assert torch.isfinite(objective)
+    assert metrics["historical_windows"] == ()
+    assert metrics["historical_occurrences"] == 0
+    assert metrics["hard_selected_next_token_loss"] == pytest.approx(
+        metrics["rolling_next_token_loss"],
+        abs=1e-7,
+    )
+    assert metrics["utility_forward_loss_abs_error"] <= 1e-5
+
+
 def test_learned_gates_can_decline_all_historical_retrieval() -> None:
     policy = _heatfield_policy()
     with torch.no_grad():
@@ -911,6 +1051,9 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
     )
     assert any(metric["historical_occurrences"] > 0 for metric in training_metrics)
     assert any(metric["hard_utility"] != 0.0 for metric in training_metrics)
+    assert all(
+        metric["utility_gradient_estimator"] == "soft_occupancy" for metric in training_metrics
+    )
     assert all(metric["trajectory"] == "learned_hard_detached" for metric in training_metrics)
     assert all(
         metric["temporal_credit_assignment"] == "target_step_only" for metric in training_metrics
@@ -1030,6 +1173,7 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
             "learning_rate": 0.01,
             "coverage_weight": 1.0,
             "utility_weight": 0.1,
+            "utility_gradient_estimator": "hard_multiplicity_ste",
             "checkpoint_interval": 1,
             "rollout_tokens": 4,
             "targets_per_rollout": 3,
@@ -1136,6 +1280,12 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
         "0": 3,
         "1": 3,
     }
+    assert first["training"]["streaming"]["utility_gradient_estimator"] == "hard_multiplicity_ste"
+    assert all(
+        record["utility_gradient_estimator"] == "hard_multiplicity_ste"
+        and record["utility_forward_loss_abs_error"] <= record["hard_forward_loss_atol"]
+        for record in first["training"]["history"]
+    )
     assert all(record["gradient_norm"] > 0.0 for record in first["training"]["history"])
     assert [record["position"] for record in first["training"]["history"]] == [
         4,

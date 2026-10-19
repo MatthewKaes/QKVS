@@ -178,13 +178,15 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_preserve_pilot_and_authorize_frozen_followup() -> None:
+def test_checked_in_configurations_preserve_prior_runs_and_draft_hard_aligned_study() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     pilot_path = Path("configs/heatfield_learning_study.json")
     followup_path = Path("configs/heatfield_learning_followup.json")
+    hard_aligned_path = Path("configs/heatfield_hard_aligned_study.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
+    hard_aligned = validate_config_file(hard_aligned_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -217,9 +219,21 @@ def test_checked_in_configurations_preserve_pilot_and_authorize_frozen_followup(
         "experiment": "heatfield_absolute_mass_learning_followup",
         "status": "approved",
     }
+    assert hashlib.sha256(followup_path.read_bytes()).hexdigest() == (
+        "ca7258c563dfdc778d3d561839b12c53b7a03e86019aa0893b69abe716165030"
+    )
+    assert hard_aligned == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "heatfield_hard_aligned_learning_study",
+        "status": "draft_not_authorized",
+    }
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
+    hard = json.loads(hard_aligned_path.read_text())
     assert denser["run"]["id"] != pilot["run"]["id"]
     assert denser["model"] == pilot["model"]
     assert denser["data"] == pilot["data"]
@@ -239,6 +253,27 @@ def test_checked_in_configurations_preserve_pilot_and_authorize_frozen_followup(
     assert denser["training"]["steps"] == 40
     assert denser["training"]["steps"] * denser["training"]["targets_per_rollout"] == 960
     assert 960 // 24 == 40
+    assert hard["run"] == {
+        **denser["run"],
+        "id": "heatfield-hard-aligned-learning-study",
+    }
+    assert hard["model"] == denser["model"]
+    assert hard["data"] == denser["data"]
+    assert hard["attention"] == denser["attention"]
+    assert hard["selection"] == denser["selection"]
+    assert hard["evaluation"] == denser["evaluation"]
+    assert hard["execution"] == denser["execution"]
+    assert hard["training"] == {
+        **denser["training"],
+        "utility_gradient_estimator": "hard_multiplicity_ste",
+    }
+
+    invalid = json.loads(json.dumps(hard))
+    invalid["training"]["utility_gradient_estimator"] = "unsupported"
+    assert (
+        "learned heat-field training configuration is incomplete"
+        in validate_config(invalid)["not_runnable_reasons"]
+    )
 
 
 def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() -> None:

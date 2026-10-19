@@ -229,11 +229,21 @@ including overlap, consumes `R`. Inactive gates produce no hard read.
 
 Training keeps Q/K/V frozen. A dense offline teacher supplies historical attention coverage, using
 the differentiable collective occupancy `1 - product(1 - q)` with alpha zero so redundant soft
-overlap earns no additional coverage. A dense causal soft-occupancy attention pass supplies the
-next-token utility gradient; actual hard-window utility is measured separately because integer
-gathers do not transmit address gradients. Fixed gamma and beta are the deliberately narrow first
-implementation. Learned or dynamic gamma/beta remain unsupported alternatives, not silently
-ignored settings.
+overlap earns no additional coverage. The original `soft_occupancy` utility estimator remains
+available. The alternative `hard_multiplicity_ste` estimator executes the ordinary resolver in its
+forward pass, converts every selected occurrence into a per-token count, and adds log-counts to
+attention logits. This is mathematically equivalent to repeating a K/V occurrence, so overlap and
+duplicates retain their actual softmax weight. Its backward pass substitutes Gaussian proposal
+multiplicities whose continuous center, spread, importance, and gate contributions are capped to
+the configured `R`. The explicit hard-gather loss is checked at every target with absolute
+tolerance `1e-5` for FP32 and `5e-3` for FP16/BF16.
+
+This straight-through gradient is deliberately biased: it smooths integer window rounding, the
+gate threshold, importance sorting, and whole-window budget skips. It therefore does not estimate
+the true derivative of the discrete resolver and may be misleading near those boundaries. Hard
+causal rollouts, absolute-mass teacher coverage, frozen Q/K/V, recurrence, and target-local
+truncation are unchanged. Fixed gamma and beta remain the deliberately narrow first
+implementation; learned or dynamic gamma/beta are unsupported rather than silently ignored.
 
 The eligible historical slice retains its **absolute mass from the teacher's full causal
 attention distribution**. It is not renormalized after working memory is removed. Coverage loss is
@@ -350,6 +360,12 @@ calibration versus supervision density. Stop on nonfinite values, identity misma
 exhaustion; resume only unchanged artifacts and never alter the frozen protocol to finish a failed
 run.
 
+`configs/heatfield_hard_aligned_study.json` is a new `draft_not_authorized` comparison. Relative to
+the absolute-mass follow-up, it preserves the model and data identities, seed, W/T/J/R, 40
+streaming updates, 960 target-layer objectives, and all five evaluation conditions; only the
+utility-gradient estimator changes to `hard_multiplicity_ste`. It must not be executed until an
+independent authorization changes its status.
+
 ## Configuration and artifacts
 
 Configurations keep proposal count, window width, and historical token-occurrence budget separate.
@@ -395,6 +411,7 @@ are written atomically. `qkvs status` reports the same durable phase breakdown f
 concurrent run.
 
 `configs/heatfield_learning_study.json` identifies the completed pilot;
-`configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up.
+`configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up;
+`configs/heatfield_hard_aligned_study.json` identifies the unauthorized hard-aligned draft.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

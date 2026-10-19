@@ -419,6 +419,58 @@ def _collective_soft_occupancy(
     return 1.0 - torch.prod(1.0 - proposal_occupancy, dim=0)
 
 
+def _hard_historical_multiplicity(
+    indices: tuple[int, ...],
+    *,
+    history_end: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    counts = torch.zeros(history_end, device=device, dtype=dtype)
+    if indices:
+        index = torch.tensor(indices, device=device, dtype=torch.long)
+        counts.scatter_add_(0, index, torch.ones_like(index, dtype=dtype))
+    return counts
+
+
+def _soft_historical_multiplicity(
+    soft_parameters: Tensor,
+    *,
+    history_end: int,
+    window_width: int,
+    historical_token_budget: int,
+    beta: float,
+) -> Tensor:
+    if history_end < 0 or window_width <= 0 or historical_token_budget < 0 or beta <= 0.0:
+        raise ValueError("soft multiplicity geometry is invalid")
+    if soft_parameters.ndim != 2 or soft_parameters.shape[1] != 4:
+        raise ValueError("soft proposal parameters must have center, spread, weight, and gate")
+    if history_end == 0:
+        return soft_parameters.sum() * torch.zeros(
+            0,
+            device=soft_parameters.device,
+            dtype=soft_parameters.dtype,
+        )
+    positions = torch.arange(
+        history_end,
+        device=soft_parameters.device,
+        dtype=soft_parameters.dtype,
+    )
+    centers = soft_parameters[:, 0:1]
+    widths = (window_width * soft_parameters[:, 1:2] / beta).clamp(1.0, history_end)
+    importance = soft_parameters[:, 2:3]
+    gates = soft_parameters[:, 3:4]
+    distance = (positions.unsqueeze(0) - centers) / (0.5 * widths).clamp_min(0.5)
+    kernels = torch.exp(-0.5 * distance.square())
+    normalized = kernels / kernels.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    proposal_counts = gates * importance * widths * normalized
+    multiplicity = proposal_counts.sum(dim=0)
+    if historical_token_budget == 0:
+        return multiplicity * 0.0
+    scale = (historical_token_budget / multiplicity.sum().clamp_min(1e-12)).clamp(max=1.0)
+    return multiplicity * scale
+
+
 def _absolute_teacher_coverage(
     teacher_history: Tensor,
     collective_occupancy: Tensor,
@@ -443,6 +495,7 @@ _TRAINING_SCALAR_METRICS = (
     "teacher_historical_attention_mass",
     "teacher_historical_attention_covered_mass",
     "teacher_historical_attention_uncovered_mass",
+    "utility_forward_loss_abs_error",
 )
 
 
@@ -477,6 +530,20 @@ def _materialize_training_metrics(records: list[dict[str, Any]]) -> list[dict[st
             for offset in range(0, len(proposals), proposal_shape[1])
         ]
     return records
+
+
+def _validate_hard_forward_parity(records: list[dict[str, Any]], dtype: torch.dtype) -> None:
+    tolerance = 5e-3 if dtype in {torch.float16, torch.bfloat16} else 1e-5
+    for record in records:
+        if record["utility_gradient_estimator"] != "hard_multiplicity_ste":
+            continue
+        record["hard_forward_loss_atol"] = tolerance
+        error = record["utility_forward_loss_abs_error"]
+        if not math.isfinite(error) or error > tolerance:
+            raise RuntimeError(
+                "hard-multiplicity forward loss does not match the explicit hard gather "
+                f"(absolute error {error:.8g}, tolerance {tolerance:.8g})"
+            )
 
 
 def _validate_transition(rolling_tokens: int, activation_tokens: int) -> None:
@@ -887,6 +954,63 @@ class HuggingFaceQwen2Reader:
         attention_logits = attention_logits + availability.log().unsqueeze(0)
         weights = torch.softmax(attention_logits, dim=-1, dtype=torch.float32).to(query.dtype)
         context = torch.einsum("hn,hnd->hd", weights, values)
+        hidden = residual + attention.o_proj(context.reshape(1, 1, -1).contiguous())
+        residual = hidden
+        return residual + layer.mlp(layer.post_attention_layernorm(hidden))
+
+    def _finish_layer_with_hard_multiplicity_ste(
+        self,
+        layer: Any,
+        residual: Tensor,
+        query: Tensor,
+        key_cache: list[Tensor] | _LayerKVCache,
+        value_cache: list[Tensor] | _LayerKVCache,
+        hard_multiplicity: Tensor,
+        soft_multiplicity: Tensor,
+        rolling: tuple[int, ...],
+    ) -> Tensor:
+        history_end = hard_multiplicity.numel()
+        cache_length = len(key_cache)
+        if (
+            soft_multiplicity.shape != hard_multiplicity.shape
+            or len(value_cache) != cache_length
+            or len(rolling) != cache_length - history_end
+            or not rolling
+            or rolling[0] != history_end
+            or rolling[-1] != cache_length - 1
+        ):
+            raise ValueError("historical multiplicities do not span the causal cache")
+        keys = _gather_cache_occurrences(key_cache, None, occurrence_limit=None)
+        values = _gather_cache_occurrences(value_cache, None, occurrence_limit=None)
+        attention = layer.self_attn
+        keys = self._repeat_kv(keys.unsqueeze(0), attention.num_key_value_groups).squeeze(0)
+        values = self._repeat_kv(values.unsqueeze(0), attention.num_key_value_groups).squeeze(0)
+        attention_logits = torch.einsum("hd,hnd->hn", query, keys) * attention.scaling
+        rolling_multiplicity = torch.ones(
+            len(rolling),
+            device=query.device,
+            dtype=soft_multiplicity.dtype,
+        )
+        hard_availability = torch.cat((hard_multiplicity, rolling_multiplicity))
+        soft_availability = torch.cat((soft_multiplicity, rolling_multiplicity))
+        hard_bias = torch.where(
+            hard_availability > 0,
+            hard_availability.clamp_min(1.0).log(),
+            torch.full_like(hard_availability, torch.finfo(hard_availability.dtype).min),
+        )
+        hard_weights = torch.softmax(
+            attention_logits + hard_bias.unsqueeze(0),
+            dim=-1,
+            dtype=torch.float32,
+        ).to(query.dtype)
+        soft_weights = torch.softmax(
+            attention_logits + soft_availability.clamp_min(1e-6).log().unsqueeze(0),
+            dim=-1,
+            dtype=torch.float32,
+        ).to(query.dtype)
+        hard_context = torch.einsum("hn,hnd->hd", hard_weights, values)
+        soft_context = torch.einsum("hn,hnd->hd", soft_weights, values)
+        context = soft_context + (hard_context - soft_context).detach()
         hidden = residual + attention.o_proj(context.reshape(1, 1, -1).contiguous())
         residual = hidden
         return residual + layer.mlp(layer.post_attention_layernorm(hidden))
@@ -1619,10 +1743,13 @@ class HuggingFaceQwen2Reader:
         window_width: int,
         coverage_weight: float,
         utility_weight: float,
+        utility_gradient_estimator: str,
         device: torch.device,
     ) -> tuple[Tensor, dict[str, Any], tuple[int, ...]]:
         if proposal_set.soft_parameters is None:
             raise RuntimeError("learned policy did not provide differentiable proposals")
+        if utility_gradient_estimator not in {"soft_occupancy", "hard_multiplicity_ste"}:
+            raise ValueError("unsupported utility-gradient estimator")
         rolling_start = rolling[0]
         selection = resolve_proposals(
             proposal_set.proposals,
@@ -1702,25 +1829,50 @@ class HuggingFaceQwen2Reader:
             collective_occupancy,
         )
 
-        soft_hidden = self._finish_layer_with_soft_history(
-            target_layer,
-            residual,
-            query,
-            key_cache[layer_index],
-            value_cache[layer_index],
-            collective_occupancy,
-            rolling,
-        )
-        soft_logits = self._complete_current_token(
-            soft_hidden,
+        if utility_gradient_estimator == "soft_occupancy":
+            surrogate_hidden = self._finish_layer_with_soft_history(
+                target_layer,
+                residual,
+                query,
+                key_cache[layer_index],
+                value_cache[layer_index],
+                collective_occupancy,
+                rolling,
+            )
+        else:
+            hard_multiplicity = _hard_historical_multiplicity(
+                selection.indices,
+                history_end=rolling_start,
+                device=soft.device,
+                dtype=soft.dtype,
+            )
+            soft_multiplicity = _soft_historical_multiplicity(
+                soft,
+                history_end=rolling_start,
+                window_width=window_width,
+                historical_token_budget=historical_token_budget,
+                beta=proposal_set.beta,
+            )
+            surrogate_hidden = self._finish_layer_with_hard_multiplicity_ste(
+                target_layer,
+                residual,
+                query,
+                key_cache[layer_index],
+                value_cache[layer_index],
+                hard_multiplicity,
+                soft_multiplicity,
+                rolling,
+            )
+        surrogate_logits = self._complete_current_token(
+            surrogate_hidden,
             start_layer=layer_index + 1,
             position_embeddings=position_embeddings,
             key_cache=key_cache,
             value_cache=value_cache,
             rolling=rolling_index,
         )
-        soft_loss = torch.nn.functional.cross_entropy(soft_logits.unsqueeze(0), target)
-        utility_surrogate = soft_loss - rolling_loss.detach()
+        surrogate_loss = torch.nn.functional.cross_entropy(surrogate_logits.unsqueeze(0), target)
+        utility_surrogate = surrogate_loss - rolling_loss.detach()
         objective = coverage_weight * coverage_loss + utility_weight * utility_surrogate
         windows = tuple((window[0], window[-1] + 1) for window in selection.windows if window)
         metrics = {
@@ -1728,21 +1880,23 @@ class HuggingFaceQwen2Reader:
             "layer": layer_index,
             "objective": objective.detach(),
             "coverage_loss": coverage_loss.detach(),
-            "soft_next_token_loss": soft_loss.detach(),
+            "soft_next_token_loss": surrogate_loss.detach(),
             "rolling_next_token_loss": rolling_loss.detach(),
             "hard_selected_next_token_loss": selected_loss.detach(),
             "hard_utility": (rolling_loss - selected_loss).detach(),
-            "soft_utility": (rolling_loss - soft_loss.detach()).detach(),
-            "soft_hard_utility_gap": (selected_loss - soft_loss.detach()).detach(),
+            "soft_utility": (rolling_loss - surrogate_loss.detach()).detach(),
+            "soft_hard_utility_gap": (selected_loss - surrogate_loss.detach()).detach(),
             "teacher_historical_attention_mass": teacher_weights[:rolling_start].sum().detach(),
             "teacher_historical_attention_covered_mass": coverage_reward.detach(),
             "teacher_historical_attention_uncovered_mass": coverage_loss.detach(),
+            "utility_forward_loss_abs_error": (selected_loss - surrogate_loss.detach()).abs(),
             "historical_windows": windows,
             "historical_occurrences": selection.occurrence_count,
             "historical_unique_tokens": selection.unique_count,
             "overlap_occurrences": selection.occurrence_count - selection.unique_count,
             "proposal_parameters": soft.detach(),
             "coverage_overlap_alpha": 0.0,
+            "utility_gradient_estimator": utility_gradient_estimator,
             "trajectory": "learned_hard_detached",
             "temporal_credit_assignment": "target_step_only",
         }
@@ -1765,6 +1919,7 @@ class HuggingFaceQwen2Reader:
         dense_snapshot: DensePrefillSnapshot | None = None,
         snapshot_ownership: str = "train",
         prefill_chunk_tokens: int = 128,
+        utility_gradient_estimator: str = "soft_occupancy",
     ) -> tuple[Tensor, dict[str, Any]]:
         """Build one truncated causal S objective while the reader remains frozen."""
 
@@ -1970,6 +2125,7 @@ class HuggingFaceQwen2Reader:
             window_width=window_width,
             coverage_weight=coverage_weight,
             utility_weight=utility_weight,
+            utility_gradient_estimator=utility_gradient_estimator,
             device=device,
         )
         metrics.update(
@@ -1982,6 +2138,7 @@ class HuggingFaceQwen2Reader:
             }
         )
         metrics = _materialize_training_metrics([metrics])[0]
+        _validate_hard_forward_parity([metrics], next(self.model.parameters()).dtype)
         return objective, metrics
 
     def heatfield_training_rollout(
@@ -1998,6 +2155,7 @@ class HuggingFaceQwen2Reader:
         coverage_weight: float,
         utility_weight: float,
         device: torch.device,
+        utility_gradient_estimator: str = "soft_occupancy",
     ) -> tuple[list[Tensor], list[dict[str, Any]]]:
         """Advance one causal segment with fixed S weights and target-local gradients."""
 
@@ -2072,6 +2230,7 @@ class HuggingFaceQwen2Reader:
                             window_width=window_width,
                             coverage_weight=coverage_weight,
                             utility_weight=utility_weight,
+                            utility_gradient_estimator=utility_gradient_estimator,
                             device=device,
                         )
                     )
@@ -2122,6 +2281,7 @@ class HuggingFaceQwen2Reader:
             state.next_position = position + 1
 
         metrics = _materialize_training_metrics(metrics)
+        _validate_hard_forward_parity(metrics, next(self.model.parameters()).dtype)
         for target_metrics in metrics:
             target_metrics.update(
                 {
