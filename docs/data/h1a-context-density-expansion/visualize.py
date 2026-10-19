@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import bisect
 import csv
+import shutil
+import struct
+import subprocess
+import zlib
 from html import escape
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _THRESHOLDS = (
-    (0.001, "H1a_KL_0_001.svg"),
-    (0.01, "H1a_KL_0_01.svg"),
+    (0.001, "H1a_KL_0_001"),
+    (0.01, "H1a_KL_0_01"),
 )
 _COLOR_STOPS = (
     (0.00, (68, 1, 84)),
@@ -21,19 +27,23 @@ _COLOR_STOPS = (
 )
 
 
-def _color(value: float) -> str:
+def _color(value: float) -> tuple[int, int, int]:
     value = min(1.0, max(0.0, value))
     for index in range(len(_COLOR_STOPS) - 1):
         lower_value, lower_color = _COLOR_STOPS[index]
         upper_value, upper_color = _COLOR_STOPS[index + 1]
         if value <= upper_value:
             distance = (value - lower_value) / (upper_value - lower_value)
-            rgb = tuple(
+            return tuple(
                 round(lower + distance * (upper - lower))
                 for lower, upper in zip(lower_color, upper_color, strict=True)
             )
-            return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-    return "#fde725"
+    return _COLOR_STOPS[-1][1]
+
+
+def _hex_color(value: float) -> str:
+    red, green, blue = _color(value)
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _load(
@@ -62,26 +72,101 @@ def _load(
     return positions, percentages, cells
 
 
+def _bracket(values: list[float] | list[int], target: float) -> tuple[int, int, float]:
+    upper = bisect.bisect_right(values, target)
+    if upper == 0:
+        return 0, 0, 0.0
+    if upper == len(values):
+        last = len(values) - 1
+        return last, last, 0.0
+    lower = upper - 1
+    distance = values[upper] - values[lower]
+    return lower, upper, (target - values[lower]) / distance
+
+
+def _interpolated_raster(
+    positions: list[int],
+    percentages: list[float],
+    cells: dict[tuple[int, float], dict[str, str]],
+    *,
+    width: int,
+    height: int,
+) -> bytes:
+    x_samples = [
+        positions[0] + column * (positions[-1] - positions[0]) / (width - 1)
+        for column in range(width)
+    ]
+    y_samples = [
+        percentages[-1] - row * (percentages[-1] - percentages[0]) / (height - 1)
+        for row in range(height)
+    ]
+    x_brackets = [_bracket(positions, sample) for sample in x_samples]
+    y_brackets = [_bracket(percentages, sample) for sample in y_samples]
+    probabilities = {key: float(row["success_probability"]) for key, row in cells.items()}
+    raster_rows = []
+    for lower_y, upper_y, y_weight in y_brackets:
+        y0 = percentages[lower_y]
+        y1 = percentages[upper_y]
+        row = bytearray()
+        for lower_x, upper_x, x_weight in x_brackets:
+            x0 = positions[lower_x]
+            x1 = positions[upper_x]
+            lower = probabilities[(x0, y0)] * (1.0 - x_weight) + probabilities[(x1, y0)] * x_weight
+            upper = probabilities[(x0, y1)] * (1.0 - x_weight) + probabilities[(x1, y1)] * x_weight
+            row.extend(_color(lower * (1.0 - y_weight) + upper * y_weight))
+        raster_rows.append(bytes(row))
+    return _png(width, height, raster_rows)
+
+
+def _png(width: int, height: int, rows: list[bytes]) -> bytes:
+    def chunk(name: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + name
+            + payload
+            + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+        )
+
+    raw = b"".join(b"\x00" + row for row in rows)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, level=9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def _text(x: float, y: float, value: str, **attributes: object) -> str:
     properties = " ".join(f'{name.replace("_", "-")}="{item}"' for name, item in attributes.items())
     return f'<text x="{x:.2f}" y="{y:.2f}" {properties}>{escape(value)}</text>'
 
 
-def _render(
-    source: Path,
-    destination: Path,
-    threshold: float,
-) -> None:
+def _render_svg(source: Path, destination: Path, threshold: float) -> None:
     positions, percentages, cells = _load(source, threshold)
-    cell_width = 18
-    cell_height = 26
     plot_x = 105
     plot_y = 92
-    plot_width = cell_width * len(positions)
-    plot_height = cell_height * len(percentages)
+    plot_width = 1080
+    plot_height = 390
     colorbar_x = plot_x + plot_width + 42
     width = colorbar_x + 125
-    height = plot_y + plot_height + 150
+    height = plot_y + plot_height + 112
+    heat = _interpolated_raster(
+        positions,
+        percentages,
+        cells,
+        width=plot_width,
+        height=plot_height,
+    )
+    heat_url = "data:image/png;base64," + base64.b64encode(heat).decode("ascii")
+
+    def x_coordinate(position: float) -> float:
+        return plot_x + (position - positions[0]) / (positions[-1] - positions[0]) * plot_width
+
+    def y_coordinate(coverage: float) -> float:
+        return (
+            plot_y + (percentages[-1] - coverage) / (percentages[-1] - percentages[0]) * plot_height
+        )
+
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         (
@@ -89,11 +174,14 @@ def _render(
             f'viewBox="0 0 {width} {height}" role="img" '
             f'aria-labelledby="title description">'
         ),
-        f'<title id="title">H1a candidate success rate for KL at most {threshold:g} nat</title>',
         (
-            '<desc id="description">Heatmap of random sparse candidates. Columns are sampled token '
-            "positions, rows are requested K/V coverage percentages, and color is the percentage "
-            "of candidates whose KL divergence from full QKV is within the stated tolerance.</desc>"
+            f'<title id="title">H1a interpolated success density for KL at most '
+            f"{threshold:g} nat</title>"
+        ),
+        (
+            '<desc id="description">Bilinearly interpolated random sparse candidate success rate. '
+            "The horizontal axis is absolute token position and the vertical axis is requested K/V "
+            "coverage. Small points mark the actual measured position and coverage pairs.</desc>"
         ),
         '<rect width="100%" height="100%" fill="#10151c"/>',
         _text(
@@ -109,59 +197,67 @@ def _render(
         _text(
             width / 2,
             54,
-            "Heat = successful candidates / attempts; categorical columns show absolute token "
-            "positions",
+            "Bilinear interpolation of successful candidates / attempts; dots are measurements",
             fill="#aeb8c2",
             font_family="sans-serif",
             font_size="12",
             text_anchor="middle",
         ),
+        (
+            f'<image x="{plot_x}" y="{plot_y}" width="{plot_width}" height="{plot_height}" '
+            f'href="{heat_url}" preserveAspectRatio="none"/>'
+        ),
     ]
 
-    rendered_percentages = list(reversed(percentages))
-    for row_index, coverage in enumerate(rendered_percentages):
-        y = plot_y + row_index * cell_height
-        parts.append(
-            _text(
-                plot_x - 10,
-                y + cell_height * 0.68,
-                f"{coverage:g}%",
-                fill="#d9e0e6",
-                font_family="sans-serif",
-                font_size="11",
-                text_anchor="end",
-            )
+    x_ticks = [positions[0], 5000, 10000, 15000, 20000, 25000, 30000, positions[-1]]
+    for position in x_ticks:
+        x = x_coordinate(position)
+        parts.extend(
+            [
+                (
+                    f'<line x1="{x:.2f}" y1="{plot_y}" x2="{x:.2f}" '
+                    f'y2="{plot_y + plot_height}" stroke="#ffffff" opacity="0.12"/>'
+                ),
+                _text(
+                    x,
+                    plot_y + plot_height + 20,
+                    f"{position:,}",
+                    fill="#d9e0e6",
+                    font_family="sans-serif",
+                    font_size="10",
+                    text_anchor="middle",
+                ),
+            ]
         )
-        for column_index, position in enumerate(positions):
-            row = cells[(position, coverage)]
-            probability = float(row["success_probability"])
-            x = plot_x + column_index * cell_width
-            title = (
-                f"token {position}; coverage {coverage:g}%; "
-                f"{row['success_count']}/{row['attempts']} hits ({100.0 * probability:.2f}%)"
-            )
-            parts.append(
-                f'<rect x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" '
-                f'fill="{_color(probability)}" stroke="#10151c" stroke-width="0.5">'
-                f"<title>{escape(title)}</title></rect>"
-            )
-
-    tick_indices = sorted({0, len(positions) - 1, *range(4, len(positions), 5)})
-    for index in tick_indices:
-        x = plot_x + (index + 0.5) * cell_width
-        y = plot_y + plot_height + 10
+    for coverage in percentages:
+        y = y_coordinate(coverage)
+        parts.extend(
+            [
+                (
+                    f'<line x1="{plot_x}" y1="{y:.2f}" x2="{plot_x + plot_width}" '
+                    f'y2="{y:.2f}" stroke="#ffffff" opacity="0.12"/>'
+                ),
+                _text(
+                    plot_x - 10,
+                    y + 4,
+                    f"{coverage:g}%",
+                    fill="#d9e0e6",
+                    font_family="sans-serif",
+                    font_size="10",
+                    text_anchor="end",
+                ),
+            ]
+        )
+    for (position, coverage), row in cells.items():
+        probability = float(row["success_probability"])
+        title = (
+            f"token {position}; coverage {coverage:g}%; "
+            f"{row['success_count']}/{row['attempts']} hits ({100.0 * probability:.2f}%)"
+        )
         parts.append(
-            f'<g transform="translate({x:.2f},{y:.2f}) rotate(55)">'
-            + _text(
-                0,
-                0,
-                str(positions[index]),
-                fill="#c6ced6",
-                font_family="monospace",
-                font_size="10",
-                text_anchor="start",
-            )
-            + "</g>"
+            f'<circle cx="{x_coordinate(position):.2f}" cy="{y_coordinate(coverage):.2f}" '
+            'r="1.25" fill="#ffffff" opacity="0.35">'
+            f"<title>{escape(title)}</title></circle>"
         )
 
     parts.extend(
@@ -169,7 +265,7 @@ def _render(
             _text(
                 plot_x + plot_width / 2,
                 height - 18,
-                "Sampled token position",
+                "Absolute token position",
                 fill="#f2f5f7",
                 font_family="sans-serif",
                 font_size="13",
@@ -198,7 +294,7 @@ def _render(
         y = plot_y + index * plot_height / colorbar_steps
         parts.append(
             f'<rect x="{colorbar_x}" y="{y:.2f}" width="20" '
-            f'height="{plot_height / colorbar_steps + 0.5:.2f}" fill="{_color(probability)}"/>'
+            f'height="{plot_height / colorbar_steps + 0.5:.2f}" fill="{_hex_color(probability)}"/>'
         )
     for probability in (0.0, 0.25, 0.5, 0.75, 1.0):
         y = plot_y + (1.0 - probability) * plot_height
@@ -216,8 +312,17 @@ def _render(
     destination.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
 
+def _render_png(svg: Path, png: Path) -> None:
+    converter = shutil.which("rsvg-convert")
+    if converter is None:
+        raise RuntimeError("rsvg-convert is required to render the labeled PNG output")
+    subprocess.run([converter, svg, "-o", png], check=True)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render H1a KL feasibility heatmaps as SVG")
+    parser = argparse.ArgumentParser(
+        description="Render continuous H1a KL feasibility heatmaps as SVG and PNG"
+    )
     parser.add_argument(
         "--data",
         type=Path,
@@ -228,14 +333,17 @@ def main() -> None:
         "--output-directory",
         type=Path,
         default=_HERE,
-        help="directory for the two generated SVG files",
+        help="directory for the generated SVG and PNG files",
     )
     arguments = parser.parse_args()
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
-    for threshold, filename in _THRESHOLDS:
-        destination = arguments.output_directory / filename
-        _render(arguments.data, destination, threshold)
-        print(destination)
+    for threshold, stem in _THRESHOLDS:
+        svg = arguments.output_directory / f"{stem}.svg"
+        png = arguments.output_directory / f"{stem}.png"
+        _render_svg(arguments.data, svg, threshold)
+        _render_png(svg, png)
+        print(svg)
+        print(png)
 
 
 if __name__ == "__main__":

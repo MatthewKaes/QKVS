@@ -705,7 +705,12 @@ def test_checked_in_h1a_heatmaps_are_reproducible(tmp_path) -> None:
         capture_output=True,
         text=True,
     )
-    for name in ("H1a_KL_0_001.svg", "H1a_KL_0_01.svg"):
+    for name in (
+        "H1a_KL_0_001.svg",
+        "H1a_KL_0_001.png",
+        "H1a_KL_0_01.svg",
+        "H1a_KL_0_01.png",
+    ):
         assert (tmp_path / name).read_bytes() == (directory / name).read_bytes()
 
 
