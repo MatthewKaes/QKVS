@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "h1a_kl_0_01_blue_noise_v2",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "h1a-kl-0-01-blue-noise-v2",
     "seed": 20261019

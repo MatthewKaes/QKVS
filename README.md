@@ -487,14 +487,14 @@ the requested plain CSV, while `result.json` retains compact identity, resume, a
 frontier metadata. Each CSV row carries its run, source revision, configuration hash, and sampler
 identity. The harness does not write per-cell JSON or retain raw candidate trials.
 
-The fresh 500-trial v2 configuration is `draft_not_authorized` with a new run identity.
+The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
+a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional Poisson-disk sampling
 for 200 positions over `[512, 32767)`, with a 112-token minimum separation. It evaluates 22
 coverage values from 10% through 99.5%, including half-percentage resolution in the likely-hit
 region. The 100% sampled candidate is omitted; the full-QKV reference required to calculate KL is
 still evaluated once per position. Completed-position prefix snapshots are discarded so the 200
-fresh prefixes do not accumulate on disk. After independent authorization, one command writes the
-initially absent CSV:
+fresh prefixes do not accumulate on disk. The authorized command writes the initially absent CSV:
 
 ```bash
 ./run.sh configs/h1a_kl_0_01_blue_noise_v2.json \
