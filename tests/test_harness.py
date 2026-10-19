@@ -692,6 +692,23 @@ def test_checked_in_h1a_expansion_export_is_complete_and_compressed() -> None:
         assert sum(1 for _ in csv.DictReader(source)) == 5760
 
 
+def test_checked_in_h1a_heatmaps_are_reproducible(tmp_path) -> None:
+    directory = Path("docs/data/h1a-context-density-expansion")
+    subprocess.run(
+        [
+            sys.executable,
+            directory / "visualize.py",
+            "--output-directory",
+            tmp_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for name in ("H1a_KL_0_001.svg", "H1a_KL_0_01.svg"):
+        assert (tmp_path / name).read_bytes() == (directory / name).read_bytes()
+
+
 def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() -> None:
     result = {
         "source_identity": {

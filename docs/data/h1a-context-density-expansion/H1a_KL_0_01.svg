@@ -1,0 +1,861 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1352" height="554" viewBox="0 0 1352 554" role="img" aria-labelledby="title description">
+<title id="title">H1a candidate success rate for KL at most 0.01 nat</title>
+<desc id="description">Heatmap of random sparse candidates. Columns are sampled token positions, rows are requested K/V coverage percentages, and color is the percentage of candidates whose KL divergence from full QKV is within the stated tolerance.</desc>
+<rect width="100%" height="100%" fill="#10151c"/>
+<text x="676.00" y="30.00" fill="#f2f5f7" font-family="sans-serif" font-size="20" font-weight="600" text-anchor="middle">H1a random-block feasibility — KL ≤ 0.01 nat</text>
+<text x="676.00" y="54.00" fill="#aeb8c2" font-family="sans-serif" font-size="12" text-anchor="middle">Heat = successful candidates / attempts; categorical columns show absolute token positions</text>
+<text x="95.00" y="109.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">100%</text>
+<rect x="105" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="123" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="141" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="159" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="177" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="195" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="213" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="231" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="249" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="267" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="285" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="303" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="321" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="339" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="357" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="375" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="393" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="411" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="429" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="447" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="465" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="483" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="501" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="519" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="537" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="555" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="573" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="591" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="609" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="627" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="645" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="663" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="681" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="699" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="717" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="735" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="753" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="771" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="789" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="807" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="825" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="843" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="861" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="879" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="897" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="915" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="933" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="951" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="969" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="987" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1005" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1023" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1041" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1059" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1077" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1095" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1113" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1131" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1149" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<rect x="1167" y="92" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 100%; 1/1 hits (100.00%)</title></rect>
+<text x="95.00" y="135.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">99%</text>
+<rect x="105" y="118" width="18" height="26" fill="#61ca61" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 99%; 302/400 hits (75.50%)</title></rect>
+<rect x="123" y="118" width="18" height="26" fill="#79ce58" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 99%; 317/400 hits (79.25%)</title></rect>
+<rect x="141" y="118" width="18" height="26" fill="#f3e529" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 99%; 394/400 hits (98.50%)</title></rect>
+<rect x="159" y="118" width="18" height="26" fill="#e8e32d" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 99%; 387/400 hits (96.75%)</title></rect>
+<rect x="177" y="118" width="18" height="26" fill="#a4d647" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 99%; 344/400 hits (86.00%)</title></rect>
+<rect x="195" y="118" width="18" height="26" fill="#b1d942" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 99%; 352/400 hits (88.00%)</title></rect>
+<rect x="213" y="118" width="18" height="26" fill="#ede42b" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 99%; 390/400 hits (97.50%)</title></rect>
+<rect x="231" y="118" width="18" height="26" fill="#81d055" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 99%; 322/400 hits (80.50%)</title></rect>
+<rect x="249" y="118" width="18" height="26" fill="#d0df36" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 99%; 372/400 hits (93.00%)</title></rect>
+<rect x="267" y="118" width="18" height="26" fill="#59c466" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 99%; 291/400 hits (72.75%)</title></rect>
+<rect x="285" y="118" width="18" height="26" fill="#94d34d" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 99%; 334/400 hits (83.50%)</title></rect>
+<rect x="303" y="118" width="18" height="26" fill="#c4dc3b" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 99%; 364/400 hits (91.00%)</title></rect>
+<rect x="321" y="118" width="18" height="26" fill="#87d152" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 99%; 326/400 hits (81.50%)</title></rect>
+<rect x="339" y="118" width="18" height="26" fill="#81d055" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 99%; 322/400 hits (80.50%)</title></rect>
+<rect x="357" y="118" width="18" height="26" fill="#a6d647" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 99%; 345/400 hits (86.25%)</title></rect>
+<rect x="375" y="118" width="18" height="26" fill="#59c466" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 99%; 291/400 hits (72.75%)</title></rect>
+<rect x="393" y="118" width="18" height="26" fill="#eae32c" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 99%; 388/400 hits (97.00%)</title></rect>
+<rect x="411" y="118" width="18" height="26" fill="#5ec962" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 99%; 300/400 hits (75.00%)</title></rect>
+<rect x="429" y="118" width="18" height="26" fill="#5cc763" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 99%; 297/400 hits (74.25%)</title></rect>
+<rect x="447" y="118" width="18" height="26" fill="#a7d746" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 99%; 346/400 hits (86.50%)</title></rect>
+<rect x="465" y="118" width="18" height="26" fill="#73cd5a" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 99%; 313/400 hits (78.25%)</title></rect>
+<rect x="483" y="118" width="18" height="26" fill="#94d34d" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 99%; 334/400 hits (83.50%)</title></rect>
+<rect x="501" y="118" width="18" height="26" fill="#e8e32d" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 99%; 387/400 hits (96.75%)</title></rect>
+<rect x="519" y="118" width="18" height="26" fill="#b7da40" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 99%; 356/400 hits (89.00%)</title></rect>
+<rect x="537" y="118" width="18" height="26" fill="#cadd39" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 99%; 368/400 hits (92.00%)</title></rect>
+<rect x="555" y="118" width="18" height="26" fill="#5dc863" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 99%; 298/400 hits (74.50%)</title></rect>
+<rect x="573" y="118" width="18" height="26" fill="#89d152" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 99%; 327/400 hits (81.75%)</title></rect>
+<rect x="591" y="118" width="18" height="26" fill="#c5dc3a" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 99%; 365/400 hits (91.25%)</title></rect>
+<rect x="609" y="118" width="18" height="26" fill="#a6d647" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 99%; 345/400 hits (86.25%)</title></rect>
+<rect x="627" y="118" width="18" height="26" fill="#efe42a" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 99%; 391/400 hits (97.75%)</title></rect>
+<rect x="645" y="118" width="18" height="26" fill="#a1d648" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 99%; 342/400 hits (85.50%)</title></rect>
+<rect x="663" y="118" width="18" height="26" fill="#a6d647" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 99%; 345/400 hits (86.25%)</title></rect>
+<rect x="681" y="118" width="18" height="26" fill="#e4e22f" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 99%; 384/400 hits (96.00%)</title></rect>
+<rect x="699" y="118" width="18" height="26" fill="#8bd151" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 99%; 328/400 hits (82.00%)</title></rect>
+<rect x="717" y="118" width="18" height="26" fill="#bada3f" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 99%; 358/400 hits (89.50%)</title></rect>
+<rect x="735" y="118" width="18" height="26" fill="#e7e32e" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 99%; 386/400 hits (96.50%)</title></rect>
+<rect x="753" y="118" width="18" height="26" fill="#9fd549" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 99%; 341/400 hits (85.25%)</title></rect>
+<rect x="771" y="118" width="18" height="26" fill="#87d152" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 99%; 326/400 hits (81.50%)</title></rect>
+<rect x="789" y="118" width="18" height="26" fill="#c7dd3a" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 99%; 366/400 hits (91.50%)</title></rect>
+<rect x="807" y="118" width="18" height="26" fill="#73cd5a" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 99%; 313/400 hits (78.25%)</title></rect>
+<rect x="825" y="118" width="18" height="26" fill="#a1d648" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 99%; 342/400 hits (85.50%)</title></rect>
+<rect x="843" y="118" width="18" height="26" fill="#c4dc3b" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 99%; 364/400 hits (91.00%)</title></rect>
+<rect x="861" y="118" width="18" height="26" fill="#59c565" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 99%; 292/400 hits (73.00%)</title></rect>
+<rect x="879" y="118" width="18" height="26" fill="#cdde37" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 99%; 370/400 hits (92.50%)</title></rect>
+<rect x="897" y="118" width="18" height="26" fill="#a9d745" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 99%; 347/400 hits (86.75%)</title></rect>
+<rect x="915" y="118" width="18" height="26" fill="#c7dd3a" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 99%; 366/400 hits (91.50%)</title></rect>
+<rect x="933" y="118" width="18" height="26" fill="#a1d648" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 99%; 342/400 hits (85.50%)</title></rect>
+<rect x="951" y="118" width="18" height="26" fill="#8cd250" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 99%; 329/400 hits (82.25%)</title></rect>
+<rect x="969" y="118" width="18" height="26" fill="#38a67c" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 99%; 238/400 hits (59.50%)</title></rect>
+<rect x="987" y="118" width="18" height="26" fill="#bfdb3d" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 99%; 361/400 hits (90.25%)</title></rect>
+<rect x="1005" y="118" width="18" height="26" fill="#a9d745" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 99%; 347/400 hits (86.75%)</title></rect>
+<rect x="1023" y="118" width="18" height="26" fill="#dae032" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 99%; 378/400 hits (94.50%)</title></rect>
+<rect x="1041" y="118" width="18" height="26" fill="#6bcb5d" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 99%; 308/400 hits (77.00%)</title></rect>
+<rect x="1059" y="118" width="18" height="26" fill="#c4dc3b" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 99%; 364/400 hits (91.00%)</title></rect>
+<rect x="1077" y="118" width="18" height="26" fill="#afd843" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 99%; 351/400 hits (87.75%)</title></rect>
+<rect x="1095" y="118" width="18" height="26" fill="#96d44d" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 99%; 335/400 hits (83.75%)</title></rect>
+<rect x="1113" y="118" width="18" height="26" fill="#b9da3f" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 99%; 357/400 hits (89.25%)</title></rect>
+<rect x="1131" y="118" width="18" height="26" fill="#52be6a" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 99%; 281/400 hits (70.25%)</title></rect>
+<rect x="1149" y="118" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 99%; 400/400 hits (100.00%)</title></rect>
+<rect x="1167" y="118" width="18" height="26" fill="#ccde38" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 99%; 369/400 hits (92.25%)</title></rect>
+<text x="95.00" y="161.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">95%</text>
+<rect x="105" y="144" width="18" height="26" fill="#3d4280" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 95%; 80/400 hits (20.00%)</title></rect>
+<rect x="123" y="144" width="18" height="26" fill="#3e3678" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 95%; 66/400 hits (16.50%)</title></rect>
+<rect x="141" y="144" width="18" height="26" fill="#aad745" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 95%; 348/400 hits (87.00%)</title></rect>
+<rect x="159" y="144" width="18" height="26" fill="#86d053" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 95%; 325/400 hits (81.25%)</title></rect>
+<rect x="177" y="144" width="18" height="26" fill="#34628b" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 95%; 125/400 hits (31.25%)</title></rect>
+<rect x="195" y="144" width="18" height="26" fill="#24898c" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 95%; 187/400 hits (46.75%)</title></rect>
+<rect x="213" y="144" width="18" height="26" fill="#9ed54a" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 95%; 340/400 hits (85.00%)</title></rect>
+<rect x="231" y="144" width="18" height="26" fill="#39578b" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 95%; 108/400 hits (27.00%)</title></rect>
+<rect x="249" y="144" width="18" height="26" fill="#41af76" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 95%; 253/400 hits (63.25%)</title></rect>
+<rect x="267" y="144" width="18" height="26" fill="#40286e" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 95%; 48/400 hits (12.00%)</title></rect>
+<rect x="285" y="144" width="18" height="26" fill="#3b4e88" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 95%; 95/400 hits (23.75%)</title></rect>
+<rect x="303" y="144" width="18" height="26" fill="#2a7b8c" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 95%; 165/400 hits (41.25%)</title></rect>
+<rect x="321" y="144" width="18" height="26" fill="#385a8b" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 95%; 113/400 hits (28.25%)</title></rect>
+<rect x="339" y="144" width="18" height="26" fill="#3b528b" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 95%; 100/400 hits (25.00%)</title></rect>
+<rect x="357" y="144" width="18" height="26" fill="#27838c" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 95%; 177/400 hits (44.25%)</title></rect>
+<rect x="375" y="144" width="18" height="26" fill="#3c4c87" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 95%; 93/400 hits (23.25%)</title></rect>
+<rect x="393" y="144" width="18" height="26" fill="#54c069" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 95%; 284/400 hits (71.00%)</title></rect>
+<rect x="411" y="144" width="18" height="26" fill="#3c4b86" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 95%; 91/400 hits (22.75%)</title></rect>
+<rect x="429" y="144" width="18" height="26" fill="#3d3d7d" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 95%; 74/400 hits (18.50%)</title></rect>
+<rect x="447" y="144" width="18" height="26" fill="#2c758c" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 95%; 156/400 hits (39.00%)</title></rect>
+<rect x="465" y="144" width="18" height="26" fill="#3b528b" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 95%; 100/400 hits (25.00%)</title></rect>
+<rect x="483" y="144" width="18" height="26" fill="#2e718b" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 95%; 149/400 hits (37.25%)</title></rect>
+<rect x="501" y="144" width="18" height="26" fill="#6fcc5b" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 95%; 311/400 hits (77.75%)</title></rect>
+<rect x="519" y="144" width="18" height="26" fill="#2b788c" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 95%; 161/400 hits (40.25%)</title></rect>
+<rect x="537" y="144" width="18" height="26" fill="#39a77c" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 95%; 239/400 hits (59.75%)</title></rect>
+<rect x="555" y="144" width="18" height="26" fill="#3f2f73" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 95%; 57/400 hits (14.25%)</title></rect>
+<rect x="573" y="144" width="18" height="26" fill="#3d407f" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 95%; 78/400 hits (19.50%)</title></rect>
+<rect x="591" y="144" width="18" height="26" fill="#238d8c" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 95%; 193/400 hits (48.25%)</title></rect>
+<rect x="609" y="144" width="18" height="26" fill="#28818c" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 95%; 174/400 hits (43.50%)</title></rect>
+<rect x="627" y="144" width="18" height="26" fill="#7bce57" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 95%; 318/400 hits (79.50%)</title></rect>
+<rect x="645" y="144" width="18" height="26" fill="#3a548b" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 95%; 103/400 hits (25.75%)</title></rect>
+<rect x="663" y="144" width="18" height="26" fill="#297d8c" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 95%; 168/400 hits (42.00%)</title></rect>
+<rect x="681" y="144" width="18" height="26" fill="#53bf6a" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 95%; 282/400 hits (70.50%)</title></rect>
+<rect x="699" y="144" width="18" height="26" fill="#3a558b" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 95%; 104/400 hits (26.00%)</title></rect>
+<rect x="717" y="144" width="18" height="26" fill="#299887" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 95%; 213/400 hits (53.25%)</title></rect>
+<rect x="735" y="144" width="18" height="26" fill="#5dc862" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 95%; 299/400 hits (74.75%)</title></rect>
+<rect x="753" y="144" width="18" height="26" fill="#316b8b" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 95%; 140/400 hits (35.00%)</title></rect>
+<rect x="771" y="144" width="18" height="26" fill="#316b8b" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 95%; 139/400 hits (34.75%)</title></rect>
+<rect x="789" y="144" width="18" height="26" fill="#2c9b84" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 95%; 218/400 hits (54.50%)</title></rect>
+<rect x="807" y="144" width="18" height="26" fill="#35608b" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 95%; 122/400 hits (30.50%)</title></rect>
+<rect x="825" y="144" width="18" height="26" fill="#2e728c" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 95%; 150/400 hits (37.50%)</title></rect>
+<rect x="843" y="144" width="18" height="26" fill="#26858c" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 95%; 181/400 hits (45.25%)</title></rect>
+<rect x="861" y="144" width="18" height="26" fill="#402169" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 95%; 39/400 hits (9.75%)</title></rect>
+<rect x="879" y="144" width="18" height="26" fill="#52be6a" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 95%; 281/400 hits (70.25%)</title></rect>
+<rect x="897" y="144" width="18" height="26" fill="#297d8c" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 95%; 168/400 hits (42.00%)</title></rect>
+<rect x="915" y="144" width="18" height="26" fill="#299887" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 95%; 213/400 hits (53.25%)</title></rect>
+<rect x="933" y="144" width="18" height="26" fill="#2b788c" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 95%; 160/400 hits (40.00%)</title></rect>
+<rect x="951" y="144" width="18" height="26" fill="#306c8b" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 95%; 142/400 hits (35.50%)</title></rect>
+<rect x="969" y="144" width="18" height="26" fill="#3f3074" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 95%; 58/400 hits (14.50%)</title></rect>
+<rect x="987" y="144" width="18" height="26" fill="#2a7b8c" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 95%; 165/400 hits (41.25%)</title></rect>
+<rect x="1005" y="144" width="18" height="26" fill="#2a7b8c" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 95%; 165/400 hits (41.25%)</title></rect>
+<rect x="1023" y="144" width="18" height="26" fill="#33a27f" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 95%; 230/400 hits (57.50%)</title></rect>
+<rect x="1041" y="144" width="18" height="26" fill="#3d3c7c" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 95%; 73/400 hits (18.25%)</title></rect>
+<rect x="1059" y="144" width="18" height="26" fill="#22928c" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 95%; 201/400 hits (50.25%)</title></rect>
+<rect x="1077" y="144" width="18" height="26" fill="#2b798c" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 95%; 162/400 hits (40.50%)</title></rect>
+<rect x="1095" y="144" width="18" height="26" fill="#2f6e8b" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 95%; 145/400 hits (36.25%)</title></rect>
+<rect x="1113" y="144" width="18" height="26" fill="#269589" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 95%; 208/400 hits (52.00%)</title></rect>
+<rect x="1131" y="144" width="18" height="26" fill="#40276e" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 95%; 47/400 hits (11.75%)</title></rect>
+<rect x="1149" y="144" width="18" height="26" fill="#fde725" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 95%; 400/400 hits (100.00%)</title></rect>
+<rect x="1167" y="144" width="18" height="26" fill="#2b9b85" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 95%; 217/400 hits (54.25%)</title></rect>
+<text x="95.00" y="187.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">90%</text>
+<rect x="105" y="170" width="18" height="26" fill="#430657" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 90%; 6/400 hits (1.50%)</title></rect>
+<rect x="123" y="170" width="18" height="26" fill="#430a5a" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 90%; 11/400 hits (2.75%)</title></rect>
+<rect x="141" y="170" width="18" height="26" fill="#48b571" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 90%; 264/400 hits (66.00%)</title></rect>
+<rect x="159" y="170" width="18" height="26" fill="#47b472" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 90%; 263/400 hits (65.75%)</title></rect>
+<rect x="177" y="170" width="18" height="26" fill="#42115f" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 90%; 20/400 hits (5.00%)</title></rect>
+<rect x="195" y="170" width="18" height="26" fill="#3e3376" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 90%; 62/400 hits (15.50%)</title></rect>
+<rect x="213" y="170" width="18" height="26" fill="#40ae77" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 90%; 251/400 hits (62.75%)</title></rect>
+<rect x="231" y="170" width="18" height="26" fill="#421260" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 90%; 21/400 hits (5.25%)</title></rect>
+<rect x="249" y="170" width="18" height="26" fill="#32698b" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 90%; 136/400 hits (34.00%)</title></rect>
+<rect x="267" y="170" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 90%; 3/400 hits (0.75%)</title></rect>
+<rect x="285" y="170" width="18" height="26" fill="#430d5c" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 90%; 15/400 hits (3.75%)</title></rect>
+<rect x="303" y="170" width="18" height="26" fill="#40216a" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 90%; 40/400 hits (10.00%)</title></rect>
+<rect x="321" y="170" width="18" height="26" fill="#411864" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 90%; 29/400 hits (7.25%)</title></rect>
+<rect x="339" y="170" width="18" height="26" fill="#430e5d" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 90%; 16/400 hits (4.00%)</title></rect>
+<rect x="357" y="170" width="18" height="26" fill="#3e3678" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 90%; 66/400 hits (16.50%)</title></rect>
+<rect x="375" y="170" width="18" height="26" fill="#430b5b" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 90%; 12/400 hits (3.00%)</title></rect>
+<rect x="393" y="170" width="18" height="26" fill="#2b788c" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 90%; 161/400 hits (40.25%)</title></rect>
+<rect x="411" y="170" width="18" height="26" fill="#430c5b" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 90%; 13/400 hits (3.25%)</title></rect>
+<rect x="429" y="170" width="18" height="26" fill="#440557" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 90%; 5/400 hits (1.25%)</title></rect>
+<rect x="447" y="170" width="18" height="26" fill="#40236b" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 90%; 42/400 hits (10.50%)</title></rect>
+<rect x="465" y="170" width="18" height="26" fill="#420f5d" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 90%; 17/400 hits (4.25%)</title></rect>
+<rect x="483" y="170" width="18" height="26" fill="#402169" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 90%; 39/400 hits (9.75%)</title></rect>
+<rect x="501" y="170" width="18" height="26" fill="#238d8c" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 90%; 194/400 hits (48.50%)</title></rect>
+<rect x="519" y="170" width="18" height="26" fill="#40256c" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 90%; 44/400 hits (11.00%)</title></rect>
+<rect x="537" y="170" width="18" height="26" fill="#3c4784" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 90%; 87/400 hits (21.75%)</title></rect>
+<rect x="555" y="170" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 90%; 1/400 hits (0.25%)</title></rect>
+<rect x="573" y="170" width="18" height="26" fill="#430758" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 90%; 7/400 hits (1.75%)</title></rect>
+<rect x="591" y="170" width="18" height="26" fill="#40256c" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 90%; 44/400 hits (11.00%)</title></rect>
+<rect x="609" y="170" width="18" height="26" fill="#3e3678" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 90%; 66/400 hits (16.50%)</title></rect>
+<rect x="627" y="170" width="18" height="26" fill="#3ba97a" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 90%; 242/400 hits (60.50%)</title></rect>
+<rect x="645" y="170" width="18" height="26" fill="#430b5b" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 90%; 12/400 hits (3.00%)</title></rect>
+<rect x="663" y="170" width="18" height="26" fill="#40266d" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 90%; 46/400 hits (11.50%)</title></rect>
+<rect x="681" y="170" width="18" height="26" fill="#33668b" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 90%; 132/400 hits (33.00%)</title></rect>
+<rect x="699" y="170" width="18" height="26" fill="#430d5c" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 90%; 15/400 hits (3.75%)</title></rect>
+<rect x="717" y="170" width="18" height="26" fill="#3b4e88" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 90%; 95/400 hits (23.75%)</title></rect>
+<rect x="735" y="170" width="18" height="26" fill="#238d8c" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 90%; 193/400 hits (48.25%)</title></rect>
+<rect x="753" y="170" width="18" height="26" fill="#421562" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 90%; 25/400 hits (6.25%)</title></rect>
+<rect x="771" y="170" width="18" height="26" fill="#40246c" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 90%; 43/400 hits (10.75%)</title></rect>
+<rect x="789" y="170" width="18" height="26" fill="#3e3376" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 90%; 62/400 hits (15.50%)</title></rect>
+<rect x="807" y="170" width="18" height="26" fill="#421662" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 90%; 26/400 hits (6.50%)</title></rect>
+<rect x="825" y="170" width="18" height="26" fill="#3f2c71" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 90%; 53/400 hits (13.25%)</title></rect>
+<rect x="843" y="170" width="18" height="26" fill="#411f68" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 90%; 37/400 hits (9.25%)</title></rect>
+<rect x="861" y="170" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 90%; 1/400 hits (0.25%)</title></rect>
+<rect x="879" y="170" width="18" height="26" fill="#27838c" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 90%; 177/400 hits (44.25%)</title></rect>
+<rect x="897" y="170" width="18" height="26" fill="#40266d" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 90%; 46/400 hits (11.50%)</title></rect>
+<rect x="915" y="170" width="18" height="26" fill="#3d4280" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 90%; 80/400 hits (20.00%)</title></rect>
+<rect x="933" y="170" width="18" height="26" fill="#402169" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 90%; 39/400 hits (9.75%)</title></rect>
+<rect x="951" y="170" width="18" height="26" fill="#430c5b" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 90%; 13/400 hits (3.25%)</title></rect>
+<rect x="969" y="170" width="18" height="26" fill="#430b5b" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 90%; 12/400 hits (3.00%)</title></rect>
+<rect x="987" y="170" width="18" height="26" fill="#411e68" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 90%; 36/400 hits (9.00%)</title></rect>
+<rect x="1005" y="170" width="18" height="26" fill="#40216a" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 90%; 40/400 hits (10.00%)</title></rect>
+<rect x="1023" y="170" width="18" height="26" fill="#34628b" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 90%; 125/400 hits (31.25%)</title></rect>
+<rect x="1041" y="170" width="18" height="26" fill="#430859" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 90%; 9/400 hits (2.25%)</title></rect>
+<rect x="1059" y="170" width="18" height="26" fill="#3f3174" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 90%; 59/400 hits (14.75%)</title></rect>
+<rect x="1077" y="170" width="18" height="26" fill="#3f2e73" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 90%; 56/400 hits (14.00%)</title></rect>
+<rect x="1095" y="170" width="18" height="26" fill="#411d67" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 90%; 34/400 hits (8.50%)</title></rect>
+<rect x="1113" y="170" width="18" height="26" fill="#3b508a" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 90%; 98/400 hits (24.50%)</title></rect>
+<rect x="1131" y="170" width="18" height="26" fill="#440557" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 90%; 5/400 hits (1.25%)</title></rect>
+<rect x="1149" y="170" width="18" height="26" fill="#fae626" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 90%; 398/400 hits (99.50%)</title></rect>
+<rect x="1167" y="170" width="18" height="26" fill="#38598b" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 90%; 111/400 hits (27.75%)</title></rect>
+<text x="95.00" y="213.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">80%</text>
+<rect x="105" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="196" width="18" height="26" fill="#365f8b" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 80%; 121/400 hits (30.25%)</title></rect>
+<rect x="159" y="196" width="18" height="26" fill="#2e718b" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 80%; 149/400 hits (37.25%)</title></rect>
+<rect x="177" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="196" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 80%; 3/400 hits (0.75%)</title></rect>
+<rect x="213" y="196" width="18" height="26" fill="#316a8b" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 80%; 138/400 hits (34.50%)</title></rect>
+<rect x="231" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="249" y="196" width="18" height="26" fill="#411c66" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 80%; 33/400 hits (8.25%)</title></rect>
+<rect x="267" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="321" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="339" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="196" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 80%; 3/400 hits (0.75%)</title></rect>
+<rect x="375" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="196" width="18" height="26" fill="#40256d" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 80%; 45/400 hits (11.25%)</title></rect>
+<rect x="411" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="196" width="18" height="26" fill="#40216a" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 80%; 40/400 hits (10.00%)</title></rect>
+<rect x="519" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="537" y="196" width="18" height="26" fill="#430859" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 80%; 9/400 hits (2.25%)</title></rect>
+<rect x="555" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="196" width="18" height="26" fill="#430758" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 80%; 7/400 hits (1.75%)</title></rect>
+<rect x="627" y="196" width="18" height="26" fill="#3c4582" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 80%; 84/400 hits (21.00%)</title></rect>
+<rect x="645" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="196" width="18" height="26" fill="#42105e" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 80%; 19/400 hits (4.75%)</title></rect>
+<rect x="699" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="717" y="196" width="18" height="26" fill="#430e5d" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 80%; 16/400 hits (4.00%)</title></rect>
+<rect x="735" y="196" width="18" height="26" fill="#40226b" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 80%; 41/400 hits (10.25%)</title></rect>
+<rect x="753" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="196" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 80%; 3/400 hits (0.75%)</title></rect>
+<rect x="789" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="196" width="18" height="26" fill="#440557" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 80%; 5/400 hits (1.25%)</title></rect>
+<rect x="843" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="861" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="196" width="18" height="26" fill="#3d3e7d" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 80%; 75/400 hits (18.75%)</title></rect>
+<rect x="897" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="196" width="18" height="26" fill="#42115f" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 80%; 20/400 hits (5.00%)</title></rect>
+<rect x="933" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="951" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="196" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 80%; 1/400 hits (0.25%)</title></rect>
+<rect x="1005" y="196" width="18" height="26" fill="#440355" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 80%; 2/400 hits (0.50%)</title></rect>
+<rect x="1023" y="196" width="18" height="26" fill="#43095a" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 80%; 10/400 hits (2.50%)</title></rect>
+<rect x="1041" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="196" width="18" height="26" fill="#440557" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 80%; 5/400 hits (1.25%)</title></rect>
+<rect x="1077" y="196" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 80%; 3/400 hits (0.75%)</title></rect>
+<rect x="1095" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="196" width="18" height="26" fill="#430d5c" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 80%; 15/400 hits (3.75%)</title></rect>
+<rect x="1131" y="196" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 80%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="196" width="18" height="26" fill="#ece42c" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 80%; 389/400 hits (97.25%)</title></rect>
+<rect x="1167" y="196" width="18" height="26" fill="#430e5d" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 80%; 16/400 hits (4.00%)</title></rect>
+<text x="95.00" y="239.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">70%</text>
+<rect x="105" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="222" width="18" height="26" fill="#411d67" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 70%; 34/400 hits (8.50%)</title></rect>
+<rect x="159" y="222" width="18" height="26" fill="#3e3b7c" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 70%; 72/400 hits (18.00%)</title></rect>
+<rect x="177" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="222" width="18" height="26" fill="#3f2a70" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 70%; 51/400 hits (12.75%)</title></rect>
+<rect x="231" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="222" width="18" height="26" fill="#430859" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 70%; 9/400 hits (2.25%)</title></rect>
+<rect x="267" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="222" width="18" height="26" fill="#430b5b" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 70%; 12/400 hits (3.00%)</title></rect>
+<rect x="411" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="222" width="18" height="26" fill="#43095a" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 70%; 10/400 hits (2.50%)</title></rect>
+<rect x="519" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="222" width="18" height="26" fill="#440355" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 70%; 2/400 hits (0.50%)</title></rect>
+<rect x="555" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="222" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 70%; 3/400 hits (0.75%)</title></rect>
+<rect x="627" y="222" width="18" height="26" fill="#421461" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 70%; 24/400 hits (6.00%)</title></rect>
+<rect x="645" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="222" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 70%; 3/400 hits (0.75%)</title></rect>
+<rect x="699" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="222" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 70%; 3/400 hits (0.75%)</title></rect>
+<rect x="735" y="222" width="18" height="26" fill="#440356" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 70%; 3/400 hits (0.75%)</title></rect>
+<rect x="753" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="222" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 70%; 1/400 hits (0.25%)</title></rect>
+<rect x="807" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="222" width="18" height="26" fill="#411864" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 70%; 29/400 hits (7.25%)</title></rect>
+<rect x="897" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="222" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 70%; 1/400 hits (0.25%)</title></rect>
+<rect x="933" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="222" width="18" height="26" fill="#9ad44b" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 70%; 338/400 hits (84.50%)</title></rect>
+<rect x="1167" y="222" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 70%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="265.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">60%</text>
+<rect x="105" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="248" width="18" height="26" fill="#43095a" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 60%; 10/400 hits (2.50%)</title></rect>
+<rect x="159" y="248" width="18" height="26" fill="#411b66" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 60%; 32/400 hits (8.00%)</title></rect>
+<rect x="177" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="248" width="18" height="26" fill="#430c5b" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 60%; 13/400 hits (3.25%)</title></rect>
+<rect x="231" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="248" width="18" height="26" fill="#440355" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 60%; 2/400 hits (0.50%)</title></rect>
+<rect x="267" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="248" width="18" height="26" fill="#430a5a" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 60%; 11/400 hits (2.75%)</title></rect>
+<rect x="645" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="248" width="18" height="26" fill="#430b5b" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 60%; 12/400 hits (3.00%)</title></rect>
+<rect x="897" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="248" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 60%; 1/400 hits (0.25%)</title></rect>
+<rect x="1041" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="248" width="18" height="26" fill="#4ab770" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 60%; 267/400 hits (66.75%)</title></rect>
+<rect x="1167" y="248" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 60%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="291.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">40%</text>
+<rect x="105" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="159" y="274" width="18" height="26" fill="#430758" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 40%; 8/400 hits (2.00%)</title></rect>
+<rect x="177" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="274" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 40%; 1/400 hits (0.25%)</title></rect>
+<rect x="231" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="267" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="645" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="897" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="274" width="18" height="26" fill="#3e3879" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 40%; 68/400 hits (17.00%)</title></rect>
+<rect x="1167" y="274" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 40%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="317.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">20%</text>
+<rect x="105" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="159" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="177" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="231" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="267" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="645" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="897" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="300" width="18" height="26" fill="#440255" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 20%; 1/400 hits (0.25%)</title></rect>
+<rect x="1167" y="300" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 20%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="343.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">10%</text>
+<rect x="105" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="159" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="177" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="231" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="267" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="645" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="897" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<rect x="1167" y="326" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 10%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="369.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">5%</text>
+<rect x="105" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="159" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="177" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="231" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="267" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="645" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="897" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<rect x="1167" y="352" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 5%; 0/400 hits (0.00%)</title></rect>
+<text x="95.00" y="395.68" fill="#d9e0e6" font-family="sans-serif" font-size="11" text-anchor="end">1%</text>
+<rect x="105" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 793; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="123" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 1853; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="141" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2324; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="159" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 2669; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="177" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3851; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="195" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 3938; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="213" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 4767; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="231" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 5350; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="249" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6006; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="267" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 6634; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="285" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 7468; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="303" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 8041; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="321" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9138; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="339" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 9733; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="357" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 10151; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="375" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11076; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="393" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 11552; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="411" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12108; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="429" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 12834; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="447" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 13796; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="465" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 14215; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="483" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15041; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="501" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15296; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="519" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15908; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="537" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15942; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="555" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 15974; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="573" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16008; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="591" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16076; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="609" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16091; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="627" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16154; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="645" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16195; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="663" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16233; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="681" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16282; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="699" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16295; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="717" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16328; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="735" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16365; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="753" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 16741; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="771" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 17765; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="789" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18122; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="807" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 18978; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="825" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 19611; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="843" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 20338; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="861" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21320; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="879" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 21424; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="897" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22206; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="915" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 22944; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="933" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 23437; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="951" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24408; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="969" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 24815; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="987" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 25679; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1005" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 26066; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1023" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27098; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1041" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 27457; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1059" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 28433; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1077" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29131; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1095" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 29898; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1113" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 30534; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1131" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31398; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1149" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 31780; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<rect x="1167" y="378" width="18" height="26" fill="#440154" stroke="#10151c" stroke-width="0.5"><title>token 32549; coverage 1%; 0/400 hits (0.00%)</title></rect>
+<g transform="translate(114.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">793</text></g>
+<g transform="translate(186.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">3851</text></g>
+<g transform="translate(276.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">6634</text></g>
+<g transform="translate(366.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">10151</text></g>
+<g transform="translate(456.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">13796</text></g>
+<g transform="translate(546.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">15942</text></g>
+<g transform="translate(636.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">16154</text></g>
+<g transform="translate(726.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">16328</text></g>
+<g transform="translate(816.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">18978</text></g>
+<g transform="translate(906.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">22206</text></g>
+<g transform="translate(996.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">25679</text></g>
+<g transform="translate(1086.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">29131</text></g>
+<g transform="translate(1176.00,414.00) rotate(55)"><text x="0.00" y="0.00" fill="#c6ced6" font-family="monospace" font-size="10" text-anchor="start">32549</text></g>
+<text x="645.00" y="536.00" fill="#f2f5f7" font-family="sans-serif" font-size="13" text-anchor="middle">Sampled token position</text>
+<text x="24" y="248.00" fill="#f2f5f7" font-family="sans-serif" font-size="13" text-anchor="middle" transform="rotate(-90 24 248.00)">Requested K/V coverage</text>
+<text x="1237.00" y="76.00" fill="#f2f5f7" font-family="sans-serif" font-size="12" text-anchor="middle">Hit rate</text>
+<rect x="1227" y="92.00" width="20" height="3.62" fill="#fde725"/>
+<rect x="1227" y="95.12" width="20" height="3.62" fill="#f7e627"/>
+<rect x="1227" y="98.24" width="20" height="3.62" fill="#f0e52a"/>
+<rect x="1227" y="101.36" width="20" height="3.62" fill="#eae32c"/>
+<rect x="1227" y="104.48" width="20" height="3.62" fill="#e3e22f"/>
+<rect x="1227" y="107.60" width="20" height="3.62" fill="#dde131"/>
+<rect x="1227" y="110.72" width="20" height="3.62" fill="#d6e034"/>
+<rect x="1227" y="113.84" width="20" height="3.62" fill="#d0df36"/>
+<rect x="1227" y="116.96" width="20" height="3.62" fill="#cadd39"/>
+<rect x="1227" y="120.08" width="20" height="3.62" fill="#c3dc3b"/>
+<rect x="1227" y="123.20" width="20" height="3.62" fill="#bddb3e"/>
+<rect x="1227" y="126.32" width="20" height="3.62" fill="#b6da40"/>
+<rect x="1227" y="129.44" width="20" height="3.62" fill="#b0d843"/>
+<rect x="1227" y="132.56" width="20" height="3.62" fill="#a9d745"/>
+<rect x="1227" y="135.68" width="20" height="3.62" fill="#a3d648"/>
+<rect x="1227" y="138.80" width="20" height="3.62" fill="#9dd54a"/>
+<rect x="1227" y="141.92" width="20" height="3.62" fill="#96d44c"/>
+<rect x="1227" y="145.04" width="20" height="3.62" fill="#90d24f"/>
+<rect x="1227" y="148.16" width="20" height="3.62" fill="#89d151"/>
+<rect x="1227" y="151.28" width="20" height="3.62" fill="#83d054"/>
+<rect x="1227" y="154.40" width="20" height="3.62" fill="#7dcf56"/>
+<rect x="1227" y="157.52" width="20" height="3.62" fill="#76ce59"/>
+<rect x="1227" y="160.64" width="20" height="3.62" fill="#70cc5b"/>
+<rect x="1227" y="163.76" width="20" height="3.62" fill="#69cb5e"/>
+<rect x="1227" y="166.88" width="20" height="3.62" fill="#63ca60"/>
+<rect x="1227" y="170.00" width="20" height="3.62" fill="#5dc862"/>
+<rect x="1227" y="173.12" width="20" height="3.62" fill="#5bc664"/>
+<rect x="1227" y="176.24" width="20" height="3.62" fill="#58c466"/>
+<rect x="1227" y="179.36" width="20" height="3.62" fill="#56c268"/>
+<rect x="1227" y="182.48" width="20" height="3.62" fill="#54bf69"/>
+<rect x="1227" y="185.60" width="20" height="3.62" fill="#51bd6b"/>
+<rect x="1227" y="188.72" width="20" height="3.62" fill="#4fbb6d"/>
+<rect x="1227" y="191.84" width="20" height="3.62" fill="#4cb96e"/>
+<rect x="1227" y="194.96" width="20" height="3.62" fill="#4ab670"/>
+<rect x="1227" y="198.08" width="20" height="3.62" fill="#47b472"/>
+<rect x="1227" y="201.20" width="20" height="3.62" fill="#45b273"/>
+<rect x="1227" y="204.32" width="20" height="3.62" fill="#42b075"/>
+<rect x="1227" y="207.44" width="20" height="3.62" fill="#40ad77"/>
+<rect x="1227" y="210.56" width="20" height="3.62" fill="#3dab78"/>
+<rect x="1227" y="213.68" width="20" height="3.62" fill="#3ba97a"/>
+<rect x="1227" y="216.80" width="20" height="3.62" fill="#38a67c"/>
+<rect x="1227" y="219.92" width="20" height="3.62" fill="#36a47e"/>
+<rect x="1227" y="223.04" width="20" height="3.62" fill="#33a27f"/>
+<rect x="1227" y="226.16" width="20" height="3.62" fill="#31a081"/>
+<rect x="1227" y="229.28" width="20" height="3.62" fill="#2f9d83"/>
+<rect x="1227" y="232.40" width="20" height="3.62" fill="#2c9b84"/>
+<rect x="1227" y="235.52" width="20" height="3.62" fill="#2a9986"/>
+<rect x="1227" y="238.64" width="20" height="3.62" fill="#279788"/>
+<rect x="1227" y="241.76" width="20" height="3.62" fill="#259489"/>
+<rect x="1227" y="244.88" width="20" height="3.62" fill="#22928b"/>
+<rect x="1227" y="248.00" width="20" height="3.62" fill="#22908c"/>
+<rect x="1227" y="251.12" width="20" height="3.62" fill="#238d8c"/>
+<rect x="1227" y="254.24" width="20" height="3.62" fill="#248b8c"/>
+<rect x="1227" y="257.36" width="20" height="3.62" fill="#25888c"/>
+<rect x="1227" y="260.48" width="20" height="3.62" fill="#26868c"/>
+<rect x="1227" y="263.60" width="20" height="3.62" fill="#27838c"/>
+<rect x="1227" y="266.72" width="20" height="3.62" fill="#28808c"/>
+<rect x="1227" y="269.84" width="20" height="3.62" fill="#297e8c"/>
+<rect x="1227" y="272.96" width="20" height="3.62" fill="#2a7b8c"/>
+<rect x="1227" y="276.08" width="20" height="3.62" fill="#2b798c"/>
+<rect x="1227" y="279.20" width="20" height="3.62" fill="#2c768c"/>
+<rect x="1227" y="282.32" width="20" height="3.62" fill="#2d748c"/>
+<rect x="1227" y="285.44" width="20" height="3.62" fill="#2e718b"/>
+<rect x="1227" y="288.56" width="20" height="3.62" fill="#2f6f8b"/>
+<rect x="1227" y="291.68" width="20" height="3.62" fill="#306c8b"/>
+<rect x="1227" y="294.80" width="20" height="3.62" fill="#316a8b"/>
+<rect x="1227" y="297.92" width="20" height="3.62" fill="#32678b"/>
+<rect x="1227" y="301.04" width="20" height="3.62" fill="#33648b"/>
+<rect x="1227" y="304.16" width="20" height="3.62" fill="#34628b"/>
+<rect x="1227" y="307.28" width="20" height="3.62" fill="#355f8b"/>
+<rect x="1227" y="310.40" width="20" height="3.62" fill="#375d8b"/>
+<rect x="1227" y="313.52" width="20" height="3.62" fill="#385a8b"/>
+<rect x="1227" y="316.64" width="20" height="3.62" fill="#39588b"/>
+<rect x="1227" y="319.76" width="20" height="3.62" fill="#3a558b"/>
+<rect x="1227" y="322.88" width="20" height="3.62" fill="#3b538b"/>
+<rect x="1227" y="326.00" width="20" height="3.62" fill="#3b5089"/>
+<rect x="1227" y="329.12" width="20" height="3.62" fill="#3c4c87"/>
+<rect x="1227" y="332.24" width="20" height="3.62" fill="#3c4985"/>
+<rect x="1227" y="335.36" width="20" height="3.62" fill="#3c4683"/>
+<rect x="1227" y="338.48" width="20" height="3.62" fill="#3d4280"/>
+<rect x="1227" y="341.60" width="20" height="3.62" fill="#3d3f7e"/>
+<rect x="1227" y="344.72" width="20" height="3.62" fill="#3d3c7c"/>
+<rect x="1227" y="347.84" width="20" height="3.62" fill="#3e397a"/>
+<rect x="1227" y="350.96" width="20" height="3.62" fill="#3e3578"/>
+<rect x="1227" y="354.08" width="20" height="3.62" fill="#3f3275"/>
+<rect x="1227" y="357.20" width="20" height="3.62" fill="#3f2f73"/>
+<rect x="1227" y="360.32" width="20" height="3.62" fill="#3f2c71"/>
+<rect x="1227" y="363.44" width="20" height="3.62" fill="#40286f"/>
+<rect x="1227" y="366.56" width="20" height="3.62" fill="#40256c"/>
+<rect x="1227" y="369.68" width="20" height="3.62" fill="#40226a"/>
+<rect x="1227" y="372.80" width="20" height="3.62" fill="#411e68"/>
+<rect x="1227" y="375.92" width="20" height="3.62" fill="#411b66"/>
+<rect x="1227" y="379.04" width="20" height="3.62" fill="#411864"/>
+<rect x="1227" y="382.16" width="20" height="3.62" fill="#421561"/>
+<rect x="1227" y="385.28" width="20" height="3.62" fill="#42115f"/>
+<rect x="1227" y="388.40" width="20" height="3.62" fill="#430e5d"/>
+<rect x="1227" y="391.52" width="20" height="3.62" fill="#430b5b"/>
+<rect x="1227" y="394.64" width="20" height="3.62" fill="#430858"/>
+<rect x="1227" y="397.76" width="20" height="3.62" fill="#440456"/>
+<rect x="1227" y="400.88" width="20" height="3.62" fill="#440154"/>
+<text x="1255.00" y="408.00" fill="#d9e0e6" font-family="sans-serif" font-size="10">0%</text>
+<text x="1255.00" y="330.00" fill="#d9e0e6" font-family="sans-serif" font-size="10">25%</text>
+<text x="1255.00" y="252.00" fill="#d9e0e6" font-family="sans-serif" font-size="10">50%</text>
+<text x="1255.00" y="174.00" fill="#d9e0e6" font-family="sans-serif" font-size="10">75%</text>
+<text x="1255.00" y="96.00" fill="#d9e0e6" font-family="sans-serif" font-size="10">100%</text>
+</svg>

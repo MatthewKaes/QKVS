@@ -465,6 +465,13 @@ The completed context-expansion run is published under
 The run is pinned to source revision `8b9b389`, and its manifest retains hashes for all 720 original
 trial sets and 60 dense-prefix snapshots.
 
+The same directory includes deterministic SVG heatmaps for the `0.001`-nat and `0.01`-nat KL
+thresholds. Regenerate both from the feasibility CSV with:
+
+```bash
+python docs/data/h1a-context-density-expansion/visualize.py
+```
+
 The exporter verifies every trial-set hash, then writes atomic candidate, dense-reference, and
 feasibility CSVs plus a provenance manifest. Seeds use exact unsigned 64-bit hexadecimal strings;
 candidate rows are ordered by stream, position, requested fraction, and trial ID. The completed
