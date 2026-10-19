@@ -366,13 +366,17 @@ attempt. At source revision `f54c84b`, its BF16 parity guard stopped before trai
 `0.0390625`; its partial artifacts and configuration remain immutable and must not be resumed under
 changed source.
 
-`configs/heatfield_hard_aligned_corrected_study.json` is a separate `draft_not_authorized`
-correction. It preserves the failed attempt's model and data identities, seed, W/T/J/R, 40
+`configs/heatfield_hard_aligned_corrected_study.json` is approved for one human-initiated
+exploratory GPU run. It preserves the failed attempt's model and data identities, seed, W/T/J/R, 40
 streaming updates, 960 target-layer objectives, and all five evaluation conditions. Its distinct
-run ID prevents the failed partial run from being resumed. The reused held-out stream makes any
-future authorized execution a controlled development comparison, not an independent
-generalization test; compatible predictive baselines may be reused by identity, while performance
-measurements remain fresh.
+run ID prevents the failed partial run from being resumed. The reused held-out stream makes this a
+controlled development comparison, not an independent generalization test. Compatible predictive
+baselines may be reused by identity, while performance measurements remain fresh. Stop on
+nonfinite values, forward discrepancy, identity mismatch, or resource exhaustion. The command is:
+
+```bash
+./run.sh configs/heatfield_hard_aligned_corrected_study.json
+```
 
 ## Configuration and artifacts
 
@@ -421,6 +425,6 @@ concurrent run.
 `configs/heatfield_learning_study.json` identifies the completed pilot;
 `configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up;
 `configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
-`configs/heatfield_hard_aligned_corrected_study.json` identifies the unauthorized correction.
+`configs/heatfield_hard_aligned_corrected_study.json` identifies the approved correction.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

@@ -178,7 +178,7 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
-def test_checked_in_configurations_preserve_failed_run_and_draft_corrected_study() -> None:
+def test_checked_in_configurations_preserve_failed_run_and_authorize_correction() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
     pilot_path = Path("configs/heatfield_learning_study.json")
@@ -237,11 +237,11 @@ def test_checked_in_configurations_preserve_failed_run_and_draft_corrected_study
     )
     assert corrected == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "heatfield_corrected_hard_aligned_learning_study",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
 
     pilot = json.loads(pilot_path.read_text())

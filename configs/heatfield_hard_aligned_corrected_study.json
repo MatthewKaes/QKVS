@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "heatfield_corrected_hard_aligned_learning_study",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "heatfield-corrected-hard-aligned-learning-study",
     "seed": 20261018
