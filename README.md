@@ -360,11 +360,18 @@ calibration versus supervision density. Stop on nonfinite values, identity misma
 exhaustion; resume only unchanged artifacts and never alter the frozen protocol to finish a failed
 run.
 
-`configs/heatfield_hard_aligned_study.json` is a new `draft_not_authorized` comparison. Relative to
-the absolute-mass follow-up, it preserves the model and data identities, seed, W/T/J/R, 40
-streaming updates, 960 target-layer objectives, and all five evaluation conditions; only the
-utility-gradient estimator changes to `hard_multiplicity_ste`. It must not be executed until an
-independent authorization changes its status.
+`configs/heatfield_hard_aligned_study.json` is approved for one human-initiated exploratory GPU
+comparison. Relative to the absolute-mass follow-up, it preserves the model and data identities,
+seed, W/T/J/R, 40 streaming updates, 960 target-layer objectives, and all five evaluation
+conditions; only the utility-gradient estimator changes to `hard_multiplicity_ste`. Compare its
+trained S with the previous absolute-mass model on the same held-out stream. Compatible predictive
+baselines may be reused by identity, but performance measurements remain fresh. Because the
+held-out stream is reused, this is a controlled development comparison rather than an independent
+generalization test. The human-started command is:
+
+```bash
+./run.sh configs/heatfield_hard_aligned_study.json
+```
 
 ## Configuration and artifacts
 
@@ -412,6 +419,6 @@ concurrent run.
 
 `configs/heatfield_learning_study.json` identifies the completed pilot;
 `configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up;
-`configs/heatfield_hard_aligned_study.json` identifies the unauthorized hard-aligned draft.
+`configs/heatfield_hard_aligned_study.json` identifies the approved hard-aligned exploratory study.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.
