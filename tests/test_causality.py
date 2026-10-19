@@ -956,7 +956,7 @@ def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> 
 
 
 def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, capfd) -> None:
-    from qkvs.harness import print_summary, run_experiment, status, validate_config
+    from qkvs.harness import load_run, print_summary, run_experiment, status, validate_config
 
     class ByteTokenizer:
         init_kwargs = {"_commit_hash": "1" * 40}
@@ -1238,6 +1238,51 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     assert all(
         torch.equal(resumed_policy[name], uninterrupted_policy[name]) for name in resumed_policy
     )
+
+    reused_specification = json.loads(json.dumps(specification))
+    reused_specification["run"]["id"] = "learned-heatfield-reused-baselines"
+    reused_specification["training"]["coverage_weight"] = 0.5
+    reused_config = tmp_path / "reused-config.json"
+    reused_config.write_text(json.dumps(reused_specification), encoding="utf-8")
+    reused_output, reused = run_experiment(
+        reused_config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    raw_reused = json.loads(reused_output.read_text())
+    assert {reference["condition"] for reference in raw_reused["measurement_references"]} == {
+        "rolling",
+        "full_qkv",
+        "untrained_s",
+    }
+    assert {measurement["condition"] for measurement in raw_reused["measurements"]} == {"heatfield"}
+    assert all(
+        reference["source_run_id"] == "learned-heatfield-smoke"
+        and not reference["performance_reused"]
+        for reference in raw_reused["measurement_references"]
+    )
+    assert len(reused["measurements"]) == 4
+    reused_baselines = [
+        measurement
+        for measurement in reused["measurements"]
+        if measurement["condition"] != "heatfield"
+    ]
+    assert all("predictive_reuse" in measurement for measurement in reused_baselines)
+    assert all("performance" not in measurement for measurement in reused_baselines)
+    assert all(
+        reused["summary"]["conditions"][measurement["condition"]]["measured_execution"]["streams"]
+        == 0
+        for measurement in reused_baselines
+    )
+    assert load_run(reused_output) == reused
+    reused_status = status(reused_output)
+    assert reused_status["complete"]
+    assert reused_status["phase_units"]["evaluation"] == {"completed": 4, "total": 4}
+    raw_reused["measurement_references"][0]["source_artifact_sha256"] = "0" * 64
+    reused_output.write_text(json.dumps(raw_reused), encoding="utf-8")
+    with pytest.raises(ValueError, match="source artifact identity"):
+        load_run(reused_output)
 
 
 @pytest.mark.skipif(

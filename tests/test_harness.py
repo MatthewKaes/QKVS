@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from qkvs.harness import (
+    _predictive_execution_version,
+    _predictive_measurement_key,
     _Progress,
     _progress_bar,
     _progress_counts,
@@ -237,6 +239,99 @@ def test_checked_in_configurations_preserve_pilot_and_authorize_frozen_followup(
     assert denser["training"]["steps"] == 40
     assert denser["training"]["steps"] * denser["training"]["targets_per_rollout"] == 960
     assert 960 // 24 == 40
+
+
+def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() -> None:
+    result = {
+        "source_identity": {
+            "git_revision": "b63e9b54f11543c571298de215bff567e1529efb",
+            "files": {
+                "qkvs/model.py": (
+                    "e0873329d2eda3db219b7cff463016a987a6906c16d83b4a0425097ee22ad7bd"
+                ),
+                "qkvs/selection.py": (
+                    "ba195153672aa9b77a50b441bf8c26453c5da788f2207e7387b1c92783bb0ac3"
+                ),
+            },
+        }
+    }
+
+    assert _predictive_execution_version(result, "rolling")
+    assert _predictive_execution_version(result, "fixed_offsets")
+    assert _predictive_execution_version(result, "full_qkv")
+    assert _predictive_execution_version(result, "heatfield_untrained") is None
+
+
+def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:
+    specification = json.loads(Path("configs/heatfield_learning_followup.json").read_text())
+    stream = {
+        "stream_id": "evaluation-sherlock-000",
+        "token_sha256": "1" * 64,
+        "support_positions": [None, 0],
+    }
+    result = {
+        "config": specification,
+        "model_identity": {"model": "frozen", "dtype": "bfloat16"},
+        "dense_prefill": {stream["stream_id"]: {"identity": {"prefix": "2" * 64}}},
+        "device": "cuda",
+        "environment": {
+            "python": "3.14.7",
+            "platform": "test-platform",
+            "torch": "2.9.0+cu130",
+            "torch_cuda": "13.0",
+        },
+        "predictive_execution_versions": {
+            "rolling": "qwen2-eager-rolling-v1",
+            "fixed_offsets": "qwen2-eager-fixed-offsets-v1",
+            "full_qkv": "qwen2-eager-full-qkv-v1",
+            "heatfield_untrained": "qwen2-eager-untrained-heatfield-v2",
+            "heatfield": "qwen2-eager-trained-heatfield-v2",
+        },
+        "untrained_policy_sha256": "3" * 64,
+    }
+    conditions = {
+        condition["policy"]: condition for condition in specification["selection"]["conditions"]
+    }
+    original = {
+        policy: _predictive_measurement_key(result, condition, stream)
+        for policy, condition in conditions.items()
+    }
+    training_only = json.loads(json.dumps(result))
+    training_only["config"]["training"]["coverage_weight"] = 0.25
+    assert {
+        policy: _predictive_measurement_key(training_only, condition, stream)
+        for policy, condition in conditions.items()
+    } == original
+
+    changed_working_memory = json.loads(json.dumps(result))
+    changed_working_memory["config"]["attention"]["rolling_tokens"] += 1
+    assert (
+        _predictive_measurement_key(changed_working_memory, conditions["rolling"], stream)
+        != original["rolling"]
+    )
+
+    changed_offsets = json.loads(json.dumps(result))
+    changed_offsets["config"]["selection"]["conditions"][1]["offsets"][0] += 1
+    assert (
+        _predictive_measurement_key(
+            changed_offsets,
+            changed_offsets["config"]["selection"]["conditions"][1],
+            stream,
+        )
+        != original["fixed_offsets"]
+    )
+
+    changed_untrained = json.loads(json.dumps(result))
+    changed_untrained["untrained_policy_sha256"] = "4" * 64
+    assert (
+        _predictive_measurement_key(
+            changed_untrained,
+            conditions["heatfield_untrained"],
+            stream,
+        )
+        != original["heatfield_untrained"]
+    )
+    assert original["heatfield"] is None
 
 
 def test_pinned_huggingface_text_configuration_is_runnable_in_schema() -> None:

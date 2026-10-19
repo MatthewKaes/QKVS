@@ -30,6 +30,22 @@ _SOURCE_FILES = (
 _PROGRESS_WIDTH = 24
 _SPINNER_FRAMES = ("|", "/", "-", "\\")
 _ERASE_LINE = "\r\x1b[2K"
+_PREDICTIVE_EXECUTION_VERSIONS = {
+    "rolling": "qwen2-eager-rolling-v1",
+    "fixed_offsets": "qwen2-eager-fixed-offsets-v1",
+    "full_qkv": "qwen2-eager-full-qkv-v1",
+    "heatfield_untrained": "qwen2-eager-untrained-heatfield-v2",
+    "heatfield": "qwen2-eager-trained-heatfield-v2",
+}
+# The completed absolute-mass follow-up predates explicit execution versions. Its three frozen
+# reader controls have exact per-token/access parity with the prior pilot; untrained S is excluded
+# because that run did not yet guarantee selector placement on the requested device.
+_LEGACY_BASELINE_SOURCE = {
+    "git_revision": "b63e9b54f11543c571298de215bff567e1529efb",
+    "model_sha256": "e0873329d2eda3db219b7cff463016a987a6906c16d83b4a0425097ee22ad7bd",
+    "selection_sha256": "ba195153672aa9b77a50b441bf8c26453c5da788f2207e7387b1c92783bb0ac3",
+}
+_LEGACY_REUSABLE_POLICIES = {"rolling", "fixed_offsets", "full_qkv"}
 
 
 def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -229,7 +245,18 @@ def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[
         stream for stream in streams if stream.get("split", "evaluation") == "evaluation"
     ]
     evaluation_total = len(specification["selection"]["conditions"]) * len(evaluation_streams)
-    evaluation_completed = min(evaluation_total, len(result["measurements"]))
+    evaluation_completed = min(
+        evaluation_total,
+        len(
+            {
+                (record["condition"], record["stream_id"])
+                for record in (
+                    *result["measurements"],
+                    *result.get("measurement_references", []),
+                )
+            }
+        ),
+    )
     phases = {
         "dense_prefill": (dense_completed, dense_total),
         "training_checkpoints": (training_completed, training_total),
@@ -246,12 +273,322 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _module_state_sha256(module: Any) -> str:
+    digest = hashlib.sha256()
+    for name, value in sorted(module.state_dict().items()):
+        contiguous = value.detach().cpu().contiguous()
+        digest.update(name.encode())
+        digest.update(str(tuple(contiguous.shape)).encode())
+        digest.update(str(contiguous.dtype).encode())
+        digest.update(contiguous.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _predictive_execution_version(result: dict[str, Any], policy: str) -> str | None:
+    versions = result.get("predictive_execution_versions", {})
+    if isinstance(versions, dict) and isinstance(versions.get(policy), str):
+        return versions[policy]
+    source = result.get("source_identity", {})
+    files = source.get("files", {})
+    if (
+        policy in _LEGACY_REUSABLE_POLICIES
+        and source.get("git_revision") == _LEGACY_BASELINE_SOURCE["git_revision"]
+        and files.get("qkvs/model.py") == _LEGACY_BASELINE_SOURCE["model_sha256"]
+        and files.get("qkvs/selection.py") == _LEGACY_BASELINE_SOURCE["selection_sha256"]
+    ):
+        return _PREDICTIVE_EXECUTION_VERSIONS[policy]
+    return None
+
+
+def _condition_predictive_identity(
+    result: dict[str, Any],
+    condition: dict[str, Any],
+) -> dict[str, Any] | None:
+    policy = condition["policy"]
+    version = _predictive_execution_version(result, policy)
+    if version is None or policy == "heatfield":
+        return None
+    specification = result["config"]
+    selection = specification["selection"]
+    identity: dict[str, Any] = {
+        "policy": policy,
+        "predictive_execution_version": version,
+    }
+    if policy == "fixed_offsets":
+        identity.update(
+            {
+                "offsets": condition["offsets"],
+                "window_width": selection["window_width"],
+                "historical_token_budget": specification["attention"]["historical_token_budget"],
+            }
+        )
+    elif policy == "heatfield_untrained":
+        state_sha256 = result.get("untrained_policy_sha256")
+        if not isinstance(state_sha256, str):
+            return None
+        identity.update(
+            {
+                "state_sha256": state_sha256,
+                "proposal_count": selection["proposal_count"],
+                "window_width": selection["window_width"],
+                "historical_token_budget": specification["attention"]["historical_token_budget"],
+                "gamma": selection["gamma"],
+                "beta": selection["beta"],
+                "learned": selection["learned"],
+            }
+        )
+    return identity
+
+
+def _predictive_measurement_key(
+    result: dict[str, Any],
+    condition: dict[str, Any],
+    stream: dict[str, Any],
+) -> str | None:
+    condition_identity = _condition_predictive_identity(result, condition)
+    if condition_identity is None:
+        return None
+    stream_id = stream["stream_id"]
+    dense_prefill = result.get("dense_prefill", {}).get(stream_id)
+    return _canonical_sha256(
+        {
+            "condition": condition_identity,
+            "model": result["model_identity"],
+            "evaluation_stream": {
+                "stream_id": stream_id,
+                "token_sha256": stream["token_sha256"],
+                "support_positions_sha256": _canonical_sha256(stream["support_positions"]),
+            },
+            "dense_prefill_identity": dense_prefill.get("identity") if dense_prefill else None,
+            "attention": {
+                "rolling_tokens": result["config"]["attention"]["rolling_tokens"],
+                "activation_tokens": result["config"]["attention"]["activation_tokens"],
+            },
+            "evaluation": {
+                "metric": result["config"]["evaluation"]["metric"],
+                "proposal_trace_interval": result["config"]["evaluation"][
+                    "proposal_trace_interval"
+                ],
+            },
+            "numerical_execution": {
+                "device": result["device"],
+                "python": result["environment"].get("python"),
+                "platform": result["environment"].get("platform"),
+                "torch": result["environment"].get("torch"),
+                "torch_cuda": result["environment"].get("torch_cuda"),
+            },
+        }
+    )
+
+
+def _predictive_measurement_sha256(measurement: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(
+            {
+                "condition": measurement["condition"],
+                "policy": measurement["policy"],
+                "stream_id": measurement["stream_id"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    for score in measurement["token_scores"]:
+        digest.update(b"\0")
+        digest.update(
+            json.dumps(
+                score,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        )
+    return digest.hexdigest()
+
+
 def _load_json(path: str | Path) -> dict[str, Any]:
     with Path(path).open() as source:
         value = json.load(source)
     if not isinstance(value, dict):
         raise ValueError("experiment configuration must be a JSON object")
     return value
+
+
+def _measurement_reference(
+    *,
+    measurement: dict[str, Any],
+    predictive_key: str,
+    source: dict[str, Any],
+    source_path: Path,
+    output: Path,
+    source_artifact_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "condition": measurement["condition"],
+        "policy": measurement["policy"],
+        "stream_id": measurement["stream_id"],
+        "predictive_key": predictive_key,
+        "predictive_measurement_sha256": _predictive_measurement_sha256(measurement),
+        "source_result": os.path.relpath(source_path, output.parent),
+        "source_run_id": source["run_id"],
+        "source_revision": source["source_identity"]["git_revision"],
+        "source_artifact_sha256": source_artifact_sha256,
+        "performance_reused": False,
+    }
+
+
+def _measurement_from_reference(
+    reference: dict[str, Any],
+    *,
+    result_path: Path,
+    source_cache: dict[Path, tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    source_path = (result_path.parent / reference["source_result"]).resolve()
+    if not source_path.is_file():
+        raise ValueError("reused baseline source artifact is missing")
+    if source_path not in source_cache:
+        source_cache[source_path] = _sha256(source_path), _load_json(source_path)
+    source_artifact_sha256, source = source_cache[source_path]
+    if source_artifact_sha256 != reference["source_artifact_sha256"]:
+        raise ValueError("reused baseline source artifact identity does not match")
+    if not source.get("complete") or source.get("run_id") != reference["source_run_id"]:
+        raise ValueError("reused baseline source run is incomplete or mismatched")
+    candidates = [
+        measurement
+        for measurement in source.get("measurements", [])
+        if measurement["condition"] == reference["condition"]
+        and measurement["stream_id"] == reference["stream_id"]
+    ]
+    if len(candidates) != 1:
+        raise ValueError("reused baseline source measurement is missing or ambiguous")
+    source_measurement = candidates[0]
+    if (
+        source_measurement["policy"] != reference["policy"]
+        or _predictive_measurement_sha256(source_measurement)
+        != reference["predictive_measurement_sha256"]
+    ):
+        raise ValueError("reused baseline predictive measurement identity does not match")
+    measurement = {key: value for key, value in source_measurement.items() if key != "performance"}
+    measurement["predictive_reuse"] = {
+        "source_result": reference["source_result"],
+        "source_run_id": reference["source_run_id"],
+        "source_revision": reference["source_revision"],
+        "source_artifact_sha256": reference["source_artifact_sha256"],
+        "predictive_measurement_sha256": reference["predictive_measurement_sha256"],
+        "performance_reused": False,
+    }
+    return measurement
+
+
+def _resolved_measurements(result: dict[str, Any], result_path: Path) -> list[dict[str, Any]]:
+    measurements = list(result["measurements"])
+    source_cache: dict[Path, tuple[str, dict[str, Any]]] = {}
+    measurements.extend(
+        _measurement_from_reference(
+            reference,
+            result_path=result_path,
+            source_cache=source_cache,
+        )
+        for reference in result.get("measurement_references", [])
+    )
+    measurements.sort(key=lambda measurement: (measurement["condition"], measurement["stream_id"]))
+    units = [(measurement["condition"], measurement["stream_id"]) for measurement in measurements]
+    if len(units) != len(set(units)):
+        raise ValueError("run contains duplicate measured or reused evaluation units")
+    return measurements
+
+
+def _discover_reusable_measurements(
+    result: dict[str, Any],
+    *,
+    output: Path,
+) -> dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]]:
+    conditions = {
+        condition["name"]: condition for condition in result["config"]["selection"]["conditions"]
+    }
+    streams = {
+        stream["stream_id"]: stream
+        for stream in result["streams"]
+        if stream.get("split") == "evaluation"
+    }
+    target_keys = {
+        (condition_name, stream_id): _predictive_measurement_key(result, condition, stream)
+        for condition_name, condition in conditions.items()
+        if condition["policy"] != "heatfield"
+        for stream_id, stream in streams.items()
+    }
+    reusable: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+    candidates = sorted(
+        (path for path in output.parent.parent.glob("*/result.json") if path != output),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for source_path in candidates:
+        source = _load_json(source_path)
+        if not source.get("complete"):
+            continue
+        source_conditions = {
+            condition["name"]: condition
+            for condition in source.get("config", {}).get("selection", {}).get("conditions", [])
+        }
+        source_streams = {stream["stream_id"]: stream for stream in source.get("streams", [])}
+        source_artifact_sha256 = None
+        for measurement in source.get("measurements", []):
+            unit = (measurement["condition"], measurement["stream_id"])
+            if unit in reusable or target_keys.get(unit) is None:
+                continue
+            source_condition = source_conditions.get(measurement["condition"])
+            source_stream = source_streams.get(measurement["stream_id"])
+            if source_condition is None or source_stream is None:
+                continue
+            source_key = _predictive_measurement_key(
+                source,
+                source_condition,
+                source_stream,
+            )
+            if source_key != target_keys[unit]:
+                continue
+            if source_artifact_sha256 is None:
+                source_artifact_sha256 = _sha256(source_path)
+            reference = _measurement_reference(
+                measurement=measurement,
+                predictive_key=source_key,
+                source=source,
+                source_path=source_path,
+                output=output,
+                source_artifact_sha256=source_artifact_sha256,
+            )
+            reused_measurement = {
+                key: value for key, value in measurement.items() if key != "performance"
+            }
+            reused_measurement["predictive_reuse"] = {
+                key: reference[key]
+                for key in (
+                    "source_result",
+                    "source_run_id",
+                    "source_revision",
+                    "source_artifact_sha256",
+                    "predictive_measurement_sha256",
+                    "performance_reused",
+                )
+            }
+            reusable[unit] = reference, reused_measurement
+        if len(reusable) == sum(key is not None for key in target_keys.values()):
+            break
+    return reusable
 
 
 def _positive_integer(value: Any) -> bool:
@@ -1215,6 +1552,7 @@ def run_experiment(
         "model_identity": model_identity,
         "data_identity": data_identity,
         "device": device,
+        "predictive_execution_versions": _PREDICTIVE_EXECUTION_VERSIONS,
     }
     if output.exists():
         result = _load_json(output)
@@ -1234,6 +1572,7 @@ def run_experiment(
             "streams": streams,
             "dense_prefill": {},
             "measurements": [],
+            "measurement_references": [],
             "training": {},
             "summary": {},
             "complete": False,
@@ -1265,7 +1604,17 @@ def run_experiment(
             condition["policy"] == "heatfield"
             for condition in specification["selection"]["conditions"]
         ):
-            untrained_policy = _build_learned_policy(reader, specification, torch)
+            untrained_policy = _build_learned_policy(reader, specification, torch).to(torch_device)
+            untrained_policy_sha256 = _module_state_sha256(untrained_policy)
+            prior_untrained_identity = result.get("untrained_policy_sha256")
+            if (
+                prior_untrained_identity is not None
+                and prior_untrained_identity != untrained_policy_sha256
+            ):
+                raise ValueError("untrained selector identity does not match this run")
+            if prior_untrained_identity is None:
+                result["untrained_policy_sha256"] = untrained_policy_sha256
+                _write_json(output, result)
             learned_policy = _build_learned_policy(reader, specification, torch)
             _train_learned_policy(
                 reader=reader,
@@ -1279,10 +1628,12 @@ def run_experiment(
                 dense_prefills=dense_prefills,
                 progress=progress,
             )
+        resolved_measurements = _resolved_measurements(result, output)
         completed = {
             (measurement["condition"], measurement["stream_id"])
-            for measurement in result["measurements"]
+            for measurement in resolved_measurements
         }
+        reusable = _discover_reusable_measurements(result, output=output)
         units = [
             (condition, stream)
             for condition in specification["selection"]["conditions"]
@@ -1297,6 +1648,33 @@ def run_experiment(
         for condition, stream_record in units:
             unit = (condition["name"], stream_record["stream_id"])
             if unit in completed:
+                continue
+            if unit in reusable:
+                progress.start_job(f"reuse {condition['name']} / {stream_record['stream_id']}")
+                reference, reused_measurement = reusable[unit]
+                result["measurement_references"].append(reference)
+                result["measurement_references"].sort(
+                    key=lambda item: (item["condition"], item["stream_id"])
+                )
+                resolved_measurements.append(reused_measurement)
+                resolved_measurements.sort(
+                    key=lambda measurement: (
+                        measurement["condition"],
+                        measurement["stream_id"],
+                    )
+                )
+                completed.add(unit)
+                result["summary"] = summarize_measurements(
+                    resolved_measurements,
+                    baseline=specification["evaluation"]["baseline"],
+                    bootstrap_samples=specification["evaluation"]["bootstrap_samples"],
+                    seed=specification["run"]["seed"],
+                    historical_token_budget=specification["attention"]["historical_token_budget"],
+                    paired_comparisons=specification["evaluation"].get("comparisons", []),
+                )
+                result["complete"] = len(completed) == evaluation_total
+                _write_json(output, result)
+                progress.complete_job()
                 continue
             progress.start_job(f"{condition['name']} / {stream_record['stream_id']}")
             policy = build_policy(
@@ -1333,34 +1711,37 @@ def run_experiment(
             continuation_tokens = sum(
                 score.phase in {"post_transition", "qkvs"} for score in token_scores
             )
-            result["measurements"].append(
-                {
-                    "condition": condition["name"],
-                    "policy": condition["policy"],
-                    "stream_id": stream.stream_id,
-                    "token_scores": [score.as_dict() for score in token_scores],
-                    "performance": {
-                        "scope": "snapshot_restore_plus_autoregressive_continuation",
-                        "wall_seconds_including_snapshot_restore": wall_seconds,
-                        "post_transition_tokens": continuation_tokens,
-                        "post_transition_tokens_per_second": (
-                            continuation_tokens / wall_seconds if wall_seconds else 0.0
-                        ),
-                        "peak_accelerator_bytes": (
-                            torch.cuda.max_memory_allocated(torch_device)
-                            if torch_device.type == "cuda"
-                            else None
-                        ),
-                        "theoretical_speedup_claimed": False,
-                    },
-                }
-            )
+            measurement = {
+                "condition": condition["name"],
+                "policy": condition["policy"],
+                "stream_id": stream.stream_id,
+                "token_scores": [score.as_dict() for score in token_scores],
+                "performance": {
+                    "scope": "snapshot_restore_plus_autoregressive_continuation",
+                    "wall_seconds_including_snapshot_restore": wall_seconds,
+                    "post_transition_tokens": continuation_tokens,
+                    "post_transition_tokens_per_second": (
+                        continuation_tokens / wall_seconds if wall_seconds else 0.0
+                    ),
+                    "peak_accelerator_bytes": (
+                        torch.cuda.max_memory_allocated(torch_device)
+                        if torch_device.type == "cuda"
+                        else None
+                    ),
+                    "theoretical_speedup_claimed": False,
+                },
+            }
+            result["measurements"].append(measurement)
+            resolved_measurements.append(measurement)
             result["measurements"].sort(
+                key=lambda measurement: (measurement["condition"], measurement["stream_id"])
+            )
+            resolved_measurements.sort(
                 key=lambda measurement: (measurement["condition"], measurement["stream_id"])
             )
             completed.add(unit)
             result["summary"] = summarize_measurements(
-                result["measurements"],
+                resolved_measurements,
                 baseline=specification["evaluation"]["baseline"],
                 bootstrap_samples=specification["evaluation"]["bootstrap_samples"],
                 seed=specification["run"]["seed"],
@@ -1372,7 +1753,8 @@ def run_experiment(
             progress.complete_job()
     finally:
         progress.close()
-    return output, _load_json(output)
+    del reusable, resolved_measurements, result
+    return output, load_run(output)
 
 
 def resolve_run(path: str | Path) -> Path:
@@ -1385,11 +1767,15 @@ def load_run(path: str | Path) -> dict[str, Any]:
     result = _load_json(result_path)
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
+    result["measurements"] = _resolved_measurements(result, result_path)
     return result
 
 
 def status(path: str | Path) -> dict[str, Any]:
-    result = load_run(path)
+    result_path = resolve_run(path)
+    result = _load_json(result_path)
+    if result.get("schema_version") != 1 or "measurements" not in result:
+        raise ValueError("run artifact is not a QKVS harness result")
     completed, total, phases = _progress_counts(result)
     training = result.get("training", {})
     return {
@@ -1407,7 +1793,7 @@ def status(path: str | Path) -> dict[str, Any]:
         "complete": result["complete"],
         "source_revision": result["source_identity"]["git_revision"],
         "config_sha256": result["config_sha256"],
-        "artifact_sha256": _sha256(resolve_run(path)),
+        "artifact_sha256": _sha256(result_path),
     }
 
 
@@ -1438,6 +1824,11 @@ def print_status(value: dict[str, Any]) -> None:
 
 def print_summary(result: dict[str, Any]) -> None:
     print(f"Run {result['run_id']} ({'complete' if result['complete'] else 'incomplete'})")
+    reused_conditions = {
+        measurement["condition"]
+        for measurement in result.get("measurements", [])
+        if "predictive_reuse" in measurement
+    }
     alignment = result.get("training", {}).get("soft_hard_alignment")
     if alignment:
         correlation = alignment["soft_hard_utility_correlation"]
@@ -1461,7 +1852,8 @@ def print_summary(result: dict[str, Any]) -> None:
             f"historical_reads={retrieval['historical_token_occurrences']}, "
             f"budget_utilization={budget_text}, "
             f"overlap={retrieval['overlap_occurrences']}, "
-            f"temporal_stability={retrieval['temporal_stability']:.3f}"
+            f"temporal_stability={retrieval['temporal_stability']:.3f}, "
+            f"predictive={'reused' if name in reused_conditions else 'measured'}"
         )
     for name, comparison in result["summary"].get("paired_utility", {}).items():
         interval = comparison["paired_bootstrap_95_interval_nats"]

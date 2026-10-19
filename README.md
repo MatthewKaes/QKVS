@@ -367,6 +367,23 @@ restoration plus continuation; accelerator peak memory is recorded when availabl
 implementation measurements, not theoretical speedup claims. Writes are atomic; rerunning the same
 command resumes without duplicating completed condition/stream pairs.
 
+Across run IDs, the harness may reuse completed predictive measurements for rolling-only,
+fixed-offset, full-QKV, and identically initialized untrained-S conditions. Compatibility is keyed
+by the exact evaluation tokens and support annotations, frozen model and dense-prefill identity,
+W/T, condition-specific policy parameters, numerical software environment, and an explicit
+predictive-execution version. Untrained S additionally requires the initialized state-dict digest.
+The new result stores only a hash-verified reference to the immutable originating artifact, then
+evaluates its newly trained S checkpoint normally. It never reuses post-transition K/V or recurrent
+S state. Referenced measurements retain their originating revision and hashes.
+
+Predictive and performance reuse are deliberately separate. Reused token scores and K/V accesses
+carry no latency or peak-memory measurement in the new run; those values remain attributable only
+to their original implementation and hardware execution. A missing, changed, incomplete, or
+incompatible source artifact causes normal evaluation or rejects an already-recorded reference.
+The completed absolute-mass follow-up seeds rolling, fixed-offset, and full-QKV reuse. Its untrained
+S ran before the harness guaranteed selector placement on the requested device, so that condition
+must be refreshed once before it can seed later reuse.
+
 Progress covers dense prefills, durable training-checkpoint ranges, and evaluation conditions. In an
 interactive terminal, a short ASCII spinner and elapsed timer update once per second on one physical
 row; the 24-cell `█▓▒` bar uses third-cell shading, and the line is clipped to the detected terminal
