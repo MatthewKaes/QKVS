@@ -1520,7 +1520,9 @@ class HuggingFaceQwen2Reader:
             selected_layers = selected_positions
         else:
             selected_layers = None
-        self.model.to(device)
+        model_device = next(self.model.parameters()).device
+        if not _device_matches_request(model_device, device):
+            raise ValueError("snapshot probe device does not match the loaded model")
         token_id = torch.tensor([[stream.tokens[position]]], device=device)
         target = torch.tensor([stream.tokens[position + 1]], device=device)
         absolute_position = torch.tensor([[position]], device=device)

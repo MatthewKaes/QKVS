@@ -130,13 +130,16 @@ def test_training_progress_updates_fraction_without_advancing_durable_count() ->
     output = InteractiveOutput()
     progress = _Progress(completed=4, total=17, stream=output, interval_seconds=60.0)
     progress.start_job("train 9/40 192/960 targets", fraction=0.0)
+    initial_render = output.getvalue()
     progress.update_job("train 9/40 216/960 targets 12.5s/step", fraction=0.25)
 
     assert progress.completed == 4
     assert progress._current() == 5
     assert progress._bar_current() == pytest.approx(4.25)
+    assert output.getvalue() == initial_render
+    progress.render()
     rendered = output.getvalue()
-    assert "train 9/40" in rendered
+    assert "train 9/40 216/960 targets" in rendered
     assert rendered.count("\n") == 0
 
     progress.complete_job()

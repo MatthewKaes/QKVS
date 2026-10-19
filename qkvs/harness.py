@@ -225,7 +225,6 @@ class _Progress:
                 raise RuntimeError("cannot update progress without an active job")
             self.active_job = job
             self.job_fraction = fraction
-        self.render()
 
     def complete_job(self) -> None:
         with self.lock:

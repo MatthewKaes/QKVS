@@ -220,6 +220,7 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
     )
     keys_before = tuple(cache.clone() for cache in state.key_cache)
     values_before = tuple(cache.clone() for cache in state.value_cache)
+    reader.model.to = Mock(side_effect=AssertionError("snapshot probes must not remap the model"))
 
     reference = reader.snapshot_probe(
         first,
@@ -274,6 +275,7 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
 
     assert torch.equal(reference.logits, dense_candidate.logits)
     assert torch.equal(reference.loss, dense_candidate.loss)
+    reader.model.to.assert_not_called()
     assert torch.equal(compact_candidate.logits, explicit_candidate.logits)
     assert torch.equal(compact_candidate.loss, explicit_candidate.loss)
     assert compact_candidate.gathered_keys_per_layer == (5, 4)
