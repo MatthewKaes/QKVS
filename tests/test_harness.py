@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -1230,8 +1231,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     monkeypatch.setattr(reader, "derive_dense_causal_snapshot", tracked_derive_snapshot)
     base_batch_probe = reader.snapshot_probe_batch
     candidate_batch_sizes = []
+    first_gpu_probe_started = threading.Event()
 
     def tracked_batch_probe(*args, **kwargs):
+        first_gpu_probe_started.set()
         candidate_batch_sizes.append(len(kwargs["selected_positions"]))
         return base_batch_probe(*args, **kwargs)
 
@@ -1259,6 +1262,26 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert len(list((tmp_path / "slice-results").rglob("*.pt"))) == 1
 
     monkeypatch.setattr(reader, "snapshot_probe", original_probe)
+    import qkvs.selection as selection_module
+
+    base_native_sampler = selection_module.sample_uniform_random_block_batch
+    next_cell_prepared_before_probe = []
+
+    def tracked_native_sampler(*args, **kwargs):
+        if (
+            kwargs["available_positions"] == 4
+            and kwargs["requested_fraction"] == 1.0
+            and not next_cell_prepared_before_probe
+        ):
+            next_cell_prepared_before_probe.append(not first_gpu_probe_started.is_set())
+            assert first_gpu_probe_started.wait(timeout=5.0)
+        return base_native_sampler(*args, **kwargs)
+
+    monkeypatch.setattr(
+        selection_module,
+        "sample_uniform_random_block_batch",
+        tracked_native_sampler,
+    )
     slice_output, sliced = run_experiment(
         slice_config,
         device="cpu",
@@ -1270,6 +1293,7 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert sliced["snapshot_execution_version"] == "qwen2-h1a-native-block-batched-v3"
     assert computed_dense_positions == [9]
     assert derived_positions == [3, 3, 7]
+    assert next_cell_prepared_before_probe == [True]
     assert candidate_batch_sizes == [3, 1] * 3
     assert fsync_calls - slice_fsync_start == 2
     assert set(sliced["snapshot_prefixes"]) == {"9"}
@@ -1303,6 +1327,11 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
                 ):
                     assert native_row[field] == serial_row[field]
 
+    monkeypatch.setattr(
+        selection_module,
+        "sample_uniform_random_block_batch",
+        base_native_sampler,
+    )
     buffered_specification = json.loads(json.dumps(slice_specification))
     buffered_specification["run"]["id"] = "snapshot-harness-buffered-checkpoint-smoke"
     buffered_specification["study"]["positions"] = [3]

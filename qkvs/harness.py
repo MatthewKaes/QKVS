@@ -2396,6 +2396,65 @@ def _run_snapshot_study(
         pending_checkpoint_units = 0
         pending_checkpoint_candidates = 0
 
+    native_units = tuple(
+        (position, percentage)
+        for position in study["positions"]
+        for percentage in study["sampling_percentages"]
+        if (position, percentage) not in completed
+    )
+    native_unit_indices = {unit: index for index, unit in enumerate(native_units)}
+    prefetched_native_batch = None
+    layer_count = reader.model.config.num_hidden_layers
+
+    def prepare_native_batch(
+        position: int,
+        percentage: float,
+        requested_fraction: float,
+        batch_start: int,
+        batch_stop: int,
+    ) -> Any:
+        trial_ids = np.arange(
+            trial_start + batch_start,
+            trial_start + batch_stop,
+            dtype=np.int64,
+        )
+        candidate_seeds = np.empty(len(trial_ids), dtype=np.uint64)
+        layer_seeds = np.empty(
+            (len(trial_ids), layer_count),
+            dtype=np.uint64,
+        )
+        fraction_coordinate = _snapshot_fraction_coordinate(percentage)
+        for candidate_index, trial_id in enumerate(trial_ids):
+            candidate_seed = derive_random_block_seed(
+                base_seed,
+                position,
+                fraction_coordinate,
+                int(trial_id),
+            )
+            candidate_seeds[candidate_index] = candidate_seed
+            for layer_index in range(layer_count):
+                layer_seeds[candidate_index, layer_index] = derive_random_block_seed(
+                    candidate_seed,
+                    layer_index,
+                )
+        block_batch = sample_uniform_random_block_batch(
+            available_positions=position + 1,
+            block_width=study["block_width"],
+            requested_fraction=requested_fraction,
+            seeds=layer_seeds,
+            algorithm=sampling_algorithm,
+        )
+        return trial_ids, candidate_seeds, block_batch
+
+    def native_batch_spans(position: int, percentage: float) -> tuple[tuple[int, int], ...]:
+        requested_fraction = float(percentage) / 100.0
+        batch_size = snapshot_candidate_batch_size(position, requested_fraction)
+        trial_count = 1 if float(percentage) == 100.0 else study["trials_per_fraction"]
+        return tuple(
+            (batch_start, min(trial_count, batch_start + batch_size))
+            for batch_start in range(0, trial_count, batch_size)
+        )
+
     master_snapshot = None
     master_position = max(study["positions"])
     master_position_key = str(master_position)
@@ -2747,74 +2806,58 @@ def _run_snapshot_study(
                         )
 
                     if selection_representation == "native_blocks":
-                        layer_count = reader.model.config.num_hidden_layers
-                        fraction_coordinate = _snapshot_fraction_coordinate(percentage)
-
-                        def prepare_native_batch(
-                            batch_start: int,
-                            batch_stop: int,
-                            *,
-                            layer_count: int,
-                            position: int,
-                            fraction_coordinate: int,
-                            requested_fraction: float,
-                        ) -> Any:
-                            trial_ids = np.arange(
-                                trial_start + batch_start,
-                                trial_start + batch_stop,
-                                dtype=np.int64,
-                            )
-                            candidate_seeds = np.empty(len(trial_ids), dtype=np.uint64)
-                            layer_seeds = np.empty(
-                                (len(trial_ids), layer_count),
-                                dtype=np.uint64,
-                            )
-                            for candidate_index, trial_id in enumerate(trial_ids):
-                                candidate_seed = derive_random_block_seed(
-                                    base_seed,
-                                    position,
-                                    fraction_coordinate,
-                                    int(trial_id),
-                                )
-                                candidate_seeds[candidate_index] = candidate_seed
-                                for layer_index in range(layer_count):
-                                    layer_seeds[candidate_index, layer_index] = (
-                                        derive_random_block_seed(candidate_seed, layer_index)
-                                    )
-                            block_batch = sample_uniform_random_block_batch(
-                                available_positions=position + 1,
-                                block_width=study["block_width"],
-                                requested_fraction=requested_fraction,
-                                seeds=layer_seeds,
-                                algorithm=sampling_algorithm,
-                            )
-                            return trial_ids, candidate_seeds, block_batch
-
-                        batch_spans = tuple(
-                            (batch_start, min(trial_count, batch_start + cell_batch_size))
-                            for batch_start in range(0, trial_count, cell_batch_size)
-                        )
+                        batch_spans = native_batch_spans(position, percentage)
                         if selection_producer is None:
                             raise RuntimeError("native block selection producer is unavailable")
-                        pending_batch = selection_producer.submit(
-                            prepare_native_batch,
-                            *batch_spans[0],
-                            layer_count=layer_count,
-                            position=position,
-                            fraction_coordinate=fraction_coordinate,
-                            requested_fraction=requested_fraction,
-                        )
+                        first_key = (position, percentage, *batch_spans[0])
+                        if (
+                            prefetched_native_batch is not None
+                            and prefetched_native_batch[0] == first_key
+                        ):
+                            pending_batch = prefetched_native_batch[1]
+                            prefetched_native_batch = None
+                        else:
+                            pending_batch = selection_producer.submit(
+                                prepare_native_batch,
+                                position,
+                                percentage,
+                                requested_fraction,
+                                *batch_spans[0],
+                            )
                         for batch_index, (_batch_start, batch_stop) in enumerate(batch_spans):
                             trial_ids, candidate_seeds, block_batch = pending_batch.result()
                             if batch_index + 1 < len(batch_spans):
                                 pending_batch = selection_producer.submit(
                                     prepare_native_batch,
+                                    position,
+                                    percentage,
+                                    requested_fraction,
                                     *batch_spans[batch_index + 1],
-                                    layer_count=layer_count,
-                                    position=position,
-                                    fraction_coordinate=fraction_coordinate,
-                                    requested_fraction=requested_fraction,
                                 )
+                            else:
+                                next_unit_index = native_unit_indices[unit] + 1
+                                if next_unit_index < len(native_units):
+                                    next_position, next_percentage = native_units[next_unit_index]
+                                    next_requested_fraction = float(next_percentage) / 100.0
+                                    next_span = native_batch_spans(
+                                        next_position,
+                                        next_percentage,
+                                    )[0]
+                                    next_key = (
+                                        next_position,
+                                        next_percentage,
+                                        *next_span,
+                                    )
+                                    prefetched_native_batch = (
+                                        next_key,
+                                        selection_producer.submit(
+                                            prepare_native_batch,
+                                            next_position,
+                                            next_percentage,
+                                            next_requested_fraction,
+                                            *next_span,
+                                        ),
+                                    )
                             prepared_selections = reader.prepare_snapshot_block_selection_batch(
                                 block_batch,
                                 position=position,
