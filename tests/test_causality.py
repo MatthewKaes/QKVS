@@ -217,6 +217,10 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         ownership="snapshot-test",
         prefill_chunk_tokens=2,
     )
+    assert (
+        reader.place_dense_causal_snapshot(later_snapshot, device=torch.device("cpu"))
+        is later_snapshot
+    )
     derived_snapshot = reader.derive_dense_causal_snapshot(
         later_snapshot,
         first,
@@ -240,6 +244,22 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         for derived, direct in zip(
             derived_snapshot.value_cache,
             snapshot.value_cache,
+            strict=True,
+        )
+    )
+    assert all(
+        derived.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+        for derived, source in zip(
+            derived_snapshot.key_cache,
+            later_snapshot.key_cache,
+            strict=True,
+        )
+    )
+    assert all(
+        derived.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+        for derived, source in zip(
+            derived_snapshot.value_cache,
+            later_snapshot.value_cache,
             strict=True,
         )
     )
@@ -300,6 +320,31 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         selected_positions=((0, 1, 4, 5, 6), (1, 2, 3, 4)),
         device=torch.device("cpu"),
     )
+    alternate_ranges = (((0, 3),), ((2, 6),))
+    alternate_selection = reader.prepare_snapshot_selection(
+        alternate_ranges,
+        position=6,
+        device=torch.device("cpu"),
+    )
+    alternate_candidate = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=alternate_selection,
+        device=torch.device("cpu"),
+    )
+    batch_selections = reader.prepare_snapshot_selection_batch(
+        (compact_ranges, alternate_ranges),
+        position=6,
+        device=torch.device("cpu"),
+    )
+    batch_candidates = reader.snapshot_probe_batch(
+        first,
+        state,
+        position=6,
+        selected_positions=batch_selections,
+        device=torch.device("cpu"),
+    )
     sparse_selection = ((0, 1), (2, 3))
     sparse = reader.snapshot_probe(
         first,
@@ -330,6 +375,16 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
     reader.model.to.assert_not_called()
     assert torch.equal(compact_candidate.logits, explicit_candidate.logits)
     assert torch.equal(compact_candidate.loss, explicit_candidate.loss)
+    for scalar, batched in zip(
+        (compact_candidate, alternate_candidate),
+        batch_candidates,
+        strict=True,
+    ):
+        torch.testing.assert_close(batched.logits, scalar.logits, rtol=0.0, atol=1e-6)
+        torch.testing.assert_close(batched.loss, scalar.loss, rtol=0.0, atol=1e-6)
+        assert torch.equal(batched.prediction, scalar.prediction)
+        assert batched.gathered_keys_per_layer == scalar.gathered_keys_per_layer
+        assert batched.gathered_values_per_layer == scalar.gathered_values_per_layer
     assert compact_candidate.gathered_keys_per_layer == (5, 4)
     assert compact_candidate.gathered_values_per_layer == (5, 4)
     assert dense_candidate.gathered_keys_per_layer == (7, 7)
@@ -349,6 +404,78 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         torch.equal(before, after)
         for before, after in zip(values_before, state.value_cache, strict=True)
     )
+
+
+def test_snapshot_probe_batch_matches_full_depth_bfloat16_without_repeating_gqa_cache() -> None:
+    reader = _qwen_reader(torch.bfloat16, layers=24)
+    stream = _stream((1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    snapshot = reader.dense_causal_snapshot(
+        stream,
+        position=6,
+        device=torch.device("cpu"),
+        ownership="snapshot-batch-test",
+        prefill_chunk_tokens=2,
+    )
+    state = reader.prepare_snapshot_probe(
+        snapshot,
+        stream,
+        position=6,
+        device=torch.device("cpu"),
+        ownership="snapshot-batch-test",
+        prefill_chunk_tokens=2,
+    )
+    range_batches = tuple(
+        tuple(
+            (
+                ((0, 2), (4, 7))
+                if (candidate + layer) % 3 == 0
+                else ((0, 3),)
+                if (candidate + layer) % 3 == 1
+                else ((1, 5),)
+            )
+            for layer in range(24)
+        )
+        for candidate in range(4)
+    )
+    scalar_selections = tuple(
+        reader.prepare_snapshot_selection(
+            ranges,
+            position=6,
+            device=torch.device("cpu"),
+        )
+        for ranges in range_batches
+    )
+    scalar_results = tuple(
+        reader.snapshot_probe(
+            stream,
+            state,
+            position=6,
+            selected_positions=selection,
+            device=torch.device("cpu"),
+        )
+        for selection in scalar_selections
+    )
+    batch_selections = reader.prepare_snapshot_selection_batch(
+        range_batches,
+        position=6,
+        device=torch.device("cpu"),
+    )
+    reader._repeat_kv = Mock(side_effect=AssertionError("batched GQA must not repeat K/V heads"))
+    batch_results = reader.snapshot_probe_batch(
+        stream,
+        state,
+        position=6,
+        selected_positions=batch_selections,
+        device=torch.device("cpu"),
+    )
+
+    reader._repeat_kv.assert_not_called()
+    for scalar, batched in zip(scalar_results, batch_results, strict=True):
+        assert torch.equal(batched.logits, scalar.logits)
+        assert torch.equal(batched.loss, scalar.loss)
+        assert torch.equal(batched.prediction, scalar.prediction)
+        assert batched.gathered_keys_per_layer == scalar.gathered_keys_per_layer
+        assert batched.gathered_values_per_layer == scalar.gathered_values_per_layer
 
 
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))

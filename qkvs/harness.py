@@ -887,6 +887,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             errors.append("execution.output_root must be a string")
         if not _positive_integer(execution.get("prefill_chunk_tokens")):
             errors.append("execution.prefill_chunk_tokens must be a positive integer")
+        if not _positive_integer(execution.get("snapshot_candidate_batch_size", 1)):
+            errors.append("execution.snapshot_candidate_batch_size must be a positive integer")
         reasons: list[str] = []
         if status not in {"harness_verification", "approved"}:
             reasons.append("configuration is not authorized for harness execution")
@@ -2101,6 +2103,15 @@ def _run_snapshot_study(
         support_positions=tuple(stream_record["support_positions"]),
     )
     study = specification["study"]
+    candidate_batch_size = specification["execution"].get(
+        "snapshot_candidate_batch_size",
+        1,
+    )
+    snapshot_execution_version = (
+        "qwen2-h1a-current-token-batched-v2"
+        if candidate_batch_size > 1
+        else _SNAPSHOT_EXECUTION_VERSION
+    )
     output = _result_path(specification, output_root=output_root)
     snapshot_csv_path = Path(snapshot_csv).resolve() if snapshot_csv is not None else None
     if snapshot_csv_path is None:
@@ -2122,7 +2133,7 @@ def _run_snapshot_study(
             or reuse_result.get("model_identity") != model_identity
             or reuse_result.get("data_identity") != data_identity
             or reuse_result.get("device") != str(device)
-            or reuse_result.get("snapshot_execution_version") != _SNAPSHOT_EXECUTION_VERSION
+            or reuse_result.get("snapshot_execution_version") != snapshot_execution_version
             or len(reuse_result.get("streams", [])) != 1
             or reuse_result["streams"][0].get("token_sha256") != stream_record["token_sha256"]
         ):
@@ -2148,7 +2159,7 @@ def _run_snapshot_study(
         "model_identity": model_identity,
         "data_identity": data_identity,
         "device": str(device),
-        "snapshot_execution_version": _SNAPSHOT_EXECUTION_VERSION,
+        "snapshot_execution_version": snapshot_execution_version,
         "snapshot_feasibility_csv": (
             str(snapshot_csv_path) if snapshot_csv_path is not None else None
         ),
@@ -2276,6 +2287,10 @@ def _run_snapshot_study(
                     ownership=ownership,
                     prefill_chunk_tokens=prefill_chunk_tokens,
                 )
+            master_snapshot = reader.place_dense_causal_snapshot(
+                master_snapshot,
+                device=device,
+            )
         for position in study["positions"]:
             position_key = str(position)
             position_complete = all(
@@ -2443,7 +2458,7 @@ def _run_snapshot_study(
                     "trial_start": trial_start,
                     "trial_count": trial_count,
                     "sampling_algorithm": sampling_algorithm,
-                    "snapshot_execution_version": _SNAPSHOT_EXECUTION_VERSION,
+                    "snapshot_execution_version": snapshot_execution_version,
                     "device": str(device),
                     "environment": result["environment"],
                 }
@@ -2459,92 +2474,135 @@ def _run_snapshot_study(
                 else:
                     candidate_records = []
                     candidate_values: list[Any] = []
-                    for trial_offset in range(trial_count):
-                        trial_id = trial_start + trial_offset
-                        candidate_seed = derive_random_block_seed(
-                            base_seed,
-                            position,
-                            _snapshot_fraction_coordinate(percentage),
-                            trial_id,
-                        )
-                        layer_samples = tuple(
-                            sample_uniform_random_blocks(
-                                available_positions=position + 1,
-                                block_width=study["block_width"],
-                                requested_fraction=requested_fraction,
-                                seed=derive_random_block_seed(candidate_seed, layer_index),
-                                algorithm=sampling_algorithm,
+                    for batch_start in range(0, trial_count, candidate_batch_size):
+                        batch_stop = min(trial_count, batch_start + candidate_batch_size)
+                        batch_metadata = []
+                        layer_range_batches = []
+                        for trial_offset in range(batch_start, batch_stop):
+                            trial_id = trial_start + trial_offset
+                            candidate_seed = derive_random_block_seed(
+                                base_seed,
+                                position,
+                                _snapshot_fraction_coordinate(percentage),
+                                trial_id,
                             )
-                            for layer_index in range(reader.model.config.num_hidden_layers)
-                        )
-                        layer_ranges = tuple(
-                            sample.contiguous_ranges for sample in layer_samples
-                        )
-                        prepared_selection = reader.prepare_snapshot_selection(
-                            layer_ranges,
-                            position=position,
-                            device=device,
-                        )
-                        probe = reader.snapshot_probe(
-                            stream,
-                            state,
-                            position=position,
-                            selected_positions=prepared_selection,
-                            device=device,
-                        )
-                        selected_occurrences = sum(
-                            sample.selected_token_count for sample in layer_samples
-                        )
-                        gathered_keys = sum(probe.gathered_keys_per_layer)
-                        gathered_values = sum(probe.gathered_values_per_layer)
-                        if (
-                            gathered_keys != selected_occurrences
-                            or gathered_values != selected_occurrences
+                            layer_samples = tuple(
+                                sample_uniform_random_blocks(
+                                    available_positions=position + 1,
+                                    block_width=study["block_width"],
+                                    requested_fraction=requested_fraction,
+                                    seed=derive_random_block_seed(candidate_seed, layer_index),
+                                    algorithm=sampling_algorithm,
+                                )
+                                for layer_index in range(reader.model.config.num_hidden_layers)
+                            )
+                            layer_range_batches.append(
+                                tuple(sample.contiguous_ranges for sample in layer_samples)
+                            )
+                            batch_metadata.append(
+                                (
+                                    trial_id,
+                                    candidate_seed,
+                                    sum(sample.selected_token_count for sample in layer_samples),
+                                )
+                            )
+
+                        if candidate_batch_size == 1:
+                            prepared_selection = reader.prepare_snapshot_selection(
+                                layer_range_batches[0],
+                                position=position,
+                                device=device,
+                            )
+                            probes = (
+                                reader.snapshot_probe(
+                                    stream,
+                                    state,
+                                    position=position,
+                                    selected_positions=prepared_selection,
+                                    device=device,
+                                ),
+                            )
+                        else:
+                            prepared_selections = reader.prepare_snapshot_selection_batch(
+                                tuple(layer_range_batches),
+                                position=position,
+                                device=device,
+                            )
+                            probes = reader.snapshot_probe_batch(
+                                stream,
+                                state,
+                                position=position,
+                                selected_positions=prepared_selections,
+                                device=device,
+                            )
+
+                        for probe, (trial_id, candidate_seed, selected_occurrences) in zip(
+                            probes,
+                            batch_metadata,
+                            strict=True,
                         ):
-                            raise RuntimeError(
-                                "snapshot probe read accounting does not match selection"
+                            gathered_keys = sum(probe.gathered_keys_per_layer)
+                            gathered_values = sum(probe.gathered_values_per_layer)
+                            if (
+                                gathered_keys != selected_occurrences
+                                or gathered_values != selected_occurrences
+                            ):
+                                raise RuntimeError(
+                                    "snapshot probe read accounting does not match selection"
+                                )
+                            realized_fraction = selected_occurrences / (
+                                reader.model.config.num_hidden_layers * (position + 1)
                             )
-                        sparse_log_probs = torch.log_softmax(probe.logits.float(), dim=-1)
+                            candidate_records.append(
+                                {
+                                    "requested_sampled_fraction": requested_fraction,
+                                    "realized_sampled_fraction": realized_fraction,
+                                    "trial_id": trial_id,
+                                    "candidate_seed": candidate_seed,
+                                }
+                            )
+
+                        probe_logits = torch.stack([probe.logits for probe in probes])
+                        probe_losses = torch.stack([probe.loss.float() for probe in probes])
+                        probe_predictions = torch.stack(
+                            [probe.prediction.float() for probe in probes]
+                        )
+                        sparse_log_probs = torch.log_softmax(probe_logits.float(), dim=-1)
                         sparse_probabilities = sparse_log_probs.exp()
-                        divergence = torch.sum(
-                            reference_probabilities * (reference_log_probs - sparse_log_probs)
+                        divergences = torch.sum(
+                            reference_probabilities.unsqueeze(0)
+                            * (reference_log_probs.unsqueeze(0) - sparse_log_probs),
+                            dim=-1,
                         ).clamp_min(0.0)
-                        probability_overlap = torch.minimum(
-                            reference_probabilities, sparse_probabilities
-                        ).sum()
-                        loss_delta = probe.loss.float() - reference.loss.float()
-                        logit_error = (probe.logits.float() - reference.logits.float()).abs().max()
-                        loss_error = (probe.loss.float() - reference.loss.float()).abs()
+                        probability_overlaps = torch.minimum(
+                            reference_probabilities.unsqueeze(0),
+                            sparse_probabilities,
+                        ).sum(dim=-1)
+                        loss_deltas = probe_losses - reference.loss.float()
+                        logit_errors = (
+                            probe_logits.float() - reference.logits.float().unsqueeze(0)
+                        ).abs().amax(dim=-1)
+                        loss_errors = loss_deltas.abs()
                         candidate_values.append(
                             torch.stack(
                                 (
-                                    divergence,
-                                    probability_overlap,
-                                    probe.loss.float(),
-                                    loss_delta,
-                                    probe.prediction.float(),
-                                    logit_error,
-                                    loss_error,
-                                )
+                                    divergences,
+                                    probability_overlaps,
+                                    probe_losses,
+                                    loss_deltas,
+                                    probe_predictions,
+                                    logit_errors,
+                                    loss_errors,
+                                ),
+                                dim=-1,
                             )
-                        )
-                        realized_fraction = selected_occurrences / (
-                            reader.model.config.num_hidden_layers * (position + 1)
-                        )
-                        candidate_records.append(
-                            {
-                                "requested_sampled_fraction": requested_fraction,
-                                "realized_sampled_fraction": realized_fraction,
-                                "trial_id": trial_id,
-                                "candidate_seed": candidate_seed,
-                            }
                         )
                         progress.update_job(
                             f"snapshot {position} / {float(percentage):g}% / "
-                            f"trial {trial_offset + 1}/{trial_count}",
-                            fraction=(trial_offset + 1) / trial_count,
+                            f"trial {batch_stop}/{trial_count}",
+                            fraction=batch_stop / trial_count,
                         )
-                    materialized = torch.stack(candidate_values).cpu().tolist()
+                    materialized = torch.cat(candidate_values).cpu().tolist()
                     for candidate, values in zip(candidate_records, materialized, strict=True):
                         if not all(math.isfinite(value) for value in values):
                             raise RuntimeError("snapshot candidate measurement is nonfinite")

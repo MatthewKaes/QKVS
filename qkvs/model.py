@@ -1011,6 +1011,116 @@ class HuggingFaceQwen2Reader:
         hidden = residual + layer.mlp(layer.post_attention_layernorm(hidden))
         return hidden, gathered_key_occurrences, gathered_value_occurrences
 
+    def _append_layer_kv_batch(
+        self,
+        layer: Any,
+        hidden: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Project one current-token branch batch without mutating the shared prefix."""
+
+        batch_size = hidden.shape[0]
+        residual = hidden
+        normalized = layer.input_layernorm(hidden)
+        attention = layer.self_attn
+        query = attention.q_proj(normalized).view(
+            batch_size,
+            1,
+            self.model.config.num_attention_heads,
+            attention.head_dim,
+        )
+        key = attention.k_proj(normalized).view(
+            batch_size,
+            1,
+            self.model.config.num_key_value_heads,
+            attention.head_dim,
+        )
+        value = attention.v_proj(normalized).view(
+            batch_size,
+            1,
+            self.model.config.num_key_value_heads,
+            attention.head_dim,
+        )
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+        query, key = self._apply_rotary_pos_emb(query, key, *position_embeddings)
+        return residual, query[:, :, 0, :], key[:, :, 0, :], value[:, :, 0, :]
+
+    def _finish_layer_batch(
+        self,
+        layer: Any,
+        residual: Tensor,
+        query: Tensor,
+        current_keys: Tensor,
+        current_values: Tensor,
+        base_keys: Tensor,
+        base_values: Tensor,
+        layer_indices: tuple[Tensor, ...],
+        occurrence_counts: tuple[int, ...],
+        *,
+        position: int,
+    ) -> Tensor:
+        """Execute independent selections together without repeating grouped K/V heads."""
+
+        batch_size = len(layer_indices)
+        padded_indices = torch.nn.utils.rnn.pad_sequence(
+            layer_indices,
+            batch_first=True,
+            padding_value=0,
+        )
+        count_tensor = torch.tensor(
+            occurrence_counts,
+            device=padded_indices.device,
+            dtype=torch.long,
+        )
+        valid = torch.arange(padded_indices.shape[1], device=padded_indices.device).unsqueeze(
+            0
+        ) < count_tensor.unsqueeze(1)
+        current = valid & padded_indices.eq(position)
+        base_indices = padded_indices.masked_fill(current, 0)
+        gather_indices = base_indices[:, None, :, None].expand(
+            batch_size,
+            base_keys.shape[0],
+            padded_indices.shape[1],
+            base_keys.shape[2],
+        )
+        keys = torch.gather(
+            base_keys.unsqueeze(0).expand(batch_size, -1, -1, -1),
+            2,
+            gather_indices,
+        )
+        values = torch.gather(
+            base_values.unsqueeze(0).expand(batch_size, -1, -1, -1),
+            2,
+            gather_indices,
+        )
+        current_mask = current[:, None, :, None]
+        keys = torch.where(current_mask, current_keys[:, :, None, :], keys)
+        values = torch.where(current_mask, current_values[:, :, None, :], values)
+
+        attention = layer.self_attn
+        grouped_query = query.reshape(
+            batch_size,
+            self.model.config.num_key_value_heads,
+            attention.num_key_value_groups,
+            attention.head_dim,
+        )
+        attention_logits = (
+            torch.einsum("bkgd,bknd->bkgn", grouped_query, keys) * attention.scaling
+        )
+        attention_logits = attention_logits.masked_fill(
+            ~valid[:, None, None, :],
+            float("-inf"),
+        )
+        weights = torch.softmax(attention_logits, dim=-1, dtype=torch.float32).to(query.dtype)
+        context = torch.einsum("bkgn,bknd->bkgd", weights, values)
+        hidden = residual + attention.o_proj(
+            context.reshape(batch_size, 1, -1).contiguous()
+        )
+        residual = hidden
+        return residual + layer.mlp(layer.post_attention_layernorm(hidden))
+
     def _finish_layer_with_soft_history(
         self,
         layer: Any,
@@ -1419,6 +1529,27 @@ class HuggingFaceQwen2Reader:
         )
         return snapshot
 
+    def place_dense_causal_snapshot(
+        self,
+        snapshot: DenseCausalSnapshot,
+        *,
+        device: torch.device,
+    ) -> DenseCausalSnapshot:
+        """Place one immutable master prefix on its execution device for shared slicing."""
+
+        if all(
+            _device_matches_request(cache.device, device)
+            for cache in (*snapshot.key_cache, *snapshot.value_cache)
+        ):
+            return snapshot
+        return DenseCausalSnapshot(
+            identity=snapshot.identity,
+            prefix_tokens=snapshot.prefix_tokens,
+            next_position=snapshot.next_position,
+            key_cache=tuple(cache.to(device) for cache in snapshot.key_cache),
+            value_cache=tuple(cache.to(device) for cache in snapshot.value_cache),
+        )
+
     def save_dense_causal_snapshot(
         self,
         snapshot: DenseCausalSnapshot,
@@ -1557,6 +1688,169 @@ class HuggingFaceQwen2Reader:
             layers=layers,
             occurrence_counts=tuple(occurrence_counts),
             base_occurrence_counts=tuple(base_occurrence_counts),
+        )
+
+    def prepare_snapshot_selection_batch(
+        self,
+        layer_range_batches: tuple[tuple[tuple[tuple[int, int], ...], ...], ...],
+        *,
+        position: int,
+        device: torch.device,
+    ) -> tuple[SnapshotProbeSelection, ...]:
+        """Expand one candidate batch with a single device-side range operation."""
+
+        if not layer_range_batches:
+            raise ValueError("snapshot selection batches must be nonempty")
+        layer_count = len(self.model.model.layers)
+        flattened_ranges: list[tuple[int, int]] = []
+        occurrence_counts: list[int] = []
+        base_occurrence_counts: list[int] = []
+        for layer_ranges in layer_range_batches:
+            if len(layer_ranges) != layer_count:
+                raise ValueError("snapshot probe selection must provide every model layer")
+            for ranges in layer_ranges:
+                if not ranges:
+                    raise ValueError("snapshot probe selections must be nonempty")
+                count = 0
+                previous_stop = 0
+                for range_index, (start, stop) in enumerate(ranges):
+                    if (
+                        start < 0
+                        or stop <= start
+                        or stop > position + 1
+                        or (range_index and start < previous_stop)
+                    ):
+                        raise ValueError(
+                            "snapshot probe ranges must be ordered nonoverlapping causal intervals"
+                        )
+                    flattened_ranges.append((start, stop))
+                    count += stop - start
+                    previous_stop = stop
+                occurrence_counts.append(count)
+                base_occurrence_counts.append(
+                    count - int(ranges[-1][0] <= position < ranges[-1][1])
+                )
+
+        range_tensor = torch.tensor(flattened_ranges, dtype=torch.long, device=device)
+        lengths = range_tensor[:, 1] - range_tensor[:, 0]
+        offsets = torch.cumsum(lengths, dim=0) - lengths
+        total_occurrences = sum(occurrence_counts)
+        indices = torch.repeat_interleave(
+            range_tensor[:, 0] - offsets,
+            lengths,
+            output_size=total_occurrences,
+        ) + torch.arange(total_occurrences, dtype=torch.long, device=device)
+        expanded_layers = iter(indices.split(occurrence_counts))
+        selections = []
+        for candidate_index in range(len(layer_range_batches)):
+            start = candidate_index * layer_count
+            stop = start + layer_count
+            selections.append(
+                SnapshotProbeSelection(
+                    position=position,
+                    layers=tuple(next(expanded_layers) for _ in range(layer_count)),
+                    occurrence_counts=tuple(occurrence_counts[start:stop]),
+                    base_occurrence_counts=tuple(base_occurrence_counts[start:stop]),
+                )
+            )
+        return tuple(selections)
+
+    def snapshot_probe_batch(
+        self,
+        stream: TokenStream,
+        state: SnapshotProbeState,
+        *,
+        position: int,
+        selected_positions: tuple[SnapshotProbeSelection, ...],
+        device: torch.device,
+    ) -> tuple[SnapshotProbeResult, ...]:
+        """Evaluate independent current-token branches as one transformer batch."""
+
+        if not selected_positions:
+            raise ValueError("snapshot probe batches must be nonempty")
+        backbone = self.model.model
+        layer_count = len(backbone.layers)
+        if position >= len(stream.tokens) - 1:
+            raise ValueError("snapshot probe position has no next-token target")
+        if (
+            state.position != position
+            or stream.tokens[position] != state.current_token_id
+            or stream.tokens[position + 1] != state.target_id
+        ):
+            raise ValueError("snapshot probe state does not match the requested token and target")
+        for selection in selected_positions:
+            if (
+                selection.position != position
+                or len(selection.layers) != layer_count
+                or len(selection.occurrence_counts) != layer_count
+                or len(selection.base_occurrence_counts) != layer_count
+                or any(
+                    indices.ndim != 1
+                    or indices.dtype != torch.long
+                    or not _device_matches_request(indices.device, device)
+                    or len(indices) != count
+                    for indices, count in zip(
+                        selection.layers,
+                        selection.occurrence_counts,
+                        strict=True,
+                    )
+                )
+                or any(
+                    not 0 <= base_count <= count
+                    for base_count, count in zip(
+                        selection.base_occurrence_counts,
+                        selection.occurrence_counts,
+                        strict=True,
+                    )
+                )
+            ):
+                raise ValueError("prepared snapshot selection does not match the probe")
+        model_device = next(self.model.parameters()).device
+        if not _device_matches_request(model_device, device):
+            raise ValueError("snapshot probe device does not match the loaded model")
+
+        batch_size = len(selected_positions)
+        with torch.inference_mode():
+            hidden = state.initial_hidden.expand(batch_size, -1, -1)
+            for layer_index, layer in enumerate(backbone.layers):
+                residual, query, current_keys, current_values = self._append_layer_kv_batch(
+                    layer,
+                    hidden,
+                    state.position_embeddings,
+                )
+                hidden = self._finish_layer_batch(
+                    layer,
+                    residual,
+                    query,
+                    current_keys,
+                    current_values,
+                    state.key_cache[layer_index],
+                    state.value_cache[layer_index],
+                    tuple(selection.layers[layer_index] for selection in selected_positions),
+                    tuple(
+                        selection.occurrence_counts[layer_index]
+                        for selection in selected_positions
+                    ),
+                    position=position,
+                )
+            logits = self.model.lm_head(backbone.norm(hidden))[:, 0]
+            losses = torch.nn.functional.cross_entropy(
+                logits,
+                state.target.expand(batch_size),
+                reduction="none",
+            )
+            predictions = logits.argmax(dim=-1)
+
+        return tuple(
+            SnapshotProbeResult(
+                logits=logits[index].detach(),
+                loss=losses[index].detach(),
+                prediction=predictions[index].detach(),
+                selected_positions_per_layer=selection.occurrence_counts,
+                gathered_keys_per_layer=selection.occurrence_counts,
+                gathered_values_per_layer=selection.occurrence_counts,
+            )
+            for index, selection in enumerate(selected_positions)
         )
 
     def snapshot_probe(

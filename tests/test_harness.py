@@ -634,6 +634,13 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert "reuse_dense_snapshots_from" not in fresh_v2["study"]
     assert fresh_v2["study"]["dense_snapshot_strategy"] == "largest_prefix_slice"
     assert fresh_v2["study"]["retain_dense_snapshots"] is False
+    assert fresh_v2["execution"]["snapshot_candidate_batch_size"] == 32
+    invalid_batch = json.loads(json.dumps(fresh_v2))
+    invalid_batch["execution"]["snapshot_candidate_batch_size"] = 0
+    assert (
+        "execution.snapshot_candidate_batch_size must be a positive integer"
+        in validate_config(invalid_batch)["errors"]
+    )
     assert {
         position
         for cohort in fresh_v2["study"]["position_cohorts"].values()
@@ -1191,9 +1198,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     slice_specification["run"]["id"] = "snapshot-harness-largest-prefix-smoke"
     slice_specification["study"]["positions"] = [3, 7, 9]
     slice_specification["study"]["trial_start"] = 0
-    slice_specification["study"]["trials_per_fraction"] = 1
+    slice_specification["study"]["trials_per_fraction"] = 3
     slice_specification["study"]["retain_dense_snapshots"] = False
     slice_specification["study"]["dense_snapshot_strategy"] = "largest_prefix_slice"
+    slice_specification["execution"]["snapshot_candidate_batch_size"] = 2
     slice_config = tmp_path / "snapshot-slice-config.json"
     slice_config.write_text(json.dumps(slice_specification), encoding="utf-8")
     computed_dense_positions.clear()
@@ -1205,6 +1213,14 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         return original_derive_snapshot(*args, **kwargs)
 
     monkeypatch.setattr(reader, "derive_dense_causal_snapshot", tracked_derive_snapshot)
+    original_batch_probe = reader.snapshot_probe_batch
+    candidate_batch_sizes = []
+
+    def tracked_batch_probe(*args, **kwargs):
+        candidate_batch_sizes.append(len(kwargs["selected_positions"]))
+        return original_batch_probe(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "snapshot_probe_batch", tracked_batch_probe)
     slice_probe_calls = 0
 
     def interrupted_slice_probe(*args, **kwargs):
@@ -1235,8 +1251,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         snapshot_csv=tmp_path / "slice-feasibility.csv",
     )
     assert sliced["complete"]
+    assert sliced["snapshot_execution_version"] == "qwen2-h1a-current-token-batched-v2"
     assert computed_dense_positions == [9]
     assert derived_positions == [3, 3, 7]
+    assert candidate_batch_sizes == [2, 1, 1] * 3
     assert set(sliced["snapshot_prefixes"]) == {"9"}
     assert sliced["snapshot_prefixes"]["9"]["derived_positions"] == 2
     assert sliced["snapshot_prefixes"]["9"]["retained"] is False

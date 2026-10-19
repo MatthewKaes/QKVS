@@ -485,7 +485,11 @@ from v1 while preserving uniform sampling without replacement. New v2 snapshot e
 aggregate-only: every completed position/coverage cell appends its KL feasibility row directly to
 the requested plain CSV, while `result.json` retains compact identity, resume, and discovered-
 frontier metadata. Each CSV row carries its run, source revision, configuration hash, and sampler
-identity. The harness does not write per-cell JSON or retain raw candidate trials.
+identity. The harness does not write per-cell JSON or retain raw candidate trials. Configured
+snapshot candidate batches preserve each trial's seed and selected occurrences while executing
+independent current-token branches together. Padding is excluded from attention, and grouped-query
+attention reads the model's two K/V heads directly instead of materializing fourteen repeated
+heads. Batched execution has a separate identity and is never reused as serial predictive data.
 
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
@@ -498,9 +502,9 @@ through 99%, including 97.5% and half-percentage resolution elsewhere in the lik
 evaluated once per position. Completed-position prefix snapshots are discarded so the 200 fresh
 prefixes do not accumulate on disk. Positions execute from smallest to largest context. The reader
 first builds the largest dense causal prefix once, then derives every requested position by slicing
-that immutable K/V state instead of replaying the prefix. The master snapshot remains available
-for resume until the study completes, then is discarded. The authorized command writes the
-initially absent CSV:
+that immutable K/V state instead of replaying the prefix. One execution-device copy remains
+resident for all positional slices; the persisted master remains available for resume until the
+study completes, then is discarded. The authorized command writes the initially absent CSV:
 
 ```bash
 ./run.sh configs/h1a_kl_0_01_blue_noise_v2.json \

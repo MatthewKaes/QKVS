@@ -485,6 +485,7 @@
   },
   "execution": {
     "prefill_chunk_tokens": 128,
+    "snapshot_candidate_batch_size": 32,
     "allowed_devices": [
       "cuda"
     ],
