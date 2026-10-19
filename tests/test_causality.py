@@ -210,6 +210,15 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         ownership="snapshot-test",
         prefill_chunk_tokens=2,
     )
+    input_calls = {"embedding": 0, "rope": 0}
+    embedding_hook = reader.model.model.embed_tokens.register_forward_hook(
+        lambda _module, _inputs, _output: input_calls.__setitem__(
+            "embedding", input_calls["embedding"] + 1
+        )
+    )
+    rope_hook = reader.model.model.rotary_emb.register_forward_hook(
+        lambda _module, _inputs, _output: input_calls.__setitem__("rope", input_calls["rope"] + 1)
+    )
     state = reader.prepare_snapshot_probe(
         snapshot,
         first,
@@ -273,6 +282,15 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         selected_positions=sparse_selection,
         device=torch.device("cpu"),
     )
+    current_changed = _stream((1, 2, 3, 4, 5, 6, 31, 8, 9, 10))
+    with pytest.raises(ValueError, match="requested token and target"):
+        reader.snapshot_probe(
+            current_changed,
+            state,
+            position=6,
+            selected_positions=sparse_selection,
+            device=torch.device("cpu"),
+        )
 
     assert torch.equal(reference.logits, dense_candidate.logits)
     assert torch.equal(reference.loss, dense_candidate.loss)
@@ -287,6 +305,9 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
     assert sparse.gathered_keys_per_layer == sparse.gathered_values_per_layer == (2, 2)
     assert torch.equal(sparse.logits, suffix_changed.logits)
     assert torch.equal(sparse.loss, suffix_changed.loss)
+    assert input_calls == {"embedding": 1, "rope": 1}
+    embedding_hook.remove()
+    rope_hook.remove()
     assert all(
         torch.equal(before, after)
         for before, after in zip(keys_before, state.key_cache, strict=True)

@@ -65,8 +65,13 @@ class SnapshotProbeState:
     identity: dict[str, Any]
     prefix_tokens: tuple[int, ...]
     position: int
+    current_token_id: int
+    target_id: int
     key_cache: tuple[Tensor, ...]
     value_cache: tuple[Tensor, ...]
+    initial_hidden: Tensor
+    position_embeddings: tuple[Tensor, Tensor]
+    target: Tensor
 
 
 @dataclass(frozen=True)
@@ -1434,12 +1439,23 @@ class HuggingFaceQwen2Reader:
             ownership=ownership,
             prefill_chunk_tokens=prefill_chunk_tokens,
         )
+        backbone = self.model.model
+        token_id = torch.tensor([[stream.tokens[position]]], device=device)
+        absolute_position = torch.tensor([[position]], device=device)
+        with torch.inference_mode():
+            initial_hidden = backbone.embed_tokens(token_id)
+            position_embeddings = backbone.rotary_emb(initial_hidden, absolute_position)
         return SnapshotProbeState(
             identity=snapshot.identity,
             prefix_tokens=snapshot.prefix_tokens,
             position=position,
+            current_token_id=stream.tokens[position],
+            target_id=stream.tokens[position + 1],
             key_cache=tuple(cache.to(device) for cache in snapshot.key_cache),
             value_cache=tuple(cache.to(device) for cache in snapshot.value_cache),
+            initial_hidden=initial_hidden,
+            position_embeddings=position_embeddings,
+            target=torch.tensor([stream.tokens[position + 1]], device=device),
         )
 
     def prepare_snapshot_selection(
@@ -1510,15 +1526,14 @@ class HuggingFaceQwen2Reader:
 
         backbone = self.model.model
         layer_count = len(backbone.layers)
-        if (
-            state.position != position
-            or state.prefix_tokens != stream.tokens[:position]
-            or state.identity.get("prefix_tokens_sha256")
-            != self._prefix_sha256(stream.tokens[:position])
-        ):
-            raise ValueError("snapshot probe state does not match the requested causal prefix")
         if position >= len(stream.tokens) - 1:
             raise ValueError("snapshot probe position has no next-token target")
+        if (
+            state.position != position
+            or stream.tokens[position] != state.current_token_id
+            or stream.tokens[position + 1] != state.target_id
+        ):
+            raise ValueError("snapshot probe state does not match the requested token and target")
         prepared_selection = isinstance(selected_positions, SnapshotProbeSelection)
         if prepared_selection:
             if (
@@ -1566,16 +1581,13 @@ class HuggingFaceQwen2Reader:
         model_device = next(self.model.parameters()).device
         if not _device_matches_request(model_device, device):
             raise ValueError("snapshot probe device does not match the loaded model")
-        token_id = torch.tensor([[stream.tokens[position]]], device=device)
-        target = torch.tensor([stream.tokens[position + 1]], device=device)
-        absolute_position = torch.tensor([[position]], device=device)
         selected_counts: list[int] = []
         gathered_keys: list[int] = []
         gathered_values: list[int] = []
 
         with torch.inference_mode():
-            hidden = backbone.embed_tokens(token_id)
-            position_embeddings = backbone.rotary_emb(hidden, absolute_position)
+            hidden = state.initial_hidden
+            position_embeddings = state.position_embeddings
             for layer_index, layer in enumerate(backbone.layers):
                 branch_keys = _LayerKVCache(
                     state.key_cache[layer_index],
@@ -1626,7 +1638,7 @@ class HuggingFaceQwen2Reader:
                 gathered_keys.append(key_count)
                 gathered_values.append(value_count)
             logits = self.model.lm_head(backbone.norm(hidden))[0, 0]
-            loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), target)
+            loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), state.target)
 
         return SnapshotProbeResult(
             logits=logits.detach(),

@@ -601,6 +601,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert fresh_v2["model"] == cell_extension["model"] == position_extension["model"]
     assert fresh_v2["data"] == cell_extension["data"] == position_extension["data"]
     assert len(fresh_positions) == len(set(fresh_positions)) == 200
+    assert fresh_positions == sorted(fresh_positions, reverse=True)
     assert min(fresh_positions) >= 512
     assert max(fresh_positions) < 32767
     assert fresh_v2["study"]["trial_start"] == 0
@@ -641,6 +642,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         for position in cohort
     } == set(fresh_positions)
     blue_noise = fresh_v2["study"]["position_selection"]
+    assert blue_noise["execution_order"] == "descending_context_length"
     generator = np.random.Generator(np.random.PCG64(blue_noise["seed"]))
     regenerated_blue_noise = []
     proposals = 0
@@ -653,9 +655,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         ):
             regenerated_blue_noise.append(candidate)
     assert proposals == blue_noise["accepted_after_proposals"]
-    assert sorted(regenerated_blue_noise) == fresh_positions
+    assert sorted(regenerated_blue_noise, reverse=True) == fresh_positions
     assert min(
-        right - left for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
+        left - right for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
     ) >= blue_noise["minimum_spacing_tokens"]
     assert fresh_v2["run"]["id"] not in {
         cell_extension["run"]["id"],
