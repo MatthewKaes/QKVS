@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "experiment": "h1a_unconstrained_snapshot_compressibility",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "h1a-unconstrained-snapshot-compressibility",
+    "seed": 20261019
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "dtype": "bfloat16",
+    "frozen": true
+  },
+  "data": {
+    "kind": "tokenized_text",
+    "source": {
+      "path": "../data/project_gutenberg_1661.txt",
+      "url": "https://www.gutenberg.org/cache/epub/1661/pg1661.txt",
+      "bytes": 607606,
+      "sha256": "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0"
+    },
+    "boundaries": [
+      {
+        "id": "h1a-sherlock-000",
+        "split": "evaluation",
+        "start_token": 0,
+        "stop_token": 16384
+      }
+    ]
+  },
+  "study": {
+    "kind": "unconstrained_snapshot_compressibility",
+    "positions": [
+      99,
+      999,
+      4095,
+      6143,
+      8191,
+      10239,
+      16382
+    ],
+    "block_width": 8,
+    "sampling_percentages": [
+      1,
+      5,
+      10,
+      20,
+      40,
+      60,
+      80,
+      95,
+      99,
+      100
+    ],
+    "trial_start": 0,
+    "trials_per_fraction": 200,
+    "sampling_algorithm": "uniform-aligned-blocks-v1",
+    "fidelity_tolerances_nats": [
+      0.001,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "dense_parity_tolerance": {
+      "logit_atol": 0.005,
+      "loss_atol": 0.005
+    }
+  },
+  "execution": {
+    "prefill_chunk_tokens": 128,
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

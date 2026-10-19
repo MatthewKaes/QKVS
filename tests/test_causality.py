@@ -179,6 +179,78 @@ def test_direct_cache_gather_reads_real_occurrences_in_order() -> None:
         )
 
 
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
+def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches(dtype) -> None:
+    reader = _qwen_reader(dtype)
+    first = _stream((1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    second = _stream((1, 2, 3, 4, 5, 6, 7, 8, 31, 30))
+    snapshot = reader.dense_causal_snapshot(
+        first,
+        position=6,
+        device=torch.device("cpu"),
+        ownership="snapshot-test",
+        prefill_chunk_tokens=2,
+    )
+    state = reader.prepare_snapshot_probe(
+        snapshot,
+        first,
+        position=6,
+        device=torch.device("cpu"),
+        ownership="snapshot-test",
+        prefill_chunk_tokens=2,
+    )
+    keys_before = tuple(cache.clone() for cache in state.key_cache)
+    values_before = tuple(cache.clone() for cache in state.value_cache)
+
+    reference = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=None,
+        device=torch.device("cpu"),
+    )
+    full_selection = tuple(tuple(range(7)) for _ in reader.model.model.layers)
+    dense_candidate = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=full_selection,
+        device=torch.device("cpu"),
+    )
+    sparse_selection = ((0, 1), (2, 3))
+    sparse = reader.snapshot_probe(
+        first,
+        state,
+        position=6,
+        selected_positions=sparse_selection,
+        device=torch.device("cpu"),
+    )
+    suffix_changed = reader.snapshot_probe(
+        second,
+        state,
+        position=6,
+        selected_positions=sparse_selection,
+        device=torch.device("cpu"),
+    )
+
+    assert torch.equal(reference.logits, dense_candidate.logits)
+    assert torch.equal(reference.loss, dense_candidate.loss)
+    assert dense_candidate.gathered_keys_per_layer == (7, 7)
+    assert dense_candidate.gathered_values_per_layer == (7, 7)
+    assert sparse.selected_positions_per_layer == (2, 2)
+    assert sparse.gathered_keys_per_layer == sparse.gathered_values_per_layer == (2, 2)
+    assert torch.equal(sparse.logits, suffix_changed.logits)
+    assert torch.equal(sparse.loss, suffix_changed.loss)
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(keys_before, state.key_cache, strict=True)
+    )
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(values_before, state.value_cache, strict=True)
+    )
+
+
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))
 def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_factory) -> None:
     reader = reader_factory()
@@ -1823,6 +1895,39 @@ def test_local_pretrained_qwen2_full_history_reference(tmp_path, monkeypatch) ->
     assert [score.as_dict() for score in first_scores[: len(prefix) - 1]] == [
         score.as_dict() for score in second_scores[: len(prefix) - 1]
     ]
+
+    snapshot_stream = streams[0]
+    snapshot = reader.dense_causal_snapshot(
+        snapshot_stream,
+        position=4,
+        device=torch.device("cpu"),
+        ownership="pretrained-snapshot-qualification",
+        prefill_chunk_tokens=2,
+    )
+    snapshot_state = reader.prepare_snapshot_probe(
+        snapshot,
+        snapshot_stream,
+        position=4,
+        device=torch.device("cpu"),
+        ownership="pretrained-snapshot-qualification",
+        prefill_chunk_tokens=2,
+    )
+    snapshot_reference = reader.snapshot_probe(
+        snapshot_stream,
+        snapshot_state,
+        position=4,
+        selected_positions=None,
+        device=torch.device("cpu"),
+    )
+    snapshot_dense = reader.snapshot_probe(
+        snapshot_stream,
+        snapshot_state,
+        position=4,
+        selected_positions=tuple(tuple(range(5)) for _ in reader.model.model.layers),
+        device=torch.device("cpu"),
+    )
+    assert torch.equal(snapshot_reference.logits, snapshot_dense.logits)
+    assert torch.equal(snapshot_reference.loss, snapshot_dense.loss)
 
     from qkvs.harness import _tokenized_text_streams, run_experiment, validate_config_file
 

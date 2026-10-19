@@ -47,6 +47,38 @@ class DensePrefillSnapshot:
     boundary_logits: Tensor
 
 
+@dataclass(frozen=True)
+class DenseCausalSnapshot:
+    """Immutable full-QKV state immediately before one probed token."""
+
+    identity: dict[str, Any]
+    prefix_tokens: tuple[int, ...]
+    next_position: int
+    key_cache: tuple[Tensor, ...]
+    value_cache: tuple[Tensor, ...]
+
+
+@dataclass(frozen=True)
+class SnapshotProbeState:
+    """Device-resident immutable prefix shared by independent current-token branches."""
+
+    identity: dict[str, Any]
+    prefix_tokens: tuple[int, ...]
+    position: int
+    key_cache: tuple[Tensor, ...]
+    value_cache: tuple[Tensor, ...]
+
+
+@dataclass(frozen=True)
+class SnapshotProbeResult:
+    logits: Tensor
+    loss: Tensor
+    prediction: Tensor
+    selected_positions_per_layer: tuple[int, ...]
+    gathered_keys_per_layer: tuple[int, ...]
+    gathered_values_per_layer: tuple[int, ...]
+
+
 @dataclass
 class HeatfieldRolloutState:
     """Mutable causal continuation owned by one training stream."""
@@ -1147,6 +1179,317 @@ class HuggingFaceQwen2Reader:
     def _prefix_sha256(tokens: tuple[int, ...]) -> str:
         encoded = json.dumps(tokens, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+    def _dense_causal_snapshot_identity(
+        self,
+        prefix_tokens: tuple[int, ...],
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int,
+    ) -> dict[str, Any]:
+        config = self.model.config
+        return {
+            "format": "qkvs-dense-causal-snapshot-v1",
+            "ownership": ownership,
+            "prefix_tokens_sha256": self._prefix_sha256(prefix_tokens),
+            "prefix_length": len(prefix_tokens),
+            "probe_position": position,
+            "prefill_chunk_tokens": prefill_chunk_tokens,
+            "model": self.identity(),
+            "model_weights_sha256": self._model_weights_sha256(),
+            "position": {
+                "max_position_embeddings": config.max_position_embeddings,
+                "rope_theta": config.rope_theta,
+                "rope_scaling": config.rope_scaling,
+            },
+            "numerical": {
+                "torch": str(torch.__version__),
+                "dtype": str(next(self.model.parameters()).dtype),
+                "device": str(device),
+                "attention_implementation": "eager",
+                "default_dtype": str(torch.get_default_dtype()),
+                "fp32_precision": {
+                    "global": torch.backends.fp32_precision,
+                    "cuda_matmul": torch.backends.cuda.matmul.fp32_precision,
+                    "cudnn": torch.backends.cudnn.fp32_precision,
+                    "cudnn_conv": torch.backends.cudnn.conv.fp32_precision,
+                },
+                "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+                "threads": torch.get_num_threads(),
+                "interop_threads": torch.get_num_interop_threads(),
+            },
+        }
+
+    def _validate_dense_causal_snapshot(
+        self,
+        snapshot: DenseCausalSnapshot,
+        stream: TokenStream,
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int,
+    ) -> None:
+        if position <= 0 or position >= len(stream.tokens) - 1:
+            raise ValueError(
+                "snapshot probe position needs a nonempty prefix and next-token target"
+            )
+        prefix = stream.tokens[:position]
+        expected = self._dense_causal_snapshot_identity(
+            prefix,
+            position=position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        if snapshot.identity != expected or snapshot.prefix_tokens != prefix:
+            raise ValueError("dense causal snapshot identity does not match this probe")
+        if snapshot.next_position != position:
+            raise ValueError("dense causal snapshot position is invalid")
+        layer_count = len(self.model.model.layers)
+        if len(snapshot.key_cache) != layer_count or len(snapshot.value_cache) != layer_count:
+            raise ValueError("dense causal snapshot layer cache count is invalid")
+        if any(cache.ndim != 3 or cache.shape[1] != position for cache in snapshot.key_cache):
+            raise ValueError("dense causal snapshot key cache length is invalid")
+        if any(cache.ndim != 3 or cache.shape[1] != position for cache in snapshot.value_cache):
+            raise ValueError("dense causal snapshot value cache length is invalid")
+
+    def dense_causal_snapshot(
+        self,
+        stream: TokenStream,
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int = 128,
+    ) -> DenseCausalSnapshot:
+        """Execute full-QKV over [0, position) without defining a sparse trajectory."""
+
+        if position <= 0 or position >= len(stream.tokens) - 1:
+            raise ValueError(
+                "snapshot probe position needs a nonempty prefix and next-token target"
+            )
+        if position >= self.model.config.max_position_embeddings:
+            raise ValueError("snapshot probe exceeds the model's supported position range")
+        if prefill_chunk_tokens <= 0:
+            raise ValueError("dense causal snapshot chunk size must be positive")
+        self.model.to(device)
+        from transformers import StaticCache
+
+        cache = StaticCache(config=self.model.config, max_cache_len=position)
+        with torch.inference_mode():
+            for start in range(0, position, prefill_chunk_tokens):
+                stop = min(position, start + prefill_chunk_tokens)
+                positions = torch.arange(start, stop, device=device)
+                output = self.model(
+                    input_ids=torch.tensor([stream.tokens[start:stop]], device=device),
+                    past_key_values=cache,
+                    use_cache=True,
+                    cache_position=positions,
+                    position_ids=positions.unsqueeze(0),
+                    logits_to_keep=1,
+                )
+                cache = output.past_key_values
+
+        prefix = stream.tokens[:position]
+        snapshot = DenseCausalSnapshot(
+            identity=self._dense_causal_snapshot_identity(
+                prefix,
+                position=position,
+                device=device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            ),
+            prefix_tokens=prefix,
+            next_position=position,
+            key_cache=tuple(
+                layer.keys[0, :, :position].detach().cpu().clone() for layer in cache.layers
+            ),
+            value_cache=tuple(
+                layer.values[0, :, :position].detach().cpu().clone() for layer in cache.layers
+            ),
+        )
+        self._validate_dense_causal_snapshot(
+            snapshot,
+            stream,
+            position=position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        return snapshot
+
+    def save_dense_causal_snapshot(
+        self,
+        snapshot: DenseCausalSnapshot,
+        path: str | Path,
+    ) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        torch.save(
+            {
+                "identity": snapshot.identity,
+                "prefix_tokens": snapshot.prefix_tokens,
+                "next_position": snapshot.next_position,
+                "key_cache": snapshot.key_cache,
+                "value_cache": snapshot.value_cache,
+            },
+            temporary,
+        )
+        temporary.replace(destination)
+
+    def load_dense_causal_snapshot(
+        self,
+        path: str | Path,
+        stream: TokenStream,
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int = 128,
+    ) -> DenseCausalSnapshot:
+        saved = torch.load(Path(path), map_location="cpu", weights_only=True)
+        snapshot = DenseCausalSnapshot(
+            identity=saved["identity"],
+            prefix_tokens=tuple(saved["prefix_tokens"]),
+            next_position=int(saved["next_position"]),
+            key_cache=tuple(saved["key_cache"]),
+            value_cache=tuple(saved["value_cache"]),
+        )
+        self._validate_dense_causal_snapshot(
+            snapshot,
+            stream,
+            position=position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        return snapshot
+
+    def prepare_snapshot_probe(
+        self,
+        snapshot: DenseCausalSnapshot,
+        stream: TokenStream,
+        *,
+        position: int,
+        device: torch.device,
+        ownership: str,
+        prefill_chunk_tokens: int = 128,
+    ) -> SnapshotProbeState:
+        self._validate_dense_causal_snapshot(
+            snapshot,
+            stream,
+            position=position,
+            device=device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        return SnapshotProbeState(
+            identity=snapshot.identity,
+            prefix_tokens=snapshot.prefix_tokens,
+            position=position,
+            key_cache=tuple(cache.to(device) for cache in snapshot.key_cache),
+            value_cache=tuple(cache.to(device) for cache in snapshot.value_cache),
+        )
+
+    def snapshot_probe(
+        self,
+        stream: TokenStream,
+        state: SnapshotProbeState,
+        *,
+        position: int,
+        selected_positions: tuple[tuple[int, ...], ...] | None,
+        device: torch.device,
+    ) -> SnapshotProbeResult:
+        """Evaluate one noncommitting full-token branch from an immutable dense prefix."""
+
+        backbone = self.model.model
+        layer_count = len(backbone.layers)
+        if (
+            state.position != position
+            or state.prefix_tokens != stream.tokens[:position]
+            or state.identity.get("prefix_tokens_sha256")
+            != self._prefix_sha256(stream.tokens[:position])
+        ):
+            raise ValueError("snapshot probe state does not match the requested causal prefix")
+        if position >= len(stream.tokens) - 1:
+            raise ValueError("snapshot probe position has no next-token target")
+        if selected_positions is not None:
+            if len(selected_positions) != layer_count:
+                raise ValueError("snapshot probe selection must provide every model layer")
+            if any(
+                not indices
+                or len(indices) != len(set(indices))
+                or any(index < 0 or index > position for index in indices)
+                for indices in selected_positions
+            ):
+                raise ValueError(
+                    "snapshot probe selections must be nonempty unique causal positions"
+                )
+        self.model.to(device)
+        token_id = torch.tensor([[stream.tokens[position]]], device=device)
+        target = torch.tensor([stream.tokens[position + 1]], device=device)
+        absolute_position = torch.tensor([[position]], device=device)
+        selected_counts: list[int] = []
+        gathered_keys: list[int] = []
+        gathered_values: list[int] = []
+
+        with torch.inference_mode():
+            hidden = backbone.embed_tokens(token_id)
+            position_embeddings = backbone.rotary_emb(hidden, absolute_position)
+            for layer_index, layer in enumerate(backbone.layers):
+                branch_keys = _LayerKVCache(
+                    state.key_cache[layer_index],
+                    position,
+                    writable=False,
+                )
+                branch_values = _LayerKVCache(
+                    state.value_cache[layer_index],
+                    position,
+                    writable=False,
+                )
+                residual, _, query = self._append_layer_kv(
+                    layer,
+                    hidden,
+                    position_embeddings,
+                    branch_keys,
+                    branch_values,
+                )
+                if selected_positions is None:
+                    actual_indices = None
+                    occurrence_limit = None
+                    selected_count = position + 1
+                else:
+                    indices = selected_positions[layer_index]
+                    actual_indices = torch.tensor(indices, device=device, dtype=torch.long)
+                    occurrence_limit = len(indices)
+                    selected_count = len(indices)
+                hidden, key_count, value_count = self._finish_layer(
+                    layer,
+                    residual,
+                    query,
+                    branch_keys,
+                    branch_values,
+                    actual_indices,
+                    occurrence_limit=occurrence_limit,
+                )
+                selected_counts.append(selected_count)
+                gathered_keys.append(key_count)
+                gathered_values.append(value_count)
+            logits = self.model.lm_head(backbone.norm(hidden))[0, 0]
+            loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), target)
+
+        return SnapshotProbeResult(
+            logits=logits.detach(),
+            loss=loss.detach(),
+            prediction=logits.argmax().detach(),
+            selected_positions_per_layer=tuple(selected_counts),
+            gathered_keys_per_layer=tuple(gathered_keys),
+            gathered_values_per_layer=tuple(gathered_values),
+        )
 
     def _dense_prefill_identity(
         self,

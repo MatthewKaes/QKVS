@@ -322,6 +322,144 @@ def summarize_training_alignment(history: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _quantile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return ordered[round(fraction * (len(ordered) - 1))]
+
+
+def _tolerance_key(value: float) -> str:
+    return format(value, ".12g")
+
+
+def summarize_snapshot_trial_set(
+    candidates: list[dict[str, Any]],
+    *,
+    fidelity_tolerances: list[float],
+) -> dict[str, Any]:
+    if not candidates:
+        raise ValueError("snapshot trial summary requires candidate observations")
+    divergences = [float(candidate["kl_divergence_nats"]) for candidate in candidates]
+    loss_deltas = [float(candidate["next_token_ce_delta_nats"]) for candidate in candidates]
+    realized = [float(candidate["realized_sampled_fraction"]) for candidate in candidates]
+    best = min(
+        candidates,
+        key=lambda candidate: (
+            float(candidate["kl_divergence_nats"]),
+            float(candidate["realized_sampled_fraction"]),
+            int(candidate["trial_id"]),
+        ),
+    )
+    histogram_width = len(candidates[0]["sampled_position_histogram"])
+    if any(
+        len(candidate["sampled_position_histogram"]) != histogram_width for candidate in candidates
+    ):
+        raise ValueError("snapshot candidate histograms do not align")
+    return {
+        "candidate_count": len(candidates),
+        "kl_divergence_nats": {
+            "minimum": min(divergences),
+            "median": _quantile(divergences, 0.5),
+            "mean": _mean(divergences),
+            "maximum": max(divergences),
+        },
+        "next_token_ce_delta_nats": {
+            "minimum": min(loss_deltas),
+            "median": _quantile(loss_deltas, 0.5),
+            "mean": _mean(loss_deltas),
+            "maximum": max(loss_deltas),
+        },
+        "realized_sampled_fraction": {
+            "minimum": min(realized),
+            "mean": _mean(realized),
+            "maximum": max(realized),
+        },
+        "top_one_agreement_fraction": _mean(
+            float(candidate["top_one_agreement"]) for candidate in candidates
+        ),
+        "successful_candidate_fraction": {
+            _tolerance_key(tolerance): _mean(
+                float(candidate["kl_divergence_nats"] <= tolerance) for candidate in candidates
+            )
+            for tolerance in fidelity_tolerances
+        },
+        "mean_selected_token_occurrences": _mean(
+            candidate["selected_token_occurrences"] for candidate in candidates
+        ),
+        "mean_aggregate_block_count": _mean(
+            candidate["aggregate_block_count"] for candidate in candidates
+        ),
+        "sampled_position_histogram": [
+            sum(candidate["sampled_position_histogram"][index] for candidate in candidates)
+            for index in range(histogram_width)
+        ],
+        "best_candidate": {
+            key: best[key]
+            for key in (
+                "trial_id",
+                "candidate_seed",
+                "requested_sampled_fraction",
+                "realized_sampled_fraction",
+                "kl_divergence_nats",
+                "next_token_ce_delta_nats",
+                "top_one_agreement",
+            )
+        },
+    }
+
+
+def summarize_snapshot_frontiers(
+    trial_sets: list[dict[str, Any]],
+    *,
+    fidelity_tolerances: list[float],
+) -> dict[str, Any]:
+    positions = sorted({int(trial_set["position"]) for trial_set in trial_sets})
+    frontiers: dict[str, Any] = {}
+    for position in positions:
+        candidates = [
+            candidate
+            for trial_set in trial_sets
+            if int(trial_set["position"]) == position
+            for candidate in trial_set["candidates"]
+        ]
+        position_frontier: dict[str, Any] = {}
+        for tolerance in fidelity_tolerances:
+            successful = [
+                candidate
+                for candidate in candidates
+                if float(candidate["kl_divergence_nats"]) <= tolerance
+            ]
+            key = _tolerance_key(tolerance)
+            if not successful:
+                position_frontier[key] = {
+                    "status": "not_found",
+                    "smallest_discovered_fraction": None,
+                }
+                continue
+            discovered = min(
+                successful,
+                key=lambda candidate: (
+                    float(candidate["realized_sampled_fraction"]),
+                    float(candidate["kl_divergence_nats"]),
+                    int(candidate["trial_id"]),
+                ),
+            )
+            position_frontier[key] = {
+                "status": "found",
+                "smallest_discovered_fraction": discovered["realized_sampled_fraction"],
+                "requested_sampled_fraction": discovered["requested_sampled_fraction"],
+                "trial_id": discovered["trial_id"],
+                "candidate_seed": discovered["candidate_seed"],
+                "kl_divergence_nats": discovered["kl_divergence_nats"],
+            }
+        frontiers[str(position)] = position_frontier
+    return {
+        "interpretation": "minimum_discovered_random_sample_not_theoretical_minimum",
+        "frontiers_by_position": frontiers,
+    }
+
+
 def summarize_measurements(
     measurements: list[dict[str, Any]],
     *,

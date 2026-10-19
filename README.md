@@ -394,6 +394,54 @@ target-layer objectives, and evaluation controls. Its only training change is
 `predictive_continuation: qkvs`, and its distinct run ID prevents reuse of the completed selector
 checkpoint. It must not be executed without independent authorization.
 
+### H1a: unconstrained snapshot compressibility
+
+H1a is a separate first-principles measurement using the shared reader and harness. It has no
+rolling window, activation threshold, proposal count, historical budget, gamma, beta, learned
+selector, optimizer, or persistent sparse trajectory. For each configured token position `t`, the
+reader executes dense full-QKV over `[0,t)` once and persists an identity-checked immutable prefix.
+The full reference and every sparse candidate independently execute token `t` through every layer;
+each layer recomputes current-token K/V from that branch's hidden state and reads its own sampled
+positions from `[0,t]`. The branch is then discarded.
+
+`uniform-aligned-blocks-v1` randomly shifts width-eight block boundaries and samples blocks
+uniformly without replacement. Layers receive independently derived seeds, selections do not
+overlap within a layer, and every layer receives at least one position. Neither recency nor the
+current token is mandatory. A 100% candidate deterministically selects every causal position and
+must match the full-QKV logits and loss within the declared numerical tolerance.
+
+Each completed position/fraction trial set is written atomically outside the manifest. Candidate
+records contain KL divergence `KL(p_full || p_sparse)`, next-token loss delta, top-one agreement,
+realized occurrence fraction, read/block counts, per-layer reconstruction seeds, and compact
+location histograms. Full block ranges are retained for the best candidate. Configured
+`trial_start` and count ranges permit later run identities to add nonoverlapping observations
+without replacing prior trial-set artifacts. A typical record is:
+
+```json
+{
+  "position": 4095,
+  "causal_history_length": 4096,
+  "requested_sampled_fraction": 0.1,
+  "realized_sampled_fraction": 0.1001,
+  "kl_divergence_nats": 0.012,
+  "next_token_ce_delta_nats": -0.004,
+  "top_one_agreement": true,
+  "candidate_seed": 123,
+  "trial_id": 17,
+  "execution_identity_sha256": "..."
+}
+```
+
+Frontiers report the smallest fraction found by the configured random search at each KL tolerance.
+Failure to observe a qualifying sample is recorded as `not_found`, never as theoretical
+impossibility. `configs/h1a_snapshot_compressibility.json` contains the proposed seven positions,
+ten sampling percentages, 200 trials, and four descriptive KL thresholds. It remains
+`draft_not_authorized`; after independent approval, the human command would be:
+
+```bash
+./run.sh configs/h1a_snapshot_compressibility.json
+```
+
 ## Configuration and artifacts
 
 Configurations keep proposal count, window width, and historical token-occurrence budget separate.
@@ -443,6 +491,6 @@ concurrent run.
 `configs/heatfield_hard_aligned_study.json` identifies the preserved failed hard-aligned attempt;
 `configs/heatfield_hard_aligned_corrected_study.json` identifies the completed correction;
 `configs/heatfield_full_qkvs_learning_study.json` identifies the unauthorized full-QKVS training
-draft.
+draft; `configs/h1a_snapshot_compressibility.json` identifies the unauthorized H1a snapshot study.
 Passing CPU smoke tests, completing either run, or observing a favorable region does not establish
 that learned S converges, generalizes, or improves hard next-token prediction.

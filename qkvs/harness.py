@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import random
@@ -13,7 +14,12 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from qkvs.metrics import summarize_measurements, summarize_training_alignment
+from qkvs.metrics import (
+    summarize_measurements,
+    summarize_snapshot_frontiers,
+    summarize_snapshot_trial_set,
+    summarize_training_alignment,
+)
 
 _SOURCE_FILES = (
     "README.md",
@@ -46,6 +52,9 @@ _LEGACY_BASELINE_SOURCE = {
     "selection_sha256": "ba195153672aa9b77a50b441bf8c26453c5da788f2207e7387b1c92783bb0ac3",
 }
 _LEGACY_REUSABLE_POLICIES = {"rolling", "fixed_offsets", "full_qkv"}
+_SNAPSHOT_STUDY_KIND = "unconstrained_snapshot_compressibility"
+_SNAPSHOT_EXECUTION_VERSION = "qwen2-h1a-current-token-v1"
+_SNAPSHOT_HISTOGRAM_BINS = 20
 
 
 def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -218,6 +227,26 @@ class _Progress:
 
 def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:
     specification = result["config"]
+    if specification.get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+        positions = specification["study"]["positions"]
+        fractions = specification["study"]["sampling_percentages"]
+        prefix_total = len(positions)
+        trial_total = len(positions) * len(fractions)
+        phases = {
+            "snapshot_prefixes": (
+                min(prefix_total, len(result.get("snapshot_prefixes", {}))),
+                prefix_total,
+            ),
+            "snapshot_trial_sets": (
+                min(trial_total, len(result.get("snapshot_observations", []))),
+                trial_total,
+            ),
+        }
+        return (
+            sum(completed for completed, _ in phases.values()),
+            sum(total for _, total in phases.values()),
+            phases,
+        )
     streams = result["streams"]
     dense_total = len(streams) if specification["model"]["backend"] == "huggingface" else 0
     dense_completed = min(dense_total, len(result.get("dense_prefill", {})))
@@ -689,6 +718,110 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             errors.append("data boundary ids must be unique")
     else:
         errors.append("data.kind is unsupported")
+
+    study = specification.get("study")
+    if study is not None:
+        if not isinstance(study, dict) or study.get("kind") != _SNAPSHOT_STUDY_KIND:
+            errors.append("study.kind is unsupported")
+            study = {}
+        positions = study.get("positions")
+        if (
+            not isinstance(positions, list)
+            or not positions
+            or any(not _positive_integer(position) for position in positions)
+            or len(positions) != len(set(positions))
+        ):
+            errors.append("snapshot study positions must be unique positive integers")
+            positions = []
+        percentages = study.get("sampling_percentages")
+        if (
+            not isinstance(percentages, list)
+            or not percentages
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not 0.0 < float(value) <= 100.0
+                for value in percentages
+            )
+            or len(percentages) != len(set(percentages))
+        ):
+            errors.append("snapshot sampling percentages must be unique values in (0, 100]")
+            percentages = []
+        elif 100 not in percentages:
+            errors.append("snapshot sampling percentages must include the 100% dense control")
+        if not _positive_integer(study.get("block_width")):
+            errors.append("snapshot block_width must be a positive integer")
+        if not _positive_integer(study.get("trials_per_fraction")):
+            errors.append("snapshot trials_per_fraction must be a positive integer")
+        trial_start = study.get("trial_start")
+        if not isinstance(trial_start, int) or isinstance(trial_start, bool) or trial_start < 0:
+            errors.append("snapshot trial_start must be a nonnegative integer")
+        if study.get("sampling_algorithm") != "uniform-aligned-blocks-v1":
+            errors.append("snapshot sampling_algorithm is unsupported")
+        tolerances = study.get("fidelity_tolerances_nats")
+        if (
+            not isinstance(tolerances, list)
+            or not tolerances
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or float(value) <= 0.0
+                for value in tolerances
+            )
+            or len(tolerances) != len(set(tolerances))
+        ):
+            errors.append("snapshot fidelity tolerances must be unique positive values")
+        parity = study.get("dense_parity_tolerance", {})
+        if any(
+            not isinstance(parity.get(field), (int, float))
+            or isinstance(parity.get(field), bool)
+            or parity[field] < 0.0
+            for field in ("logit_atol", "loss_atol")
+        ):
+            errors.append("snapshot dense parity tolerances must be nonnegative")
+        if any(
+            field in specification for field in ("attention", "selection", "training", "evaluation")
+        ):
+            errors.append("snapshot studies must not define QKVS attention or selector controls")
+        boundaries = data.get("boundaries", []) if data_kind == "tokenized_text" else []
+        if len(boundaries) != 1:
+            errors.append("snapshot studies require exactly one tokenized-text boundary")
+        elif positions and isinstance(boundaries[0], dict):
+            start = boundaries[0].get("start_token")
+            stop = boundaries[0].get("stop_token")
+            if isinstance(start, int) and isinstance(stop, int):
+                stream_length = stop - start
+                if max(positions) >= stream_length - 1:
+                    errors.append("snapshot positions must retain a next-token target")
+        execution = specification.get("execution", {})
+        devices = execution.get("allowed_devices")
+        if (
+            not isinstance(devices, list)
+            or not devices
+            or any(device not in {"cpu", "cuda"} for device in devices)
+        ):
+            errors.append("execution.allowed_devices must contain cpu and/or cuda")
+        if not isinstance(execution.get("output_root"), str):
+            errors.append("execution.output_root must be a string")
+        if not _positive_integer(execution.get("prefill_chunk_tokens")):
+            errors.append("execution.prefill_chunk_tokens must be a positive integer")
+        reasons: list[str] = []
+        if status not in {"harness_verification", "approved"}:
+            reasons.append("configuration is not authorized for harness execution")
+        if backend != "huggingface":
+            reasons.append("snapshot studies require the Hugging Face Qwen2 reader")
+        if backend == "huggingface" and model.get("dtype") not in {"float32", "bfloat16"}:
+            reasons.append("a Hugging Face execution dtype has not been frozen")
+        if data_kind != "tokenized_text":
+            reasons.append("snapshot studies require identity-pinned tokenized_text data")
+        return {
+            "valid": not errors,
+            "runnable": not errors and not reasons,
+            "errors": errors,
+            "not_runnable_reasons": reasons,
+            "experiment": specification.get("experiment"),
+            "status": status,
+        }
 
     attention = specification.get("attention", {})
     for field in ("rolling_tokens", "activation_tokens", "historical_token_budget"):
@@ -1167,6 +1300,536 @@ def _result_path(
     return root / specification["run"]["id"] / "result.json"
 
 
+def _snapshot_fraction_coordinate(percentage: float) -> int:
+    return round(float(percentage) * 1_000_000)
+
+
+def _snapshot_observation_path(
+    output: Path,
+    *,
+    position: int,
+    percentage: float,
+    trial_start: int,
+    trial_count: int,
+) -> Path:
+    fraction = _snapshot_fraction_coordinate(percentage)
+    return (
+        output.parent
+        / "snapshot_observations"
+        / f"position-{position:08d}"
+        / (
+            f"fraction-{fraction:09d}-trials-{trial_start:06d}-"
+            f"{trial_start + trial_count - 1:06d}.json"
+        )
+    )
+
+
+def _read_snapshot_observation_sets(
+    result: dict[str, Any],
+    output: Path,
+) -> list[dict[str, Any]]:
+    observations = []
+    for manifest in result.get("snapshot_observations", []):
+        path = (output.parent / manifest["path"]).resolve()
+        if not path.is_relative_to(output.parent.resolve()) or not path.is_file():
+            raise ValueError("snapshot observation artifact is missing")
+        if _sha256(path) != manifest["artifact_sha256"]:
+            raise ValueError("snapshot observation artifact identity does not match")
+        observation = _load_json(path)
+        if (
+            observation.get("identity_sha256") != manifest["identity_sha256"]
+            or _canonical_sha256(observation.get("identity")) != manifest["identity_sha256"]
+            or observation.get("position") != manifest["position"]
+            or observation.get("requested_sampling_percentage")
+            != manifest["requested_sampling_percentage"]
+            or len(observation.get("candidates", [])) != manifest["trial_count"]
+        ):
+            raise ValueError("snapshot observation manifest does not match its artifact")
+        observations.append(observation)
+    return observations
+
+
+def _snapshot_position_histogram(
+    layer_indices: tuple[tuple[int, ...], ...],
+    *,
+    available_positions: int,
+) -> list[int]:
+    histogram = [0] * _SNAPSHOT_HISTOGRAM_BINS
+    for index in (index for indices in layer_indices for index in indices):
+        bucket = min(
+            _SNAPSHOT_HISTOGRAM_BINS - 1,
+            index * _SNAPSHOT_HISTOGRAM_BINS // available_positions,
+        )
+        histogram[bucket] += 1
+    return histogram
+
+
+def _run_snapshot_study(
+    *,
+    config_path: Path,
+    specification: dict[str, Any],
+    source_identity: dict[str, Any],
+    reader: Any,
+    streams: list[dict[str, Any]],
+    data_identity: dict[str, Any],
+    model_identity: dict[str, Any],
+    device: Any,
+    torch: Any,
+    cuda_initialized_before_reader: bool,
+    output_root: str | Path | None,
+) -> tuple[Path, dict[str, Any]]:
+    from qkvs.model import TokenStream
+    from qkvs.selection import (
+        RANDOM_BLOCK_SAMPLER_VERSION,
+        derive_random_block_seed,
+        sample_uniform_random_blocks,
+    )
+
+    if len(streams) != 1:
+        raise ValueError("snapshot study requires exactly one token stream")
+    stream_record = streams[0]
+    stream = TokenStream(
+        stream_id=stream_record["stream_id"],
+        tokens=tuple(stream_record["tokens"]),
+        support_positions=tuple(stream_record["support_positions"]),
+    )
+    study = specification["study"]
+    output = _result_path(specification, output_root=output_root)
+    expected = {
+        "config": specification,
+        "config_sha256": _sha256(config_path),
+        "source_identity": source_identity,
+        "model_identity": model_identity,
+        "data_identity": data_identity,
+        "device": str(device),
+        "snapshot_execution_version": _SNAPSHOT_EXECUTION_VERSION,
+    }
+    if output.exists():
+        result = _load_json(output)
+        if {key: result.get(key) for key in expected} != expected or result.get(
+            "streams"
+        ) != streams:
+            raise ValueError("saved snapshot study does not match current source and configuration")
+    else:
+        result = {
+            "schema_version": 1,
+            "run_id": specification["run"]["id"],
+            **expected,
+            "environment": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "pid": os.getpid(),
+            },
+            "streams": streams,
+            "snapshot_prefixes": {},
+            "snapshot_observations": [],
+            "snapshot_summary": {},
+            "measurements": [],
+            "measurement_references": [],
+            "training": {},
+            "summary": {},
+            "complete": False,
+        }
+        _write_json(output, result)
+    result["environment"].update(
+        {
+            "torch": torch.__version__,
+            "torch_cuda": torch.version.cuda,
+            "cuda_initialized_before_reader": cuda_initialized_before_reader,
+            "cuda_initialized_after_reader": torch.cuda.is_initialized(),
+        }
+    )
+    observations = _read_snapshot_observation_sets(result, output)
+    completed = {
+        (observation["position"], observation["requested_sampling_percentage"])
+        for observation in observations
+    }
+    expected_trial_sets = len(study["positions"]) * len(study["sampling_percentages"])
+    if result.get("complete") and len(completed) == expected_trial_sets:
+        return output, load_run(output)
+    completed_units, total_units, _ = _progress_counts(result)
+    progress = _Progress(completed=completed_units, total=total_units)
+    ownership = f"snapshot-study:{stream.stream_id}"
+    prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
+    fidelity_tolerances = [float(value) for value in study["fidelity_tolerances_nats"]]
+    base_seed = specification["run"]["seed"]
+    trial_start = study["trial_start"]
+    try:
+        for position in study["positions"]:
+            position_key = str(position)
+            prefix_path = (
+                output.parent
+                / "snapshot_prefixes"
+                / f"{stream.stream_id}-position-{position:08d}.pt"
+            )
+            prefix_record = result["snapshot_prefixes"].get(position_key)
+            if prefix_record is None:
+                progress.start_job(f"dense snapshot / position {position}")
+                if prefix_path.exists():
+                    snapshot = reader.load_dense_causal_snapshot(
+                        prefix_path,
+                        stream,
+                        position=position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                else:
+                    snapshot = reader.dense_causal_snapshot(
+                        stream,
+                        position=position,
+                        device=device,
+                        ownership=ownership,
+                        prefill_chunk_tokens=prefill_chunk_tokens,
+                    )
+                    reader.save_dense_causal_snapshot(snapshot, prefix_path)
+                result["snapshot_prefixes"][position_key] = {
+                    "path": str(prefix_path.relative_to(output.parent)),
+                    "artifact_sha256": _sha256(prefix_path),
+                    "identity": snapshot.identity,
+                }
+                _write_json(output, result)
+                progress.complete_job()
+            else:
+                if (
+                    prefix_record.get("path") != str(prefix_path.relative_to(output.parent))
+                    or not prefix_path.is_file()
+                    or prefix_record.get("artifact_sha256") != _sha256(prefix_path)
+                ):
+                    raise ValueError("saved dense causal snapshot artifact does not match")
+                snapshot = reader.load_dense_causal_snapshot(
+                    prefix_path,
+                    stream,
+                    position=position,
+                    device=device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
+            state = reader.prepare_snapshot_probe(
+                snapshot,
+                stream,
+                position=position,
+                device=device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
+            reference = reader.snapshot_probe(
+                stream,
+                state,
+                position=position,
+                selected_positions=None,
+                device=device,
+            )
+            if not bool(torch.isfinite(reference.logits).all()) or not bool(
+                torch.isfinite(reference.loss)
+            ):
+                raise RuntimeError("snapshot full-QKV reference is nonfinite")
+            reference_values = (
+                torch.stack((reference.loss.float(), reference.prediction.float())).cpu().tolist()
+            )
+            reference_log_probs = torch.log_softmax(reference.logits.float(), dim=-1)
+            reference_probabilities = reference_log_probs.exp()
+
+            for percentage in study["sampling_percentages"]:
+                unit = (position, percentage)
+                if unit in completed:
+                    continue
+                trial_count = 1 if float(percentage) == 100.0 else study["trials_per_fraction"]
+                observation_path = _snapshot_observation_path(
+                    output,
+                    position=position,
+                    percentage=percentage,
+                    trial_start=trial_start,
+                    trial_count=trial_count,
+                )
+                requested_fraction = float(percentage) / 100.0
+                observation_identity = {
+                    "format": "qkvs-snapshot-observation-v1",
+                    "source_identity": source_identity,
+                    "config_sha256": result["config_sha256"],
+                    "model_identity": model_identity,
+                    "data_identity": data_identity,
+                    "stream_id": stream.stream_id,
+                    "stream_token_sha256": stream_record["token_sha256"],
+                    "dense_snapshot_identity": snapshot.identity,
+                    "position": position,
+                    "requested_sampling_percentage": percentage,
+                    "block_width": study["block_width"],
+                    "base_seed": base_seed,
+                    "trial_start": trial_start,
+                    "trial_count": trial_count,
+                    "sampling_algorithm": RANDOM_BLOCK_SAMPLER_VERSION,
+                    "snapshot_execution_version": _SNAPSHOT_EXECUTION_VERSION,
+                    "device": str(device),
+                    "environment": result["environment"],
+                }
+                identity_sha256 = _canonical_sha256(observation_identity)
+                job_label = f"snapshot {position} / {float(percentage):g}% / {trial_count} trials"
+                progress.start_job(
+                    job_label,
+                    fraction=0.0,
+                )
+                if observation_path.exists():
+                    observation = _load_json(observation_path)
+                    if (
+                        observation.get("identity") != observation_identity
+                        or observation.get("identity_sha256") != identity_sha256
+                        or len(observation.get("candidates", [])) != trial_count
+                    ):
+                        raise ValueError("existing snapshot observation identity does not match")
+                    progress.update_job(f"restore {job_label}", fraction=1.0)
+                else:
+                    candidate_records: list[dict[str, Any]] = []
+                    candidate_values: list[Any] = []
+                    layer_ranges_by_trial: dict[int, list[list[list[int]]]] = {}
+                    for trial_offset in range(trial_count):
+                        trial_id = trial_start + trial_offset
+                        candidate_seed = derive_random_block_seed(
+                            base_seed,
+                            position,
+                            _snapshot_fraction_coordinate(percentage),
+                            trial_id,
+                        )
+                        layer_samples = tuple(
+                            sample_uniform_random_blocks(
+                                available_positions=position + 1,
+                                block_width=study["block_width"],
+                                requested_fraction=requested_fraction,
+                                seed=derive_random_block_seed(candidate_seed, layer_index),
+                            )
+                            for layer_index in range(reader.model.config.num_hidden_layers)
+                        )
+                        layer_indices = tuple(sample.indices for sample in layer_samples)
+                        probe = reader.snapshot_probe(
+                            stream,
+                            state,
+                            position=position,
+                            selected_positions=layer_indices,
+                            device=device,
+                        )
+                        selected_occurrences = sum(len(indices) for indices in layer_indices)
+                        gathered_keys = sum(probe.gathered_keys_per_layer)
+                        gathered_values = sum(probe.gathered_values_per_layer)
+                        if (
+                            gathered_keys != selected_occurrences
+                            or gathered_values != selected_occurrences
+                        ):
+                            raise RuntimeError(
+                                "snapshot probe read accounting does not match selection"
+                            )
+                        sparse_log_probs = torch.log_softmax(probe.logits.float(), dim=-1)
+                        divergence = torch.sum(
+                            reference_probabilities * (reference_log_probs - sparse_log_probs)
+                        ).clamp_min(0.0)
+                        loss_delta = probe.loss.float() - reference.loss.float()
+                        logit_error = (probe.logits.float() - reference.logits.float()).abs().max()
+                        loss_error = (probe.loss.float() - reference.loss.float()).abs()
+                        candidate_values.append(
+                            torch.stack(
+                                (
+                                    divergence,
+                                    probe.loss.float(),
+                                    loss_delta,
+                                    probe.prediction.float(),
+                                    logit_error,
+                                    loss_error,
+                                )
+                            )
+                        )
+                        historical_occurrences = sum(
+                            index < position for indices in layer_indices for index in indices
+                        )
+                        all_positions = {index for indices in layer_indices for index in indices}
+                        historical_positions = {
+                            index for index in all_positions if index < position
+                        }
+                        realized_fraction = selected_occurrences / (
+                            reader.model.config.num_hidden_layers * (position + 1)
+                        )
+                        candidate_records.append(
+                            {
+                                "position": position,
+                                "causal_history_length": position + 1,
+                                "requested_sampling_percentage": percentage,
+                                "requested_sampled_fraction": requested_fraction,
+                                "realized_sampled_fraction": realized_fraction,
+                                "sampling_cost_rho": realized_fraction,
+                                "selected_token_occurrences": selected_occurrences,
+                                "historical_token_occurrences": historical_occurrences,
+                                "current_token_layer_reads": selected_occurrences
+                                - historical_occurrences,
+                                "aggregate_unique_positions": len(all_positions),
+                                "historical_unique_positions": len(historical_positions),
+                                "sampled_block_count_per_layer": [
+                                    sample.block_count for sample in layer_samples
+                                ],
+                                "aggregate_block_count": sum(
+                                    sample.block_count for sample in layer_samples
+                                ),
+                                "per_layer_selection": [
+                                    {
+                                        "layer": layer_index,
+                                        "seed": sample.seed,
+                                        "boundary_alignment": sample.boundary_alignment,
+                                        "block_count": sample.block_count,
+                                        "selected_token_count": len(sample.indices),
+                                        "gathered_key_occurrences": layer_gathered_keys,
+                                        "gathered_value_occurrences": layer_gathered_values,
+                                    }
+                                    for layer_index, (
+                                        sample,
+                                        layer_gathered_keys,
+                                        layer_gathered_values,
+                                    ) in enumerate(
+                                        zip(
+                                            layer_samples,
+                                            probe.gathered_keys_per_layer,
+                                            probe.gathered_values_per_layer,
+                                            strict=True,
+                                        )
+                                    )
+                                ],
+                                "sampled_position_histogram": _snapshot_position_histogram(
+                                    layer_indices,
+                                    available_positions=position + 1,
+                                ),
+                                "trial_id": trial_id,
+                                "candidate_seed": candidate_seed,
+                                "sampling_algorithm": RANDOM_BLOCK_SAMPLER_VERSION,
+                                "execution_identity_sha256": identity_sha256,
+                                "actual_gathered_key_occurrences": gathered_keys,
+                                "actual_gathered_value_occurrences": gathered_values,
+                            }
+                        )
+                        layer_ranges_by_trial[trial_id] = [
+                            [[start, stop] for start, stop in sample.ranges]
+                            for sample in layer_samples
+                        ]
+                        progress.update_job(
+                            f"snapshot {position} / {float(percentage):g}% / "
+                            f"trial {trial_offset + 1}/{trial_count}",
+                            fraction=(trial_offset + 1) / trial_count,
+                        )
+                    materialized = torch.stack(candidate_values).cpu().tolist()
+                    for candidate, values in zip(candidate_records, materialized, strict=True):
+                        if not all(math.isfinite(value) for value in values):
+                            raise RuntimeError("snapshot candidate measurement is nonfinite")
+                        candidate.update(
+                            {
+                                "kl_divergence_nats": values[0],
+                                "sparse_next_token_loss": values[1],
+                                "next_token_ce_delta_nats": values[2],
+                                "sparse_top_one_prediction": int(values[3]),
+                                "top_one_agreement": int(values[3]) == int(reference_values[1]),
+                                "full_logit_max_abs_error": values[4],
+                                "full_loss_abs_error": values[5],
+                            }
+                        )
+                    summary = summarize_snapshot_trial_set(
+                        candidate_records,
+                        fidelity_tolerances=fidelity_tolerances,
+                    )
+                    total_selected = sum(
+                        candidate["selected_token_occurrences"] for candidate in candidate_records
+                    )
+                    bin_population = [0] * _SNAPSHOT_HISTOGRAM_BINS
+                    for index in range(position + 1):
+                        bucket = min(
+                            _SNAPSHOT_HISTOGRAM_BINS - 1,
+                            index * _SNAPSHOT_HISTOGRAM_BINS // (position + 1),
+                        )
+                        bin_population[bucket] += 1
+                    expected_histogram = [
+                        total_selected * population / (position + 1)
+                        for population in bin_population
+                    ]
+                    summary["normalized_position_bin_edges"] = [
+                        index / _SNAPSHOT_HISTOGRAM_BINS
+                        for index in range(_SNAPSHOT_HISTOGRAM_BINS + 1)
+                    ]
+                    summary["random_sampling_expected_position_histogram"] = expected_histogram
+                    summary["sampled_age_histogram"] = list(
+                        reversed(summary["sampled_position_histogram"])
+                    )
+                    summary["random_sampling_expected_age_histogram"] = list(
+                        reversed(expected_histogram)
+                    )
+                    best_trial = summary["best_candidate"]["trial_id"]
+                    summary["best_candidate"]["per_layer_selected_ranges"] = layer_ranges_by_trial[
+                        best_trial
+                    ]
+                    if float(percentage) == 100.0:
+                        tolerance = study["dense_parity_tolerance"]
+                        dense_candidate = candidate_records[0]
+                        if (
+                            dense_candidate["full_logit_max_abs_error"] > tolerance["logit_atol"]
+                            or dense_candidate["full_loss_abs_error"] > tolerance["loss_atol"]
+                        ):
+                            raise RuntimeError("100% snapshot candidate does not match full QKV")
+                    observation = {
+                        "schema_version": 1,
+                        "type": "snapshot_trial_set",
+                        "identity": observation_identity,
+                        "identity_sha256": identity_sha256,
+                        "position": position,
+                        "causal_history_length": position + 1,
+                        "requested_sampling_percentage": percentage,
+                        "requested_sampled_fraction": requested_fraction,
+                        "reference": {
+                            "next_token_target": stream.tokens[position + 1],
+                            "next_token_loss": reference_values[0],
+                            "top_one_prediction": int(reference_values[1]),
+                            "selected_position_count_per_layer": list(
+                                reference.selected_positions_per_layer
+                            ),
+                        },
+                        "sampling": {
+                            "algorithm": RANDOM_BLOCK_SAMPLER_VERSION,
+                            "base_seed": base_seed,
+                            "block_width": study["block_width"],
+                            "trial_start": trial_start,
+                            "trial_count": trial_count,
+                            "layers_sampled_independently": True,
+                            "without_replacement": True,
+                            "intentional_overlap": False,
+                            "mandatory_current_token": False,
+                            "mandatory_recent_tokens": False,
+                        },
+                        "candidates": candidate_records,
+                        "summary": summary,
+                    }
+                    _write_json(observation_path, observation)
+                manifest = {
+                    "position": position,
+                    "requested_sampling_percentage": percentage,
+                    "path": str(observation_path.relative_to(output.parent)),
+                    "artifact_sha256": _sha256(observation_path),
+                    "identity_sha256": identity_sha256,
+                    "trial_start": trial_start,
+                    "trial_count": trial_count,
+                }
+                result["snapshot_observations"].append(manifest)
+                result["snapshot_observations"].sort(
+                    key=lambda item: (
+                        item["position"],
+                        item["requested_sampling_percentage"],
+                    )
+                )
+                observations.append(observation)
+                completed.add(unit)
+                result["snapshot_summary"] = summarize_snapshot_frontiers(
+                    observations,
+                    fidelity_tolerances=fidelity_tolerances,
+                )
+                result["complete"] = len(completed) == expected_trial_sets
+                _write_json(output, result)
+                progress.complete_job()
+            del state, snapshot, reference
+    finally:
+        progress.close()
+    return output, load_run(output)
+
+
 def _prepare_dense_prefills(
     *,
     reader: Any,
@@ -1558,6 +2221,20 @@ def run_experiment(
     )
     streams = json.loads(json.dumps(streams))
     model_identity = reader.identity()
+    if specification.get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+        return _run_snapshot_study(
+            config_path=config_path,
+            specification=specification,
+            source_identity=identity,
+            reader=reader,
+            streams=streams,
+            data_identity=data_identity,
+            model_identity=model_identity,
+            device=torch_device,
+            torch=torch,
+            cuda_initialized_before_reader=cuda_initialized_before_reader,
+            output_root=output_root,
+        )
     output = _result_path(specification, output_root=output_root)
     expected = {
         "config": specification,
@@ -1781,6 +2458,9 @@ def load_run(path: str | Path) -> dict[str, Any]:
     result = _load_json(result_path)
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
+    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+        _read_snapshot_observation_sets(result, result_path)
+        return result
     result["measurements"] = _resolved_measurements(result, result_path)
     return result
 
@@ -1790,10 +2470,14 @@ def status(path: str | Path) -> dict[str, Any]:
     result = _load_json(result_path)
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
+    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+        _read_snapshot_observation_sets(result, result_path)
     completed, total, phases = _progress_counts(result)
     training = result.get("training", {})
+    study_kind = result.get("config", {}).get("study", {}).get("kind")
     return {
         "run_id": result["run_id"],
+        "study_kind": study_kind,
         "completed_units": completed,
         "total_units": total,
         "phase_units": {
@@ -1821,6 +2505,18 @@ def print_status(value: dict[str, Any]) -> None:
         f"[{_progress_bar(completed, total)}] {state}"
     )
     phases = value["phase_units"]
+    if value.get("study_kind") == _SNAPSHOT_STUDY_KIND:
+        print(
+            "Phases: "
+            f"snapshot prefixes {phases['snapshot_prefixes']['completed']}/"
+            f"{phases['snapshot_prefixes']['total']}, "
+            f"trial sets {phases['snapshot_trial_sets']['completed']}/"
+            f"{phases['snapshot_trial_sets']['total']}"
+        )
+        print(f"Run: {value['run_id']}")
+        print(f"Source: {value['source_revision']}")
+        print(f"Artifact SHA-256: {value['artifact_sha256']}")
+        return
     training = value["training_steps"]
     print(
         "Phases: "
@@ -1838,6 +2534,18 @@ def print_status(value: dict[str, Any]) -> None:
 
 def print_summary(result: dict[str, Any]) -> None:
     print(f"Run {result['run_id']} ({'complete' if result['complete'] else 'incomplete'})")
+    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+        frontiers = result.get("snapshot_summary", {}).get("frontiers_by_position", {})
+        for position, tolerances in sorted(frontiers.items(), key=lambda item: int(item[0])):
+            values = []
+            for tolerance, frontier in sorted(tolerances.items(), key=lambda item: float(item[0])):
+                fraction = frontier["smallest_discovered_fraction"]
+                values.append(
+                    f"KL<={tolerance}: "
+                    + (f"{100.0 * fraction:.3f}%" if fraction is not None else "not found")
+                )
+            print(f"position {position}: " + ", ".join(values))
+        return
     reused_conditions = {
         measurement["condition"]
         for measurement in result.get("measurements", [])

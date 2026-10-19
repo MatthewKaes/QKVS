@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -59,6 +62,79 @@ class HistoricalSelection:
     @property
     def unique_count(self) -> int:
         return len(set(self.indices))
+
+
+RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v1"
+
+
+@dataclass(frozen=True)
+class RandomBlockSelection:
+    """One reproducible nonoverlapping block sample over a causal token range."""
+
+    indices: tuple[int, ...]
+    ranges: tuple[tuple[int, int], ...]
+    seed: int
+    boundary_alignment: int
+    available_positions: int
+    requested_fraction: float
+
+    @property
+    def block_count(self) -> int:
+        return len(self.ranges)
+
+    @property
+    def realized_fraction(self) -> float:
+        return len(self.indices) / self.available_positions
+
+
+def derive_random_block_seed(base_seed: int, *coordinates: int) -> int:
+    encoded = json.dumps((base_seed, *coordinates), separators=(",", ":")).encode()
+    return int.from_bytes(hashlib.sha256(encoded).digest()[:8], "big")
+
+
+def sample_uniform_random_blocks(
+    *,
+    available_positions: int,
+    block_width: int,
+    requested_fraction: float,
+    seed: int,
+) -> RandomBlockSelection:
+    """Sample aligned causal blocks uniformly without replacement or overlap."""
+
+    if available_positions <= 0 or block_width <= 0:
+        raise ValueError("random block sampling dimensions must be positive")
+    if not 0.0 < requested_fraction <= 1.0:
+        raise ValueError("random block sampling fraction must lie in (0, 1]")
+    if requested_fraction == 1.0:
+        alignment = 0
+    else:
+        alignment = random.Random(seed).randrange(block_width)
+    ranges: list[tuple[int, int]] = []
+    if alignment:
+        ranges.append((0, min(alignment, available_positions)))
+    start = alignment
+    while start < available_positions:
+        stop = min(available_positions, start + block_width)
+        ranges.append((start, stop))
+        start = stop
+    if requested_fraction == 1.0:
+        selected_ranges = ranges
+    else:
+        generator = random.Random(seed)
+        generator.randrange(block_width)
+        block_count = max(1, min(len(ranges), round(requested_fraction * len(ranges))))
+        selected_ranges = [
+            ranges[index] for index in sorted(generator.sample(range(len(ranges)), block_count))
+        ]
+    indices = tuple(position for start, stop in selected_ranges for position in range(start, stop))
+    return RandomBlockSelection(
+        indices=indices,
+        ranges=tuple(selected_ranges),
+        seed=seed,
+        boundary_alignment=alignment,
+        available_positions=available_positions,
+        requested_fraction=requested_fraction,
+    )
 
 
 class SelectionPolicy(Protocol):

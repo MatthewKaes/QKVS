@@ -4,13 +4,16 @@ import pytest
 import torch
 
 from qkvs.selection import (
+    RANDOM_BLOCK_SAMPLER_VERSION,
     FixedOffsetPolicy,
     HeatFieldProposal,
     HistoricalSelection,
     LearnedHeatFieldPolicy,
     PolicyState,
     SelectionContext,
+    derive_random_block_seed,
     resolve_proposals,
+    sample_uniform_random_blocks,
     validate_historical_selection,
 )
 
@@ -29,6 +32,69 @@ def test_collective_resolution_counts_overlapping_occurrences() -> None:
     assert selection.indices == (5, 6, 5, 6)
     assert selection.occurrence_count == 4
     assert selection.unique_count == 2
+
+
+def test_uniform_random_blocks_are_reproducible_nonoverlapping_and_unanchored() -> None:
+    seed = derive_random_block_seed(71, 99, 20, 3, 4)
+    first = sample_uniform_random_blocks(
+        available_positions=100,
+        block_width=8,
+        requested_fraction=0.2,
+        seed=seed,
+    )
+    second = sample_uniform_random_blocks(
+        available_positions=100,
+        block_width=8,
+        requested_fraction=0.2,
+        seed=seed,
+    )
+
+    assert RANDOM_BLOCK_SAMPLER_VERSION == "uniform-aligned-blocks-v1"
+    assert first == second
+    assert first.block_count == 3
+    assert len(first.indices) == len(set(first.indices))
+    assert all(
+        stop <= next_start
+        for (_, stop), (next_start, _) in zip(first.ranges, first.ranges[1:], strict=False)
+    )
+    assert 0.0 < first.realized_fraction < 1.0
+
+    selections = [
+        sample_uniform_random_blocks(
+            available_positions=100,
+            block_width=8,
+            requested_fraction=0.1,
+            seed=derive_random_block_seed(71, trial),
+        )
+        for trial in range(400)
+    ]
+    assert any(0 not in selection.indices for selection in selections)
+    assert any(99 not in selection.indices for selection in selections)
+    assert any(99 in selection.indices for selection in selections)
+    mean_position = sum(
+        sum(selection.indices) / len(selection.indices) for selection in selections
+    ) / len(selections)
+    assert mean_position == pytest.approx(49.5, abs=2.0)
+
+
+def test_uniform_random_blocks_keep_one_position_and_dense_control_is_exact() -> None:
+    sparse = sample_uniform_random_blocks(
+        available_positions=3,
+        block_width=8,
+        requested_fraction=0.01,
+        seed=5,
+    )
+    dense = sample_uniform_random_blocks(
+        available_positions=17,
+        block_width=8,
+        requested_fraction=1.0,
+        seed=999,
+    )
+
+    assert sparse.indices
+    assert dense.indices == tuple(range(17))
+    assert dense.ranges == ((0, 8), (8, 16), (16, 17))
+    assert dense.realized_fraction == 1.0
 
 
 def test_resolution_is_direct_causal_and_budgeted() -> None:

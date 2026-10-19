@@ -19,11 +19,13 @@ from qkvs.harness import (
     _progress_line,
     _tokenized_text_streams,
     load_run,
+    print_summary,
     run_experiment,
     status,
     validate_config,
     validate_config_file,
 )
+from qkvs.metrics import summarize_snapshot_frontiers, summarize_snapshot_trial_set
 
 
 def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, monkeypatch) -> None:
@@ -166,7 +168,6 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
         "training": {},
         "measurements": [],
     }
-
     completed, total, phases = _progress_counts(result)
 
     assert completed == 0
@@ -178,6 +179,47 @@ def test_long_context_progress_counts_prefill_training_and_evaluation() -> None:
     }
 
 
+def test_snapshot_summaries_report_discovered_and_not_found_without_impossibility_claims() -> None:
+    candidates = [
+        {
+            "trial_id": 0,
+            "candidate_seed": 11,
+            "requested_sampled_fraction": 0.25,
+            "realized_sampled_fraction": 0.25,
+            "kl_divergence_nats": 0.2,
+            "next_token_ce_delta_nats": 0.1,
+            "top_one_agreement": False,
+            "selected_token_occurrences": 4,
+            "aggregate_block_count": 2,
+            "sampled_position_histogram": [2, 2],
+        },
+        {
+            "trial_id": 1,
+            "candidate_seed": 12,
+            "requested_sampled_fraction": 0.25,
+            "realized_sampled_fraction": 0.20,
+            "kl_divergence_nats": 0.3,
+            "next_token_ce_delta_nats": -0.1,
+            "top_one_agreement": True,
+            "selected_token_occurrences": 3,
+            "aggregate_block_count": 2,
+            "sampled_position_histogram": [1, 2],
+        },
+    ]
+    summary = summarize_snapshot_trial_set(candidates, fidelity_tolerances=[0.1, 0.25])
+    frontiers = summarize_snapshot_frontiers(
+        [{"position": 7, "candidates": candidates}],
+        fidelity_tolerances=[0.1, 0.25],
+    )
+
+    assert summary["successful_candidate_fraction"] == {"0.1": 0.0, "0.25": 0.5}
+    assert frontiers["frontiers_by_position"]["7"]["0.1"] == {
+        "status": "not_found",
+        "smallest_discovered_fraction": None,
+    }
+    assert frontiers["frontiers_by_position"]["7"]["0.25"]["status"] == "found"
+
+
 def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_training() -> None:
     smoke = validate_config_file("configs/harness_smoke.json")
     heatfield = validate_config_file("configs/heatfield_initial.json")
@@ -186,11 +228,13 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     hard_aligned_path = Path("configs/heatfield_hard_aligned_study.json")
     corrected_path = Path("configs/heatfield_hard_aligned_corrected_study.json")
     full_qkvs_path = Path("configs/heatfield_full_qkvs_learning_study.json")
+    h1a_path = Path("configs/h1a_snapshot_compressibility.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
     corrected = validate_config_file(corrected_path)
     full_qkvs = validate_config_file(full_qkvs_path)
+    h1a = validate_config_file(h1a_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -256,6 +300,40 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "heatfield_full_qkvs_predictive_learning_study",
         "status": "draft_not_authorized",
     }
+    assert h1a == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_unconstrained_snapshot_compressibility",
+        "status": "draft_not_authorized",
+    }
+    h1a_specification = json.loads(h1a_path.read_text())
+    assert all(
+        field not in h1a_specification
+        for field in ("attention", "selection", "training", "evaluation")
+    )
+    assert h1a_specification["study"] == {
+        "kind": "unconstrained_snapshot_compressibility",
+        "positions": [99, 999, 4095, 6143, 8191, 10239, 16382],
+        "block_width": 8,
+        "sampling_percentages": [1, 5, 10, 20, 40, 60, 80, 95, 99, 100],
+        "trial_start": 0,
+        "trials_per_fraction": 200,
+        "sampling_algorithm": "uniform-aligned-blocks-v1",
+        "fidelity_tolerances_nats": [0.001, 0.01, 0.05, 0.1],
+        "dense_parity_tolerance": {"logit_atol": 0.005, "loss_atol": 0.005},
+    }
+    invalid_h1a = json.loads(json.dumps(h1a_specification))
+    invalid_h1a["attention"] = {
+        "rolling_tokens": 4096,
+        "activation_tokens": 6144,
+        "historical_token_budget": 512,
+    }
+    assert (
+        "snapshot studies must not define QKVS attention or selector controls"
+        in validate_config(invalid_h1a)["errors"]
+    )
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -360,6 +438,192 @@ def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() ->
     assert _predictive_execution_version(result, "fixed_offsets")
     assert _predictive_execution_version(result, "full_qkv")
     assert _predictive_execution_version(result, "heatfield_untrained") is None
+
+
+def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations(
+    tmp_path, monkeypatch, capfd
+) -> None:
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    import qkvs.model as model_module
+
+    class ByteTokenizer:
+        init_kwargs = {"_commit_hash": "1" * 40}
+
+        def encode(self, text, *, add_special_tokens, verbose):
+            assert not add_special_tokens
+            assert not verbose
+            return [byte % 64 for byte in text.encode()]
+
+        def get_vocab(self):
+            return {str(index): index for index in range(64)}
+
+    reader = model_module.HuggingFaceQwen2Reader(
+        Qwen2ForCausalLM(
+            Qwen2Config(
+                vocab_size=64,
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                max_position_embeddings=64,
+                attention_dropout=0.0,
+            )
+        ),
+        ByteTokenizer(),
+        specification={
+            "id": "test/tiny-qwen2",
+            "revision": "1" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+    )
+    source = tmp_path / "snapshot-source.txt"
+    source.write_text("abcdefghijklmnop", encoding="utf-8")
+    specification = {
+        "schema_version": 1,
+        "experiment": "snapshot_harness_smoke",
+        "status": "harness_verification",
+        "run": {"id": "snapshot-harness-smoke", "seed": 91},
+        "model": {
+            "backend": "huggingface",
+            "id": "test/tiny-qwen2",
+            "revision": "1" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+        "data": {
+            "kind": "tokenized_text",
+            "source": {
+                "path": str(source),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+            "boundaries": [
+                {
+                    "id": "snapshot-stream",
+                    "split": "evaluation",
+                    "start_token": 0,
+                    "stop_token": 12,
+                }
+            ],
+        },
+        "study": {
+            "kind": "unconstrained_snapshot_compressibility",
+            "positions": [3, 7],
+            "block_width": 2,
+            "sampling_percentages": [25, 100],
+            "trial_start": 0,
+            "trials_per_fraction": 3,
+            "sampling_algorithm": "uniform-aligned-blocks-v1",
+            "fidelity_tolerances_nats": [0.001, 0.1],
+            "dense_parity_tolerance": {"logit_atol": 1e-6, "loss_atol": 1e-6},
+        },
+        "execution": {
+            "allowed_devices": ["cpu"],
+            "output_root": str(tmp_path),
+            "prefill_chunk_tokens": 2,
+        },
+    }
+    assert validate_config(specification)["runnable"]
+    config = tmp_path / "snapshot-config.json"
+    config.write_text(json.dumps(specification), encoding="utf-8")
+    monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
+    original_probe = reader.snapshot_probe
+    probe_calls = 0
+
+    def interrupted_probe(*args, **kwargs):
+        nonlocal probe_calls
+        probe_calls += 1
+        if probe_calls == 5:
+            raise RuntimeError("test interruption after one atomic snapshot trial set")
+        return original_probe(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "snapshot_probe", interrupted_probe)
+    with pytest.raises(RuntimeError, match="test interruption"):
+        run_experiment(
+            config,
+            device="cpu",
+            output_root=tmp_path / "results",
+            allow_dirty_source=True,
+        )
+    partial_output = tmp_path / "results" / "snapshot-harness-smoke" / "result.json"
+    partial = json.loads(partial_output.read_text())
+    assert len(partial["snapshot_prefixes"]) == 1
+    assert len(partial["snapshot_observations"]) == 1
+    partial_status = status(partial_output)
+    assert partial_status["completed_units"] == 2
+    assert partial_status["total_units"] == 6
+    assert partial_status["phase_units"] == {
+        "snapshot_prefixes": {"completed": 1, "total": 2},
+        "snapshot_trial_sets": {"completed": 1, "total": 4},
+    }
+
+    monkeypatch.setattr(reader, "snapshot_probe", original_probe)
+    output, resumed = run_experiment(
+        config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    assert resumed["complete"]
+    assert len(resumed["snapshot_prefixes"]) == 2
+    assert len(resumed["snapshot_observations"]) == 4
+    assert (
+        len(
+            {
+                (record["position"], record["requested_sampling_percentage"])
+                for record in resumed["snapshot_observations"]
+            }
+        )
+        == 4
+    )
+
+    observations = [
+        json.loads((output.parent / record["path"]).read_text())
+        for record in resumed["snapshot_observations"]
+    ]
+    dense = [record for record in observations if record["requested_sampling_percentage"] == 100]
+    assert all(len(record["candidates"]) == 1 for record in dense)
+    assert all(record["candidates"][0]["full_logit_max_abs_error"] == 0.0 for record in dense)
+    assert all(record["candidates"][0]["full_loss_abs_error"] == 0.0 for record in dense)
+    assert all(
+        candidate["selected_token_occurrences"]
+        == candidate["actual_gathered_key_occurrences"]
+        == candidate["actual_gathered_value_occurrences"]
+        for observation in observations
+        for candidate in observation["candidates"]
+    )
+    assert all(
+        candidate["selected_token_occurrences"]
+        == sum(layer["selected_token_count"] for layer in candidate["per_layer_selection"])
+        and candidate["aggregate_block_count"] == sum(candidate["sampled_block_count_per_layer"])
+        and all(
+            layer["selected_token_count"]
+            == layer["gathered_key_occurrences"]
+            == layer["gathered_value_occurrences"]
+            for layer in candidate["per_layer_selection"]
+        )
+        for observation in observations
+        for candidate in observation["candidates"]
+    )
+    assert all(
+        "per_layer_selected_ranges" in observation["summary"]["best_candidate"]
+        for observation in observations
+    )
+    assert resumed["snapshot_summary"]["interpretation"] == (
+        "minimum_discovered_random_sample_not_theoretical_minimum"
+    )
+    print_summary(resumed)
+    assert "KL<=0.1" in capfd.readouterr().out
+
+    _, repeated = run_experiment(
+        config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+    )
+    assert repeated == resumed
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:
