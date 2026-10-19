@@ -774,8 +774,6 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         ):
             errors.append("snapshot sampling percentages must be unique values in (0, 100]")
             percentages = []
-        elif 100 not in percentages:
-            errors.append("snapshot sampling percentages must include the 100% dense control")
         if not _positive_integer(study.get("block_width")):
             errors.append("snapshot block_width must be a positive integer")
         if not _positive_integer(study.get("trials_per_fraction")):
@@ -807,7 +805,11 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         expected_candidate_passes = study.get("expected_candidate_passes")
         if expected_candidate_passes is not None:
             calculated_candidate_passes = (
-                len(positions) * ((len(percentages) - 1) * study.get("trials_per_fraction", 0) + 1)
+                len(positions)
+                * sum(
+                    1 if float(percentage) == 100.0 else study.get("trials_per_fraction", 0)
+                    for percentage in percentages
+                )
                 if positions and percentages and _positive_integer(study.get("trials_per_fraction"))
                 else None
             )
@@ -821,6 +823,8 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             not isinstance(reuse_dense_snapshots_from, str) or not reuse_dense_snapshots_from
         ):
             errors.append("snapshot dense reuse source must be a nonempty path")
+        if not isinstance(study.get("retain_dense_snapshots", True), bool):
+            errors.append("snapshot retain_dense_snapshots must be boolean")
         if study.get("sampling_algorithm") not in {
             "uniform-aligned-blocks-v1",
             "uniform-aligned-blocks-v2",
@@ -839,14 +843,15 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             or len(tolerances) != len(set(tolerances))
         ):
             errors.append("snapshot fidelity tolerances must be unique positive values")
-        parity = study.get("dense_parity_tolerance", {})
-        if any(
-            not isinstance(parity.get(field), (int, float))
-            or isinstance(parity.get(field), bool)
-            or parity[field] < 0.0
-            for field in ("logit_atol", "loss_atol")
-        ):
-            errors.append("snapshot dense parity tolerances must be nonnegative")
+        if 100 in percentages:
+            parity = study.get("dense_parity_tolerance", {})
+            if any(
+                not isinstance(parity.get(field), (int, float))
+                or isinstance(parity.get(field), bool)
+                or parity[field] < 0.0
+                for field in ("logit_atol", "loss_atol")
+            ):
+                errors.append("snapshot dense parity tolerances must be nonnegative")
         if any(
             field in specification for field in ("attention", "selection", "training", "evaluation")
         ):
@@ -2186,7 +2191,17 @@ def _run_snapshot_study(
         for observation in observations
     }
     expected_trial_sets = len(study["positions"]) * len(study["sampling_percentages"])
+    retain_dense_snapshots = study.get("retain_dense_snapshots", True)
     if result.get("complete") and len(completed) == expected_trial_sets:
+        if not retain_dense_snapshots:
+            for prefix_record in result["snapshot_prefixes"].values():
+                if "reused_from" in prefix_record:
+                    continue
+                completed_prefix = (output.parent / prefix_record["path"]).resolve()
+                if completed_prefix.is_relative_to(output.parent.resolve()):
+                    completed_prefix.unlink(missing_ok=True)
+                prefix_record["retained"] = False
+            _write_json(output, result)
         return output, load_run(output)
     completed_units, total_units, _ = _progress_counts(result)
     progress = _Progress(completed=completed_units, total=total_units)
@@ -2199,6 +2214,23 @@ def _run_snapshot_study(
     try:
         for position in study["positions"]:
             position_key = str(position)
+            position_complete = all(
+                (position, percentage) in completed
+                for percentage in study["sampling_percentages"]
+            )
+            if position_complete:
+                prefix_record = result["snapshot_prefixes"].get(position_key)
+                if (
+                    not retain_dense_snapshots
+                    and prefix_record is not None
+                    and "reused_from" not in prefix_record
+                ):
+                    completed_prefix = (output.parent / prefix_record["path"]).resolve()
+                    if completed_prefix.is_relative_to(output.parent.resolve()):
+                        completed_prefix.unlink(missing_ok=True)
+                    prefix_record["retained"] = False
+                    _write_json(output, result)
+                continue
             local_prefix_path = (
                 output.parent
                 / "snapshot_prefixes"
@@ -2251,6 +2283,7 @@ def _run_snapshot_study(
                     "path": os.path.relpath(prefix_path, output.parent),
                     "artifact_sha256": _sha256(prefix_path),
                     "identity": snapshot.identity,
+                    "retained": True,
                 }
                 if reused_from is not None:
                     prefix_manifest["reused_from"] = reused_from
@@ -2509,6 +2542,10 @@ def _run_snapshot_study(
                 result["complete"] = len(completed) == expected_trial_sets
                 _write_json(output, result)
                 progress.complete_job()
+            if not retain_dense_snapshots and reused_prefix is None:
+                prefix_path.unlink(missing_ok=True)
+                result["snapshot_prefixes"][position_key]["retained"] = False
+                _write_json(output, result)
             del state, snapshot, reference
     finally:
         progress.close()
