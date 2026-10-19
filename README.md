@@ -478,6 +478,27 @@ adds 50 new seeded positions across the 32K range, with 500 candidates at each o
 non-dense coverage percentages plus a dense control (275,050 passes). Authorization does not extend
 to altered parameters or additional runs.
 
+The native `uniform-aligned-blocks-v2` sampler is reserved for fresh studies. It uses NumPy's
+pinned PCG64 generator and samples the smaller of the selected or omitted aligned-block sets, then
+reconstructs the selected set in causal order. Its seed-to-candidate mapping intentionally differs
+from v1 while preserving uniform sampling without replacement. New v2 snapshot execution is
+aggregate-only: every completed position/coverage cell appends its KL feasibility row directly to
+the requested plain CSV, while `result.json` retains compact identity, resume, and discovered-
+frontier metadata. Each CSV row carries its run, source revision, configuration hash, and sampler
+identity. The harness does not write per-cell JSON or retain raw candidate trials.
+
+The two fresh 500-trial v2 configurations are `draft_not_authorized` and have new run identities:
+`configs/h1a_kl_0_01_existing_cells_v2.json` covers the existing 60 positions and
+`configs/h1a_kl_0_01_position_extension_v2.json` covers the 50 new positions. After independent
+authorization, both write into one initially absent CSV:
+
+```bash
+./run.sh configs/h1a_kl_0_01_existing_cells_v2.json \
+  docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv
+./run.sh configs/h1a_kl_0_01_position_extension_v2.json \
+  docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv
+```
+
 The same directory includes deterministic SVG and PNG density heatmaps for the `0.001`-nat and
 `0.01`-nat KL thresholds. They use actual token coordinates and bilinear interpolation between
 measured hit rates; plotted dots identify the observations underlying the smooth field. Regenerate

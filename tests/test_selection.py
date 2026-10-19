@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from qkvs.selection import (
+    LEGACY_RANDOM_BLOCK_SAMPLER_VERSION,
     RANDOM_BLOCK_SAMPLER_VERSION,
     FixedOffsetPolicy,
     HeatFieldProposal,
@@ -51,7 +52,7 @@ def test_uniform_random_blocks_are_reproducible_nonoverlapping_and_unanchored() 
         seed=seed,
     )
 
-    assert RANDOM_BLOCK_SAMPLER_VERSION == "uniform-aligned-blocks-v1"
+    assert RANDOM_BLOCK_SAMPLER_VERSION == "uniform-aligned-blocks-v2"
     assert first == second
     assert first.block_count == 3
     assert len(first.indices) == len(set(first.indices))
@@ -137,6 +138,7 @@ def test_compact_uniform_random_blocks_preserve_v1_samples_exactly() -> None:
             block_width=block_width,
             requested_fraction=requested_fraction,
             seed=seed,
+            algorithm=LEGACY_RANDOM_BLOCK_SAMPLER_VERSION,
         )
         expected_ranges = reference_ranges(
             available_positions,

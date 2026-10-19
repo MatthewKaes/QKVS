@@ -24,6 +24,10 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="execute or resume a configured experiment")
     run.add_argument("--config", required=True)
     run.add_argument("--device", choices=("cpu", "cuda"), required=True)
+    run.add_argument(
+        "--snapshot-csv",
+        help="append completed snapshot feasibility cells directly to this CSV",
+    )
 
     validate = commands.add_parser(
         "validate",
@@ -82,7 +86,11 @@ def main() -> None:
         print(f"Exported {trial_record['rows']} candidates to {args.output}")
         return
     if args.command == "run":
-        _, result = run_experiment(args.config, device=args.device)
+        _, result = run_experiment(
+            args.config,
+            device=args.device,
+            snapshot_csv=args.snapshot_csv,
+        )
         print_summary(result)
         return
     parser.error(f"unsupported command: {args.command}")

@@ -5,8 +5,8 @@ set -euo pipefail
 repository_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd -- "${repository_directory}"
 
-if [[ "${#}" -ne 1 ]]; then
-    echo "usage: ./run.sh <configuration.json>" >&2
+if [[ "${#}" -lt 1 || "${#}" -gt 2 ]]; then
+    echo "usage: ./run.sh <configuration.json> [snapshot-feasibility.csv]" >&2
     exit 2
 fi
 
@@ -54,4 +54,8 @@ elif [[ "${device}" != "cpu" ]]; then
     exit 1
 fi
 
-exec "${qkvs_executable}" run --config "${configuration}" --device "${device}"
+arguments=(run --config "${configuration}" --device "${device}")
+if [[ "${#}" -eq 2 ]]; then
+    arguments+=(--snapshot-csv "${2}")
+fi
+exec "${qkvs_executable}" "${arguments[@]}"

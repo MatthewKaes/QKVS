@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -64,20 +65,37 @@ class HistoricalSelection:
         return len(set(self.indices))
 
 
-RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v1"
+LEGACY_RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v1"
+RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v2"
+RANDOM_BLOCK_SAMPLER_VERSIONS = {
+    LEGACY_RANDOM_BLOCK_SAMPLER_VERSION,
+    RANDOM_BLOCK_SAMPLER_VERSION,
+}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class RandomBlockSelection:
     """One reproducible nonoverlapping block sample over a causal token range."""
 
-    selected_blocks: tuple[int, ...]
+    selected_blocks: np.ndarray
     seed: int
     boundary_alignment: int
     available_positions: int
     block_width: int
     aligned_block_count: int
     requested_fraction: float
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, RandomBlockSelection)
+            and np.array_equal(self.selected_blocks, other.selected_blocks)
+            and self.seed == other.seed
+            and self.boundary_alignment == other.boundary_alignment
+            and self.available_positions == other.available_positions
+            and self.block_width == other.block_width
+            and self.aligned_block_count == other.aligned_block_count
+            and self.requested_fraction == other.requested_fraction
+        )
 
     @property
     def block_count(self) -> int:
@@ -94,37 +112,56 @@ class RandomBlockSelection:
             start = block * self.block_width
         return start, min(self.available_positions, start + self.block_width)
 
+    def _block_ranges(self, blocks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.boundary_alignment:
+            starts = np.where(
+                blocks == 0,
+                0,
+                self.boundary_alignment + (blocks - 1) * self.block_width,
+            )
+            stops = np.minimum(self.available_positions, starts + self.block_width)
+            stops = np.where(
+                blocks == 0,
+                min(self.boundary_alignment, self.available_positions),
+                stops,
+            )
+        else:
+            starts = blocks * self.block_width
+            stops = np.minimum(self.available_positions, starts + self.block_width)
+        return starts, stops
+
     @property
     def ranges(self) -> tuple[tuple[int, int], ...]:
-        return tuple(self.block_range(block) for block in self.selected_blocks)
+        starts, stops = self._block_ranges(self.selected_blocks)
+        return tuple(zip(starts.tolist(), stops.tolist(), strict=True))
 
     @property
     def contiguous_ranges(self) -> tuple[tuple[int, int], ...]:
-        if not self.selected_blocks:
+        if len(self.selected_blocks) == 0:
             return ()
-        merged: list[tuple[int, int]] = []
-        run_start = self.selected_blocks[0]
-        previous = run_start
-        for block in self.selected_blocks[1:]:
-            if block != previous + 1:
-                merged.append(
-                    (self.block_range(run_start)[0], self.block_range(previous)[1])
-                )
-                run_start = block
-            previous = block
-        merged.append((self.block_range(run_start)[0], self.block_range(previous)[1]))
-        return tuple(merged)
+        boundaries = np.concatenate(
+            (
+                np.array((0,), dtype=np.int64),
+                np.flatnonzero(np.diff(self.selected_blocks) != 1) + 1,
+                np.array((len(self.selected_blocks),), dtype=np.int64),
+            )
+        )
+        run_starts = self.selected_blocks[boundaries[:-1]]
+        run_stops = self.selected_blocks[boundaries[1:] - 1]
+        starts, _ = self._block_ranges(run_starts)
+        _, stops = self._block_ranges(run_stops)
+        return tuple(zip(starts.tolist(), stops.tolist(), strict=True))
 
     @property
     def selected_token_count(self) -> int:
-        if not self.selected_blocks:
+        if len(self.selected_blocks) == 0:
             return 0
         total = len(self.selected_blocks) * self.block_width
         selected_edges = []
-        if self.selected_blocks[0] == 0:
+        if int(self.selected_blocks[0]) == 0:
             selected_edges.append(0)
         last_block = self.aligned_block_count - 1
-        if last_block and self.selected_blocks[-1] == last_block:
+        if last_block and int(self.selected_blocks[-1]) == last_block:
             selected_edges.append(last_block)
         for block in selected_edges:
             start, stop = self.block_range(block)
@@ -157,6 +194,7 @@ def sample_uniform_random_blocks(
     block_width: int,
     requested_fraction: float,
     seed: int,
+    algorithm: str = RANDOM_BLOCK_SAMPLER_VERSION,
 ) -> RandomBlockSelection:
     """Sample aligned causal blocks uniformly without replacement or overlap."""
 
@@ -164,10 +202,15 @@ def sample_uniform_random_blocks(
         raise ValueError("random block sampling dimensions must be positive")
     if not 0.0 < requested_fraction <= 1.0:
         raise ValueError("random block sampling fraction must lie in (0, 1]")
+    if algorithm not in RANDOM_BLOCK_SAMPLER_VERSIONS:
+        raise ValueError("random block sampling algorithm is unsupported")
     if requested_fraction == 1.0:
         alignment = 0
-    else:
+    elif algorithm == LEGACY_RANDOM_BLOCK_SAMPLER_VERSION:
         alignment = random.Random(seed).randrange(block_width)
+    else:
+        generator = np.random.Generator(np.random.PCG64(seed))
+        alignment = int(generator.integers(block_width))
     aligned_block_count = (available_positions + block_width - 1) // block_width
     if alignment:
         aligned_block_count = 1 + max(
@@ -175,17 +218,38 @@ def sample_uniform_random_blocks(
             (available_positions - alignment + block_width - 1) // block_width,
         )
     if requested_fraction == 1.0:
-        selected_blocks = tuple(range(aligned_block_count))
-    else:
+        selected_blocks = np.arange(aligned_block_count, dtype=np.int64)
+    elif algorithm == LEGACY_RANDOM_BLOCK_SAMPLER_VERSION:
         generator = random.Random(seed)
         generator.randrange(block_width)
         block_count = max(
             1,
             min(aligned_block_count, round(requested_fraction * aligned_block_count)),
         )
-        selected_blocks = tuple(
-            sorted(generator.sample(range(aligned_block_count), block_count))
+        selected_blocks = np.asarray(
+            sorted(generator.sample(range(aligned_block_count), block_count)),
+            dtype=np.int64,
         )
+    else:
+        block_count = max(
+            1,
+            min(aligned_block_count, round(requested_fraction * aligned_block_count)),
+        )
+        if block_count <= aligned_block_count - block_count:
+            selected_blocks = np.sort(
+                generator.choice(aligned_block_count, size=block_count, replace=False)
+            )
+        else:
+            omitted = generator.choice(
+                aligned_block_count,
+                size=aligned_block_count - block_count,
+                replace=False,
+            )
+            selected_mask = np.ones(aligned_block_count, dtype=np.bool_)
+            selected_mask[omitted] = False
+            selected_blocks = np.flatnonzero(selected_mask)
+        selected_blocks = selected_blocks.astype(np.int64, copy=False)
+    selected_blocks.setflags(write=False)
     return RandomBlockSelection(
         selected_blocks=selected_blocks,
         seed=seed,

@@ -19,6 +19,7 @@ from qkvs.harness import (
     _progress_bar,
     _progress_counts,
     _progress_line,
+    _read_snapshot_observation_sets,
     _snapshot_range_statistics,
     _tokenized_text_streams,
     export_snapshot_data,
@@ -48,6 +49,22 @@ def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, mo
 
     assert completed.stdout == "run --config configs/harness_smoke.json --device cpu\n"
     assert completed.stderr == ""
+
+    snapshot = subprocess.run(
+        [
+            Path("run.sh").resolve(),
+            "configs/harness_smoke.json",
+            "measurements.csv",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert snapshot.stdout == (
+        "run --config configs/harness_smoke.json --device cpu "
+        "--snapshot-csv measurements.csv\n"
+    )
+    assert snapshot.stderr == ""
 
 
 def test_progress_line_is_short_enough_to_never_wrap() -> None:
@@ -280,6 +297,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_replication_path = Path("configs/h1a_independent_document_replication.json")
     h1a_cell_extension_path = Path("configs/h1a_kl_0_01_existing_cell_extension.json")
     h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
+    h1a_existing_v2_path = Path("configs/h1a_kl_0_01_existing_cells_v2.json")
+    h1a_position_v2_path = Path("configs/h1a_kl_0_01_position_extension_v2.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -290,6 +309,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_replication = validate_config_file(h1a_replication_path)
     h1a_cell_extension = validate_config_file(h1a_cell_extension_path)
     h1a_position_extension = validate_config_file(h1a_position_extension_path)
+    h1a_existing_v2 = validate_config_file(h1a_existing_v2_path)
+    h1a_position_v2 = validate_config_file(h1a_position_v2_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -395,6 +416,22 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_position_extension",
         "status": "approved",
     }
+    assert h1a_existing_v2 == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_existing_cells_v2",
+        "status": "draft_not_authorized",
+    }
+    assert h1a_position_v2 == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_position_extension_v2",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -432,6 +469,8 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     replication = json.loads(h1a_replication_path.read_text())
     cell_extension = json.loads(h1a_cell_extension_path.read_text())
     position_extension = json.loads(h1a_position_extension_path.read_text())
+    existing_v2 = json.loads(h1a_existing_v2_path.read_text())
+    position_v2 = json.loads(h1a_position_v2_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -564,6 +603,26 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         extension_selection["seed"],
     )
     assert regenerated_extension == extension_positions
+
+    assert existing_v2["model"] == cell_extension["model"]
+    assert existing_v2["data"] == cell_extension["data"]
+    assert existing_v2["study"]["positions"] == expansion_positions
+    assert existing_v2["study"]["trial_start"] == 0
+    assert existing_v2["study"]["trials_per_fraction"] == 500
+    assert existing_v2["study"]["expected_candidate_passes"] == 60 * (11 * 500 + 1)
+    assert existing_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
+    assert existing_v2["study"]["reuse_dense_snapshots_from"] == (
+        "../artifacts/results/h1a-context-density-expansion"
+    )
+    assert position_v2["model"] == position_extension["model"]
+    assert position_v2["data"] == position_extension["data"]
+    assert position_v2["study"]["positions"] == extension_positions
+    assert position_v2["study"]["trial_start"] == 0
+    assert position_v2["study"]["trials_per_fraction"] == 500
+    assert position_v2["study"]["expected_candidate_passes"] == 50 * (11 * 500 + 1)
+    assert position_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
+    assert existing_v2["run"]["id"] != cell_extension["run"]["id"]
+    assert position_v2["run"]["id"] != position_extension["run"]["id"]
 
     pilot = json.loads(pilot_path.read_text())
     denser = json.loads(followup_path.read_text())
@@ -915,7 +974,7 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
             "sampling_percentages": [25, 100],
             "trial_start": 0,
             "trials_per_fraction": 3,
-            "sampling_algorithm": "uniform-aligned-blocks-v1",
+            "sampling_algorithm": "uniform-aligned-blocks-v2",
             "fidelity_tolerances_nats": [0.001, 0.1],
             "dense_parity_tolerance": {"logit_atol": 1e-6, "loss_atol": 1e-6},
         },
@@ -929,6 +988,15 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     config = tmp_path / "snapshot-config.json"
     config.write_text(json.dumps(specification), encoding="utf-8")
     monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
+    real_fsync = os.fsync
+    fsync_calls = 0
+
+    def counted_fsync(file_descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        real_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", counted_fsync)
     original_probe = reader.snapshot_probe
     probe_calls = 0
 
@@ -940,23 +1008,25 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         return original_probe(*args, **kwargs)
 
     monkeypatch.setattr(reader, "snapshot_probe", interrupted_probe)
+    direct_csv = tmp_path / "direct-feasibility.csv"
     with pytest.raises(RuntimeError, match="test interruption"):
         run_experiment(
             config,
             device="cpu",
             output_root=tmp_path / "results",
             allow_dirty_source=True,
+            snapshot_csv=direct_csv,
         )
     partial_output = tmp_path / "results" / "snapshot-harness-smoke" / "result.json"
     partial = json.loads(partial_output.read_text())
     assert len(partial["snapshot_prefixes"]) == 1
     assert len(partial["snapshot_observations"]) == 1
-    partial_observation_path = partial_output.parent / partial["snapshot_observations"][0]["path"]
-    partial_observation = json.loads(partial_observation_path.read_text())
-    partial_overlaps = [
-        candidate["probability_distribution_overlap"]
-        for candidate in partial_observation["candidates"]
-    ]
+    partial_observation = _read_snapshot_observation_sets(
+        partial,
+        partial_output,
+        load_candidates=False,
+    )[0]
+    partial_feasibility = partial_observation["feasibility"]
     partial_status = status(partial_output)
     assert partial_status["completed_units"] == 2
     assert partial_status["total_units"] == 6
@@ -971,8 +1041,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         device="cpu",
         output_root=tmp_path / "results",
         allow_dirty_source=True,
+        snapshot_csv=direct_csv,
     )
     assert resumed["complete"]
+    assert not (output.parent / "snapshot_observations").exists()
     assert len(resumed["snapshot_prefixes"]) == 2
     assert len(resumed["snapshot_observations"]) == 4
     assert (
@@ -985,23 +1057,9 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         == 4
     )
 
-    observations = [
-        json.loads((output.parent / record["path"]).read_text())
-        for record in resumed["snapshot_observations"]
-    ]
-    dense = [record for record in observations if record["requested_sampling_percentage"] == 100]
-    assert all(len(record["candidates"]) == 1 for record in dense)
-    assert all(record["candidates"][0]["full_logit_max_abs_error"] == 0.0 for record in dense)
-    assert all(record["candidates"][0]["full_loss_abs_error"] == 0.0 for record in dense)
-    assert all(
-        record["candidates"][0]["probability_distribution_overlap"] == pytest.approx(1.0, abs=1e-6)
-        for record in dense
-    )
-    assert all(
-        -1e-6 <= candidate["probability_distribution_overlap"] <= 1.0 + 1e-6
-        for observation in observations
-        for candidate in observation["candidates"]
-    )
+    observations = _read_snapshot_observation_sets(resumed, output, load_candidates=False)
+    assert all(observation["format"] == "qkvs-snapshot-cell-v2" for observation in observations)
+    assert all("path" not in observation for observation in observations)
     resumed_partial = next(
         observation
         for observation in observations
@@ -1009,158 +1067,36 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         and observation["requested_sampling_percentage"]
         == partial_observation["requested_sampling_percentage"]
     )
-    assert [
-        candidate["probability_distribution_overlap"] for candidate in resumed_partial["candidates"]
-    ] == partial_overlaps
-    assert all(
-        set(observation["summary"]["overlap_successful_candidate_fraction"])
-        == {"0.9999", "0.9995", "0.995", "0.95"}
-        for observation in observations
-    )
-    assert all(
-        candidate["selected_token_occurrences"]
-        == candidate["actual_gathered_key_occurrences"]
-        == candidate["actual_gathered_value_occurrences"]
-        for observation in observations
-        for candidate in observation["candidates"]
-    )
-    assert all(
-        candidate["selected_token_occurrences"]
-        == sum(layer["selected_token_count"] for layer in candidate["per_layer_selection"])
-        and candidate["aggregate_block_count"] == sum(candidate["sampled_block_count_per_layer"])
-        and all(
-            layer["selected_token_count"]
-            == layer["gathered_key_occurrences"]
-            == layer["gathered_value_occurrences"]
-            for layer in candidate["per_layer_selection"]
-        )
-        for observation in observations
-        for candidate in observation["candidates"]
-    )
-    assert all(
-        "per_layer_selected_ranges" in observation["summary"]["best_candidate"]
-        for observation in observations
-    )
+    assert resumed_partial["feasibility"] == partial_feasibility
     assert resumed["snapshot_summary"]["interpretation"] == (
         "minimum_discovered_random_sample_not_theoretical_minimum"
     )
+    with direct_csv.open(newline="") as source:
+        direct_rows = list(csv.DictReader(source))
+    assert len(direct_rows) == 8
+    assert fsync_calls == 4
+    assert {
+        (int(row["position"]), float(row["requested_sampling_percentage"]))
+        for row in direct_rows
+    } == {(3, 25.0), (3, 100.0), (7, 25.0), (7, 100.0)}
+    assert {row["run_id"] for row in direct_rows} == {"snapshot-harness-smoke"}
+    assert {row["sampling_algorithm"] for row in direct_rows} == {
+        "uniform-aligned-blocks-v2"
+    }
+    assert all(len(row["source_revision"]) == 40 for row in direct_rows)
+    assert all(len(row["config_sha256"]) == 64 for row in direct_rows)
     print_summary(resumed)
     assert "KL<=0.1" in capfd.readouterr().out
 
-    export_directory = tmp_path / "export"
-    original_hashes = {
-        record["path"]: hashlib.sha256((output.parent / record["path"]).read_bytes()).hexdigest()
-        for record in resumed["snapshot_observations"]
-    }
-    manifest = export_snapshot_data(output, export_directory)
-    with (export_directory / "H1a_trials.csv").open(newline="") as source:
-        trial_rows = list(csv.DictReader(source))
-    with (export_directory / "H1a_snapshots.csv").open(newline="") as source:
-        snapshot_rows = list(csv.DictReader(source))
-    with (export_directory / "H1a_feasibility.csv").open(newline="") as source:
-        feasibility_rows = list(csv.DictReader(source))
-    assert manifest["format"] == "qkvs-h1a-csv-v1"
-    assert manifest["sampled_location_histogram_bins"] == 20
-    assert manifest["csv"]["H1a_trials.csv"]["rows"] == len(trial_rows) == 8
-    assert manifest["csv"]["H1a_snapshots.csv"]["rows"] == len(snapshot_rows) == 2
-    assert manifest["csv"]["H1a_feasibility.csv"]["rows"] == len(feasibility_rows) == 24
-    assert all(
-        row["candidate_seed_hex"].startswith("0x") and len(row["candidate_seed_hex"]) == 18
-        for row in trial_rows
-    )
-    assert len(
-        {
-            (
-                row["stream_id"],
-                int(row["position"]),
-                float(row["requested_sampled_fraction"]),
-                int(row["trial_id"]),
-            )
-            for row in trial_rows
-        }
-    ) == len(trial_rows)
-    assert [
-        (
-            row["stream_id"],
-            int(row["position"]),
-            float(row["requested_sampled_fraction"]),
-            int(row["trial_id"]),
-        )
-        for row in trial_rows
-    ] == sorted(
-        (
-            row["stream_id"],
-            int(row["position"]),
-            float(row["requested_sampled_fraction"]),
-            int(row["trial_id"]),
-        )
-        for row in trial_rows
-    )
-    original_candidates = {
-        (
-            observation["position"],
-            observation["requested_sampled_fraction"],
-            candidate["trial_id"],
-        ): candidate
-        for observation in observations
-        for candidate in observation["candidates"]
-    }
-    for row in trial_rows:
-        candidate = original_candidates[
-            (
-                int(row["position"]),
-                float(row["requested_sampled_fraction"]),
-                int(row["trial_id"]),
-            )
-        ]
-        assert int(row["candidate_seed_hex"], 16) == candidate["candidate_seed"]
-        assert float(row["kl_divergence_nats"]) == candidate["kl_divergence_nats"]
-        assert (
-            float(row["probability_distribution_overlap"])
-            == candidate["probability_distribution_overlap"]
-        )
-        assert float(row["next_token_ce_delta_nats"]) == candidate["next_token_ce_delta_nats"]
-        assert [int(row[f"sampled_position_bin_{index:02d}"]) for index in range(20)] == candidate[
-            "sampled_position_histogram"
-        ]
-    assert {
-        record["path"]: hashlib.sha256((output.parent / record["path"]).read_bytes()).hexdigest()
-        for record in resumed["snapshot_observations"]
-    } == original_hashes
-    for name, record in manifest["csv"].items():
-        csv_path = export_directory / name
-        assert hashlib.sha256(csv_path.read_bytes()).hexdigest() == record["sha256"]
-        assert csv_path.stat().st_size == record["bytes"]
-    second_export = tmp_path / "second-export"
-    export_snapshot_data(output, second_export)
-    assert all(
-        (export_directory / name).read_bytes() == (second_export / name).read_bytes()
-        for name in (
-            "H1a_trials.csv",
-            "H1a_snapshots.csv",
-            "H1a_feasibility.csv",
-            "manifest.json",
-        )
-    )
-    compressed_export = tmp_path / "compressed-export"
-    compressed_manifest = export_snapshot_data(
-        output,
-        compressed_export,
-        compress_trials=True,
-    )
-    compressed_record = compressed_manifest["csv"]["H1a_trials.csv.gz"]
-    assert compressed_record["compression"] == "gzip"
-    assert compressed_record["uncompressed_name"] == "H1a_trials.csv"
-    assert compressed_record["uncompressed_sha256"] == manifest["csv"]["H1a_trials.csv"]["sha256"]
-    assert compressed_record["uncompressed_bytes"] == manifest["csv"]["H1a_trials.csv"]["bytes"]
-    with gzip.open(compressed_export / "H1a_trials.csv.gz", "rb") as source:
-        assert source.read() == (export_directory / "H1a_trials.csv").read_bytes()
+    with pytest.raises(ValueError, match="raw candidates are absent"):
+        export_snapshot_data(output, tmp_path / "export")
 
     _, repeated = run_experiment(
         config,
         device="cpu",
         output_root=tmp_path / "results",
         allow_dirty_source=True,
+        snapshot_csv=direct_csv,
     )
     assert repeated == resumed
 
@@ -1181,6 +1117,7 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         device="cpu",
         output_root=tmp_path / "reuse-results",
         allow_dirty_source=True,
+        snapshot_csv=tmp_path / "reuse-feasibility.csv",
     )
     assert reused["complete"]
     assert reused["dense_snapshot_reuse"] == {
