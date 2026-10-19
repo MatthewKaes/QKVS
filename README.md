@@ -465,6 +465,10 @@ The completed context-expansion run is published under
 The run is pinned to source revision `8b9b389`, and its manifest retains hashes for all 720 original
 trial sets and 60 dense-prefix snapshots.
 
+`H1a_KL_0_01_feasibility.csv` is a compact derived cache containing only the 720 measured
+position/coverage cells for KL≤0.01. It retains attempts, successful candidates, and hit
+probability; the complete feasibility and candidate files remain unchanged and authoritative.
+
 The same directory includes deterministic SVG and PNG density heatmaps for the `0.001`-nat and
 `0.01`-nat KL thresholds. They use actual token coordinates and bilinear interpolation between
 measured hit rates; plotted dots identify the observations underlying the smooth field. Regenerate

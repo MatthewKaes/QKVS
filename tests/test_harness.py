@@ -689,7 +689,16 @@ def test_checked_in_h1a_expansion_export_is_complete_and_compressed() -> None:
     with (directory / "H1a_snapshots.csv").open(newline="") as source:
         assert sum(1 for _ in csv.DictReader(source)) == 60
     with (directory / "H1a_feasibility.csv").open(newline="") as source:
-        assert sum(1 for _ in csv.DictReader(source)) == 5760
+        feasibility = list(csv.DictReader(source))
+    assert len(feasibility) == 5760
+    with (directory / "H1a_KL_0_01_feasibility.csv").open(newline="") as source:
+        compact_feasibility = list(csv.DictReader(source))
+    assert compact_feasibility == [
+        row
+        for row in feasibility
+        if row["metric"] == "kl_divergence_nats" and float(row["threshold"]) == 0.01
+    ]
+    assert len(compact_feasibility) == 720
 
 
 def test_checked_in_h1a_heatmaps_are_reproducible(tmp_path) -> None:
