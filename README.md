@@ -489,16 +489,18 @@ identity. The harness does not write per-cell JSON or retain raw candidate trial
 
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
-`configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional Poisson-disk sampling
-for 200 positions over `[512, 32767)`, with a 112-token minimum separation. It evaluates 22
-coverage values from 10% through 99.5%, including half-percentage resolution in the likely-hit
-region. The 100% sampled candidate is omitted; the full-QKV reference required to calculate KL is
-still evaluated once per position. Completed-position prefix snapshots are discarded so the 200
-fresh prefixes do not accumulate on disk. Positions execute from smallest to largest context. The
-reader first builds the largest dense causal prefix once, then derives every requested position by
-slicing that immutable K/V state instead of replaying the prefix. The master snapshot remains
-available for resume until the study completes, then is discarded. The authorized command writes
-the initially absent CSV:
+`configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise
+sampling for 200 positions over `[512, 32767)`, with a 112-token minimum separation. A 30%
+logarithmic and 70% linear quantile blend retains the full range while reducing the 30K-and-higher
+positions to nine and the mean context to 13,993 tokens. It evaluates 19 coverage values from 10%
+through 99%, including 97.5% and half-percentage resolution elsewhere in the likely-hit region. The
+100% sampled candidate is omitted; the full-QKV reference required to calculate KL is still
+evaluated once per position. Completed-position prefix snapshots are discarded so the 200 fresh
+prefixes do not accumulate on disk. Positions execute from smallest to largest context. The reader
+first builds the largest dense causal prefix once, then derives every requested position by slicing
+that immutable K/V state instead of replaying the prefix. The master snapshot remains available
+for resume until the study completes, then is discarded. The authorized command writes the
+initially absent CSV:
 
 ```bash
 ./run.sh configs/h1a_kl_0_01_blue_noise_v2.json \

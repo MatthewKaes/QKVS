@@ -606,14 +606,11 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert max(fresh_positions) < 32767
     assert fresh_v2["study"]["trial_start"] == 0
     assert fresh_v2["study"]["trials_per_fraction"] == 500
-    assert fresh_v2["study"]["expected_candidate_passes"] == 200 * 22 * 500
+    assert fresh_v2["study"]["expected_candidate_passes"] == 200 * 19 * 500
     assert fresh_v2["study"]["sampling_algorithm"] == "uniform-aligned-blocks-v2"
     assert fresh_v2["study"]["sampling_percentages"] == [
-        99.5,
         99,
-        98,
-        97,
-        96,
+        97.5,
         95,
         92.5,
         90,
@@ -643,23 +640,30 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         for position in cohort
     } == set(fresh_positions)
     blue_noise = fresh_v2["study"]["position_selection"]
+    assert blue_noise["algorithm"] == "pcg64-log-weighted-blue-noise-1d-v1"
     assert blue_noise["execution_order"] == "ascending_context_length"
     generator = np.random.Generator(np.random.PCG64(blue_noise["seed"]))
+    start, stop = blue_noise["range"]
+    count = blue_noise["count"]
+    logarithmic_weight = blue_noise["logarithmic_quantile_weight"]
+    quantiles = (np.arange(count) + generator.random(count)) / count
+    linear = start + quantiles * (stop - start)
+    logarithmic = np.exp(np.log(start) + quantiles * np.log(stop / start))
+    targets = (1.0 - logarithmic_weight) * linear + logarithmic_weight * logarithmic
     regenerated_blue_noise = []
-    proposals = 0
-    while len(regenerated_blue_noise) < blue_noise["count"]:
-        candidate = int(generator.integers(*blue_noise["range"]))
-        proposals += 1
-        if all(
-            abs(candidate - prior) >= blue_noise["minimum_spacing_tokens"]
-            for prior in regenerated_blue_noise
-        ):
-            regenerated_blue_noise.append(candidate)
-    assert proposals == blue_noise["accepted_after_proposals"]
-    assert sorted(regenerated_blue_noise) == fresh_positions
+    for index, target in enumerate(targets):
+        lower = (
+            start
+            if not regenerated_blue_noise
+            else regenerated_blue_noise[-1] + blue_noise["minimum_spacing_tokens"]
+        )
+        upper = stop - 1 - (count - index - 1) * blue_noise["minimum_spacing_tokens"]
+        regenerated_blue_noise.append(min(max(int(round(float(target))), lower), upper))
+    assert regenerated_blue_noise == fresh_positions
     assert min(
         right - left for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
     ) >= blue_noise["minimum_spacing_tokens"]
+    assert sum(position >= 30000 for position in fresh_positions) == 9
     assert fresh_v2["run"]["id"] not in {
         cell_extension["run"]["id"],
         position_extension["run"]["id"],
