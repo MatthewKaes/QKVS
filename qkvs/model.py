@@ -88,6 +88,15 @@ class SnapshotProbeResult:
     gathered_values_per_layer: tuple[int, ...]
 
 
+def _device_matches_request(actual: torch.device, requested: torch.device) -> bool:
+    """Treat an unindexed device request as the active device of that type."""
+
+    requested = torch.device(requested)
+    return actual.type == requested.type and (
+        requested.index is None or actual.index == requested.index
+    )
+
+
 @dataclass
 class HeatfieldRolloutState:
     """Mutable causal continuation owned by one training stream."""
@@ -1485,7 +1494,7 @@ class HuggingFaceQwen2Reader:
                 or any(
                     indices.ndim != 1
                     or indices.dtype != torch.long
-                    or indices.device != device
+                    or not _device_matches_request(indices.device, device)
                     or len(indices) != count
                     for indices, count in zip(
                         selected_positions.layers,

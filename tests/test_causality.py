@@ -179,6 +179,25 @@ def test_direct_cache_gather_reads_real_occurrences_in_order() -> None:
         )
 
 
+def test_unindexed_cuda_request_accepts_the_concrete_default_device() -> None:
+    assert model_module._device_matches_request(
+        torch.device("cuda:0"),
+        torch.device("cuda"),
+    )
+    assert model_module._device_matches_request(
+        torch.device("cuda:1"),
+        torch.device("cuda:1"),
+    )
+    assert not model_module._device_matches_request(
+        torch.device("cuda:1"),
+        torch.device("cuda:0"),
+    )
+    assert not model_module._device_matches_request(
+        torch.device("cpu"),
+        torch.device("cuda"),
+    )
+
+
 @pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
 def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches(dtype) -> None:
     reader = _qwen_reader(dtype)
