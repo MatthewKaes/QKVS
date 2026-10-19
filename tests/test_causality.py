@@ -243,6 +243,7 @@ def test_dense_snapshot_probe_is_noncommitting_causal_and_full_selection_matches
         position=6,
         device=torch.device("cpu"),
     )
+    assert prepared_selection.base_occurrence_counts == (4, 4)
     compact_candidate = reader.snapshot_probe(
         first,
         state,
@@ -302,8 +303,13 @@ def test_bounded_execution_never_stacks_the_full_cache(monkeypatch, reader_facto
     original_gather = model_module._gather_cache_occurrences
     gathered_widths: list[int] = []
 
-    def guarded_gather(cache, indices, *, occurrence_limit):
-        gathered = original_gather(cache, indices, occurrence_limit=occurrence_limit)
+    def guarded_gather(cache, indices, *, occurrence_limit, base_occurrence_count=None):
+        gathered = original_gather(
+            cache,
+            indices,
+            occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
+        )
         if occurrence_limit is not None:
             gathered_widths.append(gathered.shape[1])
             assert gathered.shape[1] <= 5
@@ -337,7 +343,8 @@ def test_direct_gather_matches_legacy_materialized_scores(monkeypatch, reader_fa
         device=torch.device("cpu"),
     )
 
-    def legacy_gather(cache, indices, *, occurrence_limit):
+    def legacy_gather(cache, indices, *, occurrence_limit, base_occurrence_count=None):
+        del base_occurrence_count
         assert occurrence_limit is None or len(indices) <= occurrence_limit
         full = (
             cache.storage[:, : len(cache)]
@@ -747,10 +754,15 @@ def test_layer_invariant_reader_reuses_one_index_tensor_per_token(monkeypatch) -
     gathered_indices = []
     original_gather = model_module._gather_cache_occurrences
 
-    def counted_gather(cache, indices, *, occurrence_limit):
+    def counted_gather(cache, indices, *, occurrence_limit, base_occurrence_count=None):
         if isinstance(cache, model_module._LayerKVCache) and indices is not None:
             gathered_indices.append(indices)
-        return original_gather(cache, indices, occurrence_limit=occurrence_limit)
+        return original_gather(
+            cache,
+            indices,
+            occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
+        )
 
     monkeypatch.setattr(model_module, "_gather_cache_occurrences", counted_gather)
     shared = reader.execute(
@@ -1066,8 +1078,13 @@ def test_full_depth_bfloat16_training_matches_normal_current_token_qkvs(monkeypa
     downstream_indices = []
     original_gather = model_module._gather_cache_occurrences
 
-    def tracked_gather(cache, indices, *, occurrence_limit):
-        gathered = original_gather(cache, indices, occurrence_limit=occurrence_limit)
+    def tracked_gather(cache, indices, *, occurrence_limit, base_occurrence_count=None):
+        gathered = original_gather(
+            cache,
+            indices,
+            occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
+        )
         if (
             isinstance(cache, model_module._LayerKVCache)
             and cache.overlay
@@ -1246,10 +1263,15 @@ def test_training_rollout_batches_metrics_and_reuses_gather_indices(monkeypatch)
     gathered_indices = []
     original_gather = model_module._gather_cache_occurrences
 
-    def counted_gather(cache, indices, *, occurrence_limit):
+    def counted_gather(cache, indices, *, occurrence_limit, base_occurrence_count=None):
         if isinstance(cache, model_module._LayerKVCache):
             gathered_indices.append(indices)
-        return original_gather(cache, indices, occurrence_limit=occurrence_limit)
+        return original_gather(
+            cache,
+            indices,
+            occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
+        )
 
     monkeypatch.setattr(model_module, "_gather_cache_occurrences", counted_gather)
     objectives, metrics = reader.heatfield_training_rollout(

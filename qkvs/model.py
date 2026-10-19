@@ -76,6 +76,7 @@ class SnapshotProbeSelection:
     position: int
     layers: tuple[Tensor, ...]
     occurrence_counts: tuple[int, ...]
+    base_occurrence_counts: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -370,6 +371,7 @@ class _LayerKVCache:
         indices: tuple[int, ...] | Tensor | None,
         *,
         occurrence_limit: int | None,
+        base_occurrence_count: int | None = None,
     ) -> Tensor:
         if indices is None:
             if occurrence_limit is not None:
@@ -391,6 +393,23 @@ class _LayerKVCache:
             if any(value < 0 or value >= len(self) for value in indices):
                 raise ValueError("actual K/V gather index is outside the layer cache")
             index = torch.tensor(indices, device=self.storage.device, dtype=torch.long)
+        if base_occurrence_count is not None:
+            if not 0 <= base_occurrence_count <= occurrence_count:
+                raise ValueError("known base K/V occurrence count is invalid")
+            overlay_count = occurrence_count - base_occurrence_count
+            if overlay_count > len(self.overlay):
+                raise ValueError("known overlay K/V occurrence count is invalid")
+            pieces = []
+            if base_occurrence_count:
+                pieces.append(
+                    self.storage[:, : self.length].index_select(
+                        1,
+                        index[:base_occurrence_count],
+                    )
+                )
+            if overlay_count:
+                pieces.append(torch.stack(self.overlay[:overlay_count], dim=1))
+            return torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
         if not self.overlay:
             return self.storage[:, : self.length].index_select(1, index)
         base_mask = index < self.length
@@ -419,11 +438,18 @@ def _gather_cache_occurrences(
     indices: tuple[int, ...] | Tensor | None,
     *,
     occurrence_limit: int | None,
+    base_occurrence_count: int | None = None,
 ) -> Tensor:
     """Stack only executed cache occurrences, preserving order and duplicates."""
 
     if isinstance(cache, _LayerKVCache):
-        return cache.gather(indices, occurrence_limit=occurrence_limit)
+        return cache.gather(
+            indices,
+            occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
+        )
+    if base_occurrence_count is not None:
+        raise ValueError("known base occurrence counts require a preallocated K/V cache")
     if indices is None:
         if occurrence_limit is not None:
             raise ValueError("full-cache gather cannot claim a bounded occurrence limit")
@@ -953,17 +979,20 @@ class HuggingFaceQwen2Reader:
         actual_indices: tuple[int, ...] | Tensor | None,
         *,
         occurrence_limit: int | None,
+        base_occurrence_count: int | None = None,
     ) -> tuple[Tensor, int, int]:
         attention = layer.self_attn
         keys = _gather_cache_occurrences(
             key_cache,
             actual_indices,
             occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
         )
         values = _gather_cache_occurrences(
             value_cache,
             actual_indices,
             occurrence_limit=occurrence_limit,
+            base_occurrence_count=base_occurrence_count,
         )
         gathered_key_occurrences = keys.shape[1]
         gathered_value_occurrences = values.shape[1]
@@ -1427,6 +1456,7 @@ class HuggingFaceQwen2Reader:
             raise ValueError("snapshot probe selection must provide every model layer")
         flattened_ranges: list[tuple[int, int]] = []
         occurrence_counts: list[int] = []
+        base_occurrence_counts: list[int] = []
         for ranges in layer_ranges:
             if not ranges:
                 raise ValueError("snapshot probe selections must be nonempty")
@@ -1446,6 +1476,9 @@ class HuggingFaceQwen2Reader:
                 count += stop - start
                 previous_stop = stop
             occurrence_counts.append(count)
+            base_occurrence_counts.append(
+                count - int(ranges[-1][0] <= position < ranges[-1][1])
+            )
 
         range_tensor = torch.tensor(flattened_ranges, dtype=torch.long, device=device)
         lengths = range_tensor[:, 1] - range_tensor[:, 0]
@@ -1461,6 +1494,7 @@ class HuggingFaceQwen2Reader:
             position=position,
             layers=layers,
             occurrence_counts=tuple(occurrence_counts),
+            base_occurrence_counts=tuple(base_occurrence_counts),
         )
 
     def snapshot_probe(
@@ -1491,6 +1525,7 @@ class HuggingFaceQwen2Reader:
                 selected_positions.position != position
                 or len(selected_positions.layers) != layer_count
                 or len(selected_positions.occurrence_counts) != layer_count
+                or len(selected_positions.base_occurrence_counts) != layer_count
                 or any(
                     indices.ndim != 1
                     or indices.dtype != torch.long
@@ -1498,6 +1533,14 @@ class HuggingFaceQwen2Reader:
                     or len(indices) != count
                     for indices, count in zip(
                         selected_positions.layers,
+                        selected_positions.occurrence_counts,
+                        strict=True,
+                    )
+                )
+                or any(
+                    not 0 <= base_count <= count
+                    for base_count, count in zip(
+                        selected_positions.base_occurrence_counts,
                         selected_positions.occurrence_counts,
                         strict=True,
                     )
@@ -1564,6 +1607,11 @@ class HuggingFaceQwen2Reader:
                     )
                     occurrence_limit = len(indices)
                     selected_count = len(indices)
+                base_occurrence_count = (
+                    selected_positions.base_occurrence_counts[layer_index]
+                    if prepared_selection
+                    else None
+                )
                 hidden, key_count, value_count = self._finish_layer(
                     layer,
                     residual,
@@ -1572,6 +1620,7 @@ class HuggingFaceQwen2Reader:
                     branch_values,
                     actual_indices,
                     occurrence_limit=occurrence_limit,
+                    base_occurrence_count=base_occurrence_count,
                 )
                 selected_counts.append(selected_count)
                 gathered_keys.append(key_count)
