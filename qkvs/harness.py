@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -8,6 +9,7 @@ import os
 import platform
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1415,9 +1417,29 @@ def _snapshot_seed_hex(value: Any) -> str:
     return f"0x{value:016x}"
 
 
+def _gzip_csv(source: Path, destination: Path) -> None:
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    try:
+        with source.open("rb") as uncompressed, temporary.open("wb") as compressed:
+            with gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=9,
+                fileobj=compressed,
+                mtime=0,
+            ) as output:
+                shutil.copyfileobj(uncompressed, output)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def export_snapshot_data(
     path: str | Path,
     output_directory: str | Path,
+    *,
+    compress_trials: bool = False,
 ) -> dict[str, Any]:
     """Export a completed snapshot study without model execution or observation recomputation."""
 
@@ -1671,6 +1693,42 @@ def export_snapshot_data(
         feasibility_fields,
         feasibility_rows(),
     )
+    trial_content_sha256 = _sha256(trial_path)
+    trial_content_bytes = trial_path.stat().st_size
+    if compress_trials:
+        compressed_trial_path = trial_path.with_suffix(trial_path.suffix + ".gz")
+        _gzip_csv(trial_path, compressed_trial_path)
+        trial_path.unlink()
+        published_trial_path = compressed_trial_path
+        trial_record = {
+            "sha256": _sha256(compressed_trial_path),
+            "bytes": compressed_trial_path.stat().st_size,
+            "rows": trial_count,
+            "compression": "gzip",
+            "uncompressed_name": trial_path.name,
+            "uncompressed_sha256": trial_content_sha256,
+            "uncompressed_bytes": trial_content_bytes,
+        }
+    else:
+        published_trial_path = trial_path
+        trial_record = {
+            "sha256": trial_content_sha256,
+            "bytes": trial_content_bytes,
+            "rows": trial_count,
+        }
+    csv_records = {
+        published_trial_path.name: trial_record,
+        snapshot_path.name: {
+            "sha256": _sha256(snapshot_path),
+            "bytes": snapshot_path.stat().st_size,
+            "rows": snapshot_count,
+        },
+        feasibility_path.name: {
+            "sha256": _sha256(feasibility_path),
+            "bytes": feasibility_path.stat().st_size,
+            "rows": feasibility_count,
+        },
+    }
     root = Path(__file__).resolve().parent.parent
     resolved_result_path = result_path.resolve()
     displayed_result_path = (
@@ -1698,18 +1756,7 @@ def export_snapshot_data(
         "ordering": ["stream_id", "position", "requested_sampled_fraction", "trial_id"],
         "candidate_seed_encoding": "unsigned-64-bit-lowercase-hex",
         "sampled_location_histogram_bins": histogram_bins,
-        "csv": {
-            csv_path.name: {
-                "sha256": _sha256(csv_path),
-                "bytes": csv_path.stat().st_size,
-                "rows": row_count,
-            }
-            for csv_path, row_count in (
-                (trial_path, trial_count),
-                (snapshot_path, snapshot_count),
-                (feasibility_path, feasibility_count),
-            )
-        },
+        "csv": csv_records,
         "original_artifacts": {
             "result": {
                 "path": displayed_result_path,
@@ -1720,10 +1767,7 @@ def export_snapshot_data(
         },
         "original_frontiers": result["snapshot_summary"],
         "storage_bytes": {
-            "csv_total": sum(
-                csv_path.stat().st_size
-                for csv_path in (trial_path, snapshot_path, feasibility_path)
-            ),
+            "csv_total": sum(record["bytes"] for record in csv_records.values()),
             "original_result_json": result_path.stat().st_size,
             "original_trial_set_json": observation_bytes,
             "original_structured_measurements": result_path.stat().st_size + observation_bytes,

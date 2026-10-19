@@ -454,6 +454,17 @@ qkvs export-snapshot \
   --output docs/data/h1a-unconstrained-snapshot-compressibility
 ```
 
+Use `--compress-trials` when the complete candidate CSV would exceed the hosting service's normal
+single-file limit. This writes deterministic `H1a_trials.csv.gz` while retaining both compressed
+and uncompressed hashes and sizes in the manifest; reference and feasibility tables remain plain
+CSV.
+
+The completed context-expansion run is published under
+`docs/data/h1a-context-density-expansion/`. Its 264,060-row candidate table is stored as
+`H1a_trials.csv.gz`; the dense-reference and feasibility tables remain directly readable CSVs.
+The run is pinned to source revision `8b9b389`, and its manifest retains hashes for all 720 original
+trial sets and 60 dense-prefix snapshots.
+
 The exporter verifies every trial-set hash, then writes atomic candidate, dense-reference, and
 feasibility CSVs plus a provenance manifest. Seeds use exact unsigned 64-bit hexadecimal strings;
 candidate rows are ordered by stream, position, requested fraction, and trial ID. The completed

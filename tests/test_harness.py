@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -644,6 +645,53 @@ def test_checked_in_h1a_csv_export_is_complete_and_self_consistent() -> None:
             assert float(discovered["kl_divergence_nats"]) == frontier["kl_divergence_nats"]
 
 
+def test_checked_in_h1a_expansion_export_is_complete_and_compressed() -> None:
+    directory = Path("docs/data/h1a-context-density-expansion")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["format"] == "qkvs-h1a-csv-v1"
+    assert manifest["run_id"] == "h1a-context-density-expansion"
+    assert manifest["source_identity"]["git_revision"] == (
+        "8b9b38969bda9fe10f4fd70b8a5c6d52ec57e4e6"
+    )
+    assert manifest["configuration_sha256"] == (
+        "36536e12d8736492a42aadbcf06b18eb562810f0466fbee000288ef4b96e71cf"
+    )
+    assert manifest["sampled_location_histogram_bins"] == 20
+    assert len(manifest["original_artifacts"]["trial_sets"]) == 720
+    assert len(manifest["original_artifacts"]["dense_prefixes"]) == 60
+    assert len(manifest["original_frontiers"]["frontiers_by_position"]) == 60
+    for name, record in manifest["csv"].items():
+        path = directory / name
+        assert path.stat().st_size == record["bytes"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"]
+
+    trial_record = manifest["csv"]["H1a_trials.csv.gz"]
+    assert trial_record["compression"] == "gzip"
+    assert trial_record["rows"] == 264060
+    assert trial_record["uncompressed_name"] == "H1a_trials.csv"
+    previous_identity = None
+    trial_count = 0
+    with gzip.open(directory / "H1a_trials.csv.gz", "rt", newline="") as source:
+        for row in csv.DictReader(source):
+            identity = (
+                row["stream_id"],
+                int(row["position"]),
+                float(row["requested_sampled_fraction"]),
+                int(row["trial_id"]),
+            )
+            if previous_identity is not None:
+                assert previous_identity < identity
+            previous_identity = identity
+            assert row["candidate_seed_hex"].startswith("0x")
+            assert len(row["candidate_seed_hex"]) == 18
+            trial_count += 1
+    assert trial_count == trial_record["rows"]
+    with (directory / "H1a_snapshots.csv").open(newline="") as source:
+        assert sum(1 for _ in csv.DictReader(source)) == 60
+    with (directory / "H1a_feasibility.csv").open(newline="") as source:
+        assert sum(1 for _ in csv.DictReader(source)) == 5760
+
+
 def test_completed_followup_is_legacy_compatible_only_for_matched_baselines() -> None:
     result = {
         "source_identity": {
@@ -967,6 +1015,19 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
             "manifest.json",
         )
     )
+    compressed_export = tmp_path / "compressed-export"
+    compressed_manifest = export_snapshot_data(
+        output,
+        compressed_export,
+        compress_trials=True,
+    )
+    compressed_record = compressed_manifest["csv"]["H1a_trials.csv.gz"]
+    assert compressed_record["compression"] == "gzip"
+    assert compressed_record["uncompressed_name"] == "H1a_trials.csv"
+    assert compressed_record["uncompressed_sha256"] == manifest["csv"]["H1a_trials.csv"]["sha256"]
+    assert compressed_record["uncompressed_bytes"] == manifest["csv"]["H1a_trials.csv"]["bytes"]
+    with gzip.open(compressed_export / "H1a_trials.csv.gz", "rb") as source:
+        assert source.read() == (export_directory / "H1a_trials.csv").read_bytes()
 
     _, repeated = run_experiment(
         config,
