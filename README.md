@@ -211,7 +211,10 @@ Dense prefill uses a fixed-capacity Hugging Face cache in bounded query chunks, 
 contiguous K/V tensor per layer. Post-transition Qwen2 caches are preallocated and selected with
 direct tensor gathers, avoiding per-token full-cache stacking and repeated cache concatenation.
 Continuation losses and predictions transfer to the host in one batch rather than synchronizing
-once per scalar token result; learned proposal parameters use one bounded transfer per layer update.
+once per scalar token result. Training metrics and proposal parameters for all supervised targets
+are packed into one host transfer per rollout, and each bounded index tensor is shared by its K/V
+gathers. The dense soft-history training branch reads the contiguous causal cache directly instead
+of rebuilding and selecting a full-cache index.
 Access artifacts encode exact rolling ranges and selected windows with compact varints rather than
 expanding thousands of contiguous token indices into JSON. Proposal parameters used for temporal
 heat-field plots are sampled at a configured interval (64 tokens in the long study); access counts,
@@ -368,8 +371,11 @@ Progress covers dense prefills, durable training-checkpoint ranges, and evaluati
 interactive terminal, a short ASCII spinner and elapsed timer update once per second on one physical
 row; the 24-cell `█▓▒` bar uses third-cell shading, and the line is clipped to the detected terminal
 width and erased before every redraw. Redirected output receives one line per work unit instead of
-heartbeat writes. Completed counts advance only after the corresponding artifact is written
-atomically. `qkvs status` reports the same phase breakdown for an interrupted or concurrent run.
+heartbeat writes. During selector training, the active checkpoint's bar advances fractionally after
+each optimizer step and reports completed steps, supervised targets, and measured seconds per step.
+The durable unit count still advances only after the corresponding checkpoint and result artifact
+are written atomically. `qkvs status` reports the same durable phase breakdown for an interrupted or
+concurrent run.
 
 `configs/heatfield_learning_study.json` identifies the completed pilot;
 `configs/heatfield_learning_followup.json` identifies its one approved absolute-mass follow-up.

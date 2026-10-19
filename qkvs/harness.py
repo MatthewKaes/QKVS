@@ -32,11 +32,11 @@ _SPINNER_FRAMES = ("|", "/", "-", "\\")
 _ERASE_LINE = "\r\x1b[2K"
 
 
-def _progress_bar(current: int, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
+def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
     if total <= 0:
         return "█" * width
     bounded = max(0, min(current, total))
-    thirds = (width * 3 * bounded + total // 2) // total
+    thirds = int(width * 3 * bounded / total + 0.5)
     full, partial = divmod(thirds, 3)
     partial_glyph = ("", "▒", "▓")[partial]
     return "█" * full + partial_glyph + " " * (width - full - bool(partial))
@@ -50,6 +50,7 @@ def _progress_line(
     *,
     spinner: str = "|",
     columns: int = 80,
+    bar_current: float | None = None,
 ) -> str:
     counter_width = len(str(total)) + 1
     elapsed = max(0, int(elapsed_seconds))
@@ -57,7 +58,7 @@ def _progress_line(
     minutes, seconds = divmod(remainder, 60)
     prefix = (
         f"{spinner} [{current:>{counter_width}} / {total} ] "
-        f"[{_progress_bar(current, total)}] "
+        f"[{_progress_bar(current if bar_current is None else bar_current, total)}] "
         f"{hours:02d}:{minutes:02d}:{seconds:02d} "
     )
     maximum = max(1, columns - 1)
@@ -86,6 +87,7 @@ class _Progress:
         self.interactive = bool(getattr(self.stream, "isatty", lambda: False)())
         self.interval_seconds = interval_seconds
         self.active_job: str | None = None
+        self.job_fraction = 1.0
         self.running = False
         self.advances = False
         self.started = time.monotonic()
@@ -113,6 +115,11 @@ class _Progress:
             return self.completed
         return min(self.completed + 1, self.total)
 
+    def _bar_current(self) -> float:
+        if not self.running or not self.advances:
+            return float(self.completed)
+        return min(self.completed + self.job_fraction, self.total)
+
     def render(self) -> None:
         if not self.interactive:
             return
@@ -126,17 +133,21 @@ class _Progress:
                 time.monotonic() - self.started,
                 spinner=spinner,
                 columns=self._columns(),
+                bar_current=self._bar_current(),
             )
             self.stream.write(_ERASE_LINE + line)
             self.stream.flush()
 
-    def start_job(self, job: str, *, advances: bool = True) -> None:
+    def start_job(self, job: str, *, advances: bool = True, fraction: float = 1.0) -> None:
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("job progress fraction must lie in [0, 1]")
         with self.lock:
             if self.running:
                 raise RuntimeError("cannot start progress while another job is active")
             self.active_job = job
             self.running = True
             self.advances = advances
+            self.job_fraction = fraction
         if self.interactive:
             self.render()
         else:
@@ -148,10 +159,21 @@ class _Progress:
                     time.monotonic() - self.started,
                     spinner=">",
                     columns=self._columns(),
+                    bar_current=self._bar_current(),
                 ),
                 file=self.stream,
                 flush=True,
             )
+
+    def update_job(self, job: str, *, fraction: float) -> None:
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("job progress fraction must lie in [0, 1]")
+        with self.lock:
+            if not self.running:
+                raise RuntimeError("cannot update progress without an active job")
+            self.active_job = job
+            self.job_fraction = fraction
+        self.render()
 
     def complete_job(self) -> None:
         with self.lock:
@@ -161,6 +183,7 @@ class _Progress:
                 self.completed += 1
             self.running = False
             self.advances = False
+            self.job_fraction = 1.0
             self.active_job = None
         self.render()
 
@@ -989,13 +1012,35 @@ def _train_learned_policy(
             )
 
     policy.train()
+    planned_target_count = 0
+    for stream in token_streams:
+        continuation = len(stream.tokens) - 1 - attention["activation_tokens"]
+        complete_rollouts, trailing_tokens = divmod(continuation, training["rollout_tokens"])
+        planned_target_count += complete_rollouts * min(
+            training["targets_per_rollout"],
+            training["rollout_tokens"],
+        )
+        planned_target_count += min(training["targets_per_rollout"], trailing_tokens)
+    timed_steps = 0
+    timed_seconds = 0.0
+    checkpoint_start = step
+    checkpoint_stop = step
     while step < training["steps"]:
         if step % training["checkpoint_interval"] == 0:
+            checkpoint_start = step
             checkpoint_stop = min(
                 training["steps"],
                 step + training["checkpoint_interval"],
             )
-            progress.start_job(f"training steps {step + 1}-{checkpoint_stop} / {training['steps']}")
+            job = (
+                f"train {step + 1}/{training['steps']} "
+                f"{target_count}/{planned_target_count} targets"
+            )
+            progress.start_job(
+                job,
+                fraction=0.0,
+            )
+        step_started = time.perf_counter()
         selected_stream_index = None
         for offset in range(len(token_streams)):
             candidate_index = (next_stream_index + offset) % len(token_streams)
@@ -1066,7 +1111,18 @@ def _train_learned_policy(
             }
             for metrics in rollout_metrics
         )
+        timed_steps += 1
+        timed_seconds += time.perf_counter() - step_started
+        progress.update_job(
+            f"train {step}/{training['steps']} {target_count}/{planned_target_count} targets "
+            f"{timed_seconds / timed_steps:.1f}s/step",
+            fraction=(step - checkpoint_start) / (checkpoint_stop - checkpoint_start),
+        )
         if step % training["checkpoint_interval"] == 0 or step == training["steps"]:
+            progress.update_job(
+                f"checkpoint after step {step}/{training['steps']}",
+                fraction=1.0,
+            )
             temporary = checkpoint.with_suffix(".pt.tmp")
             torch.save(
                 {

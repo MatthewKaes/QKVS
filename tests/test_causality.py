@@ -790,6 +790,62 @@ def test_fixed_offsets_duplicate_the_initial_window_at_long_context_activation()
     assert selection.unique_count == 136
 
 
+def test_training_rollout_batches_metrics_and_reuses_gather_indices(monkeypatch) -> None:
+    reader = _qwen_reader()
+    policy = _heatfield_policy()
+    stream = _stream(tuple(index % 32 for index in range(14)))
+    snapshot = reader.dense_prefill(
+        stream,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+    )
+    state = reader.new_heatfield_rollout_state(
+        stream,
+        snapshot,
+        rolling_tokens=2,
+        activation_tokens=6,
+        device=torch.device("cpu"),
+        ownership="train",
+        prefill_chunk_tokens=128,
+    )
+    gathered_indices = []
+    original_gather = model_module._gather_cache_occurrences
+
+    def counted_gather(cache, indices, *, occurrence_limit):
+        if isinstance(cache, model_module._LayerKVCache):
+            gathered_indices.append(indices)
+        return original_gather(cache, indices, occurrence_limit=occurrence_limit)
+
+    monkeypatch.setattr(model_module, "_gather_cache_occurrences", counted_gather)
+    objectives, metrics = reader.heatfield_training_rollout(
+        stream,
+        policy,
+        state,
+        stop_position=10,
+        target_layers={6: 0, 9: 1},
+        rolling_tokens=2,
+        historical_token_budget=4,
+        window_width=2,
+        coverage_weight=1.0,
+        utility_weight=0.1,
+        device=torch.device("cpu"),
+    )
+
+    assert len(objectives) == len(metrics) == 2
+    assert all(isinstance(record["objective"], float) for record in metrics)
+    assert all(isinstance(record["proposal_parameters"], list) for record in metrics)
+    tensor_indices = [indices for indices in gathered_indices if isinstance(indices, torch.Tensor)]
+    assert tensor_indices
+    assert len(tensor_indices) % 2 == 0
+    assert all(
+        tensor_indices[index] is tensor_indices[index + 1]
+        for index in range(0, len(tensor_indices), 2)
+    )
+    assert sum(indices is None for indices in gathered_indices) >= 6
+
+
 def test_heatfield_training_updates_only_s_and_checkpoint_executes(tmp_path) -> None:
     reader = _qwen_reader()
     policy = _heatfield_policy()
@@ -1059,8 +1115,8 @@ def test_heatfield_harness_training_resumes_atomically(tmp_path, monkeypatch, ca
     assert partial_status["training_steps"] == {"completed": 1, "total": 2}
     interrupted_progress = capfd.readouterr().out
     assert "dense prefill / train" in interrupted_progress
-    assert "training steps 1-1 / 2" in interrupted_progress
-    assert "training steps 2-2 / 2" in interrupted_progress
+    assert "train 1/2 0/6 targets" in interrupted_progress
+    assert "train 2/2 3/6 targets" in interrupted_progress
     monkeypatch.setattr(reader, "heatfield_training_rollout", original_rollout)
     output, first = run_experiment(
         config,

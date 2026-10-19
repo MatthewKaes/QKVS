@@ -431,6 +431,54 @@ def _absolute_teacher_coverage(
     return uncovered, covered
 
 
+_TRAINING_SCALAR_METRICS = (
+    "objective",
+    "coverage_loss",
+    "soft_next_token_loss",
+    "rolling_next_token_loss",
+    "hard_selected_next_token_loss",
+    "hard_utility",
+    "soft_utility",
+    "soft_hard_utility_gap",
+    "teacher_historical_attention_mass",
+    "teacher_historical_attention_covered_mass",
+    "teacher_historical_attention_uncovered_mass",
+)
+
+
+def _materialize_training_metrics(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not records:
+        return records
+    proposal_shape = records[0]["proposal_parameters"].shape
+    packed = (
+        torch.stack(
+            [
+                torch.cat(
+                    (
+                        torch.stack(
+                            [record[name].detach().float() for name in _TRAINING_SCALAR_METRICS]
+                        ),
+                        record["proposal_parameters"].detach().float().reshape(-1),
+                    )
+                )
+                for record in records
+            ]
+        )
+        .cpu()
+        .tolist()
+    )
+    scalar_count = len(_TRAINING_SCALAR_METRICS)
+    for record, values in zip(records, packed, strict=True):
+        for name, value in zip(_TRAINING_SCALAR_METRICS, values[:scalar_count], strict=True):
+            record[name] = value
+        proposals = values[scalar_count:]
+        record["proposal_parameters"] = [
+            proposals[offset : offset + proposal_shape[1]]
+            for offset in range(0, len(proposals), proposal_shape[1])
+        ]
+    return records
+
+
 def _validate_transition(rolling_tokens: int, activation_tokens: int) -> None:
     if rolling_tokens <= 0:
         raise ValueError("rolling attention is mandatory")
@@ -815,9 +863,17 @@ class HuggingFaceQwen2Reader:
         rolling: tuple[int, ...],
     ) -> Tensor:
         history_end = historical_occupancy.numel()
-        actual_indices = (*range(history_end), *rolling)
-        keys = _gather_cache_occurrences(key_cache, actual_indices, occurrence_limit=None)
-        values = _gather_cache_occurrences(value_cache, actual_indices, occurrence_limit=None)
+        cache_length = len(key_cache)
+        if (
+            len(value_cache) != cache_length
+            or len(rolling) != cache_length - history_end
+            or not rolling
+            or rolling[0] != history_end
+            or rolling[-1] != cache_length - 1
+        ):
+            raise ValueError("soft historical occupancy does not span the causal cache")
+        keys = _gather_cache_occurrences(key_cache, None, occurrence_limit=None)
+        values = _gather_cache_occurrences(value_cache, None, occurrence_limit=None)
         attention = layer.self_attn
         keys = self._repeat_kv(keys.unsqueeze(0), attention.num_key_value_groups).squeeze(0)
         values = self._repeat_kv(values.unsqueeze(0), attention.num_key_value_groups).squeeze(0)
@@ -843,7 +899,7 @@ class HuggingFaceQwen2Reader:
         position_embeddings: tuple[Tensor, Tensor],
         key_cache: list[list[Tensor] | _LayerKVCache],
         value_cache: list[list[Tensor] | _LayerKVCache],
-        rolling: tuple[int, ...],
+        rolling: tuple[int, ...] | Tensor,
     ) -> Tensor:
         backbone = self.model.model
         for layer_index in range(start_layer, len(backbone.layers)):
@@ -1577,6 +1633,7 @@ class HuggingFaceQwen2Reader:
         )
         target = torch.tensor([stream.tokens[position + 1]], device=device)
         target_layer = self.model.model.layers[layer_index]
+        rolling_index = torch.tensor(rolling, device=device, dtype=torch.long)
 
         with torch.no_grad():
             rolling_hidden, _, _ = self._finish_layer(
@@ -1585,7 +1642,7 @@ class HuggingFaceQwen2Reader:
                 query,
                 key_cache[layer_index],
                 value_cache[layer_index],
-                rolling,
+                rolling_index,
                 occurrence_limit=len(rolling),
             )
             rolling_logits = self._complete_current_token(
@@ -1594,17 +1651,18 @@ class HuggingFaceQwen2Reader:
                 position_embeddings=position_embeddings,
                 key_cache=key_cache,
                 value_cache=value_cache,
-                rolling=rolling,
+                rolling=rolling_index,
             )
             rolling_loss = torch.nn.functional.cross_entropy(rolling_logits.unsqueeze(0), target)
             selected_indices = (*selection.indices, *rolling)
+            selected_index = torch.tensor(selected_indices, device=device, dtype=torch.long)
             selected_hidden, _, _ = self._finish_layer(
                 target_layer,
                 residual,
                 query,
                 key_cache[layer_index],
                 value_cache[layer_index],
-                selected_indices,
+                selected_index,
                 occurrence_limit=len(rolling) + historical_token_budget,
             )
             selected_logits = self._complete_current_token(
@@ -1613,7 +1671,7 @@ class HuggingFaceQwen2Reader:
                 position_embeddings=position_embeddings,
                 key_cache=key_cache,
                 value_cache=value_cache,
-                rolling=rolling,
+                rolling=rolling_index,
             )
             selected_loss = torch.nn.functional.cross_entropy(selected_logits.unsqueeze(0), target)
 
@@ -1659,7 +1717,7 @@ class HuggingFaceQwen2Reader:
             position_embeddings=position_embeddings,
             key_cache=key_cache,
             value_cache=value_cache,
-            rolling=rolling,
+            rolling=rolling_index,
         )
         soft_loss = torch.nn.functional.cross_entropy(soft_logits.unsqueeze(0), target)
         utility_surrogate = soft_loss - rolling_loss.detach()
@@ -1668,22 +1726,22 @@ class HuggingFaceQwen2Reader:
         metrics = {
             "position": position,
             "layer": layer_index,
-            "objective": float(objective.detach()),
-            "coverage_loss": float(coverage_loss.detach()),
-            "soft_next_token_loss": float(soft_loss.detach()),
-            "rolling_next_token_loss": float(rolling_loss),
-            "hard_selected_next_token_loss": float(selected_loss),
-            "hard_utility": float(rolling_loss - selected_loss),
-            "soft_utility": float(rolling_loss - soft_loss.detach()),
-            "soft_hard_utility_gap": float(selected_loss - soft_loss.detach()),
-            "teacher_historical_attention_mass": float(teacher_weights[:rolling_start].sum()),
-            "teacher_historical_attention_covered_mass": float(coverage_reward.detach()),
-            "teacher_historical_attention_uncovered_mass": float(coverage_loss.detach()),
+            "objective": objective.detach(),
+            "coverage_loss": coverage_loss.detach(),
+            "soft_next_token_loss": soft_loss.detach(),
+            "rolling_next_token_loss": rolling_loss.detach(),
+            "hard_selected_next_token_loss": selected_loss.detach(),
+            "hard_utility": (rolling_loss - selected_loss).detach(),
+            "soft_utility": (rolling_loss - soft_loss.detach()).detach(),
+            "soft_hard_utility_gap": (selected_loss - soft_loss.detach()).detach(),
+            "teacher_historical_attention_mass": teacher_weights[:rolling_start].sum().detach(),
+            "teacher_historical_attention_covered_mass": coverage_reward.detach(),
+            "teacher_historical_attention_uncovered_mass": coverage_loss.detach(),
             "historical_windows": windows,
             "historical_occurrences": selection.occurrence_count,
             "historical_unique_tokens": selection.unique_count,
             "overlap_occurrences": selection.occurrence_count - selection.unique_count,
-            "proposal_parameters": soft.detach().cpu().tolist(),
+            "proposal_parameters": soft.detach(),
             "coverage_overlap_alpha": 0.0,
             "trajectory": "learned_hard_detached",
             "temporal_credit_assignment": "target_step_only",
@@ -1808,7 +1866,11 @@ class HuggingFaceQwen2Reader:
                         query,
                         key_cache[current_layer],
                         value_cache[current_layer],
-                        (*trajectory_selection.indices, *rolling),
+                        torch.tensor(
+                            (*trajectory_selection.indices, *rolling),
+                            device=device,
+                            dtype=torch.long,
+                        ),
                         occurrence_limit=rolling_tokens + historical_token_budget,
                     )
 
@@ -1866,7 +1928,11 @@ class HuggingFaceQwen2Reader:
                     query,
                     key_cache[current_layer],
                     value_cache[current_layer],
-                    (*trajectory_selection.indices, *rolling),
+                    torch.tensor(
+                        (*trajectory_selection.indices, *rolling),
+                        device=device,
+                        dtype=torch.long,
+                    ),
                     occurrence_limit=rolling_tokens + historical_token_budget,
                 )
 
@@ -1915,6 +1981,7 @@ class HuggingFaceQwen2Reader:
                 "trajectory_overlap_occurrences": trajectory_overlap_occurrences,
             }
         )
+        metrics = _materialize_training_metrics([metrics])[0]
         return objective, metrics
 
     def heatfield_training_rollout(
@@ -2038,17 +2105,23 @@ class HuggingFaceQwen2Reader:
                 unique_tokens += unique_count
                 overlap_occurrences += occurrence_count - unique_count
                 with torch.no_grad():
+                    actual_indices = torch.tensor(
+                        (*selected_indices, *rolling),
+                        device=device,
+                        dtype=torch.long,
+                    )
                     hidden, _, _ = self._finish_layer(
                         layer,
                         residual,
                         query,
                         state.key_cache[layer_index],
                         state.value_cache[layer_index],
-                        (*selected_indices, *rolling),
+                        actual_indices,
                         occurrence_limit=rolling_tokens + historical_token_budget,
                     )
             state.next_position = position + 1
 
+        metrics = _materialize_training_metrics(metrics)
         for target_metrics in metrics:
             target_metrics.update(
                 {

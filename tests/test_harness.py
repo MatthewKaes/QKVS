@@ -64,6 +64,43 @@ def test_progress_bar_uses_third_cell_resolution() -> None:
     assert _progress_bar(4, 9, width=3) == "█▒ "
     assert _progress_bar(5, 9, width=3) == "█▓ "
     assert _progress_bar(9, 9, width=3) == "███"
+    assert _progress_bar(4.5, 9, width=3) == "█▓ "
+
+
+def test_training_progress_updates_fraction_without_advancing_durable_count() -> None:
+    class InteractiveOutput(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = InteractiveOutput()
+    progress = _Progress(completed=4, total=17, stream=output, interval_seconds=60.0)
+    progress.start_job("train 9/40 192/960 targets", fraction=0.0)
+    progress.update_job("train 9/40 216/960 targets 12.5s/step", fraction=0.25)
+
+    assert progress.completed == 4
+    assert progress._current() == 5
+    assert progress._bar_current() == pytest.approx(4.25)
+    rendered = output.getvalue()
+    assert "train 9/40" in rendered
+    assert rendered.count("\n") == 0
+
+    progress.complete_job()
+    progress.close()
+    assert progress.completed == 5
+    assert output.getvalue().count("\n") == 1
+
+
+def test_redirected_training_progress_does_not_emit_intermediate_lines() -> None:
+    output = io.StringIO()
+    progress = _Progress(completed=4, total=17, stream=output)
+    progress.start_job("train 9/40 192/960 targets", fraction=0.0)
+    progress.update_job("train 9/40 216/960 targets 12.5s/step", fraction=0.25)
+    progress.complete_job()
+    progress.close()
+
+    assert output.getvalue().count("\n") == 1
+    assert "192/960" in output.getvalue()
+    assert "216/960" not in output.getvalue()
 
 
 def test_interactive_progress_spins_on_one_erased_terminal_row() -> None:
