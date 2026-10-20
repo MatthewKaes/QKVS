@@ -308,6 +308,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_block_locations_path = Path(
         "configs/h1a_kl_0_01_block_locations_10_percent.json"
     )
+    h1a_neighborhood_path = Path(
+        "configs/h1a_kl_0_01_v2_spike_neighborhood_expansion.json"
+    )
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -321,6 +324,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_fresh_v2 = validate_config_file(h1a_fresh_v2_path)
     h1a_fresh_v3 = validate_config_file(h1a_fresh_v3_path)
     h1a_block_locations = validate_config_file(h1a_block_locations_path)
+    h1a_neighborhood = validate_config_file(h1a_neighborhood_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -450,6 +454,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_block_locations_10_percent",
         "status": "approved",
     }
+    assert h1a_neighborhood == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_v2_spike_neighborhood_expansion",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -490,6 +502,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     fresh_v2 = json.loads(h1a_fresh_v2_path.read_text())
     fresh_v3 = json.loads(h1a_fresh_v3_path.read_text())
     block_locations = json.loads(h1a_block_locations_path.read_text())
+    neighborhood = json.loads(h1a_neighborhood_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -691,6 +704,54 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
             "fidelity_tolerance_nats": 0.01,
         },
     }
+    neighborhood_selection = neighborhood["study"]["position_selection"]
+    neighborhood_seeds = set(neighborhood_selection["seed_positions"])
+    neighborhood_start, neighborhood_stop = neighborhood_selection["position_range"]
+    neighborhood_radius = neighborhood_selection["neighborhood_radius_tokens"]
+    expected_neighborhood_positions = sorted(
+        {
+            position + offset
+            for position in neighborhood_seeds
+            for offset in range(-neighborhood_radius, neighborhood_radius + 1)
+            if neighborhood_start <= position + offset < neighborhood_stop
+            and position + offset not in set(fresh_positions)
+        }
+    )
+    assert neighborhood["model"] == fresh_v2["model"]
+    assert neighborhood["data"] == fresh_v2["data"]
+    assert neighborhood["execution"] == fresh_v3["execution"]
+    assert neighborhood["study"]["positions"] == expected_neighborhood_positions
+    assert len(expected_neighborhood_positions) == 60
+    assert neighborhood_seeds == {21_097, 30_555, 32_362}
+    assert neighborhood_seeds <= set(fresh_positions)
+    assert neighborhood_selection["qualifying_coverage_percentage"] == 20
+    assert neighborhood_selection["minimum_success_probability"] == 0.10
+    assert neighborhood_selection["qualifying_cell_count"] == 3
+    assert neighborhood_selection["excluded_configuration_sources"] == [
+        {
+            "configuration": "h1a_kl_0_01_blue_noise_v2.json",
+            "sha256": "f1d13d4ec79382f5abc4504414fa08304a2f11ea3b005624adc3bc35d81358ed",
+            "position_count": 200,
+        }
+    ]
+    assert neighborhood_selection["excluded_existing_unique_position_count"] == 200
+    assert neighborhood_selection["excluded_existing_position_count"] == 3
+    assert set(expected_neighborhood_positions).isdisjoint(fresh_positions)
+    assert neighborhood_selection["source_feasibility_sha256"] == (
+        "ae5f8f19ad10fa00ff1bdb335ea418185b6c0287c11660d22b613719ec006901"
+    )
+    for field in (
+        "block_width",
+        "sampling_percentages",
+        "trial_start",
+        "trials_per_fraction",
+        "sampling_algorithm",
+        "fidelity_tolerances_nats",
+        "dense_snapshot_strategy",
+        "retain_dense_snapshots",
+    ):
+        assert neighborhood["study"][field] == fresh_v2["study"][field]
+    assert neighborhood["study"]["expected_candidate_passes"] == 570_000
     optimized = json.loads(json.dumps(fresh_v2))
     optimized["execution"].pop("snapshot_candidate_batch_size")
     optimized["execution"].update(

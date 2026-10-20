@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "experiment": "h1a_kl_0_01_v2_spike_neighborhood_expansion",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "h1a-kl-0-01-v2-spike-neighborhood-expansion",
+    "seed": 20261019
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "dtype": "bfloat16",
+    "frozen": true
+  },
+  "data": {
+    "kind": "tokenized_text",
+    "source": {
+      "path": "../data/project_gutenberg_1661.txt",
+      "url": "https://www.gutenberg.org/cache/epub/1661/pg1661.txt",
+      "bytes": 607606,
+      "sha256": "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0"
+    },
+    "boundaries": [
+      {
+        "id": "h1a-expansion-sherlock-000",
+        "split": "evaluation",
+        "start_token": 0,
+        "stop_token": 32768
+      }
+    ]
+  },
+  "study": {
+    "kind": "unconstrained_snapshot_compressibility",
+    "positions": [
+      21087,
+      21088,
+      21089,
+      21090,
+      21091,
+      21092,
+      21093,
+      21094,
+      21095,
+      21096,
+      21098,
+      21099,
+      21100,
+      21101,
+      21102,
+      21103,
+      21104,
+      21105,
+      21106,
+      21107,
+      30545,
+      30546,
+      30547,
+      30548,
+      30549,
+      30550,
+      30551,
+      30552,
+      30553,
+      30554,
+      30556,
+      30557,
+      30558,
+      30559,
+      30560,
+      30561,
+      30562,
+      30563,
+      30564,
+      30565,
+      32352,
+      32353,
+      32354,
+      32355,
+      32356,
+      32357,
+      32358,
+      32359,
+      32360,
+      32361,
+      32363,
+      32364,
+      32365,
+      32366,
+      32367,
+      32368,
+      32369,
+      32370,
+      32371,
+      32372
+    ],
+    "position_selection": {
+      "algorithm": "v2-kl-0-01-strong-spike-neighborhood-v1",
+      "source_feasibility_csv": "../docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv",
+      "source_feasibility_sha256": "ae5f8f19ad10fa00ff1bdb335ea418185b6c0287c11660d22b613719ec006901",
+      "source_run_id": "h1a-kl-0-01-blue-noise-v2",
+      "source_revision": "90680a7b2968220e65b10958738e4d1ef2ce7681",
+      "source_config_sha256": "f1d13d4ec79382f5abc4504414fa08304a2f11ea3b005624adc3bc35d81358ed",
+      "metric": "kl_divergence_nats",
+      "comparison": "<=",
+      "threshold": 0.01,
+      "qualifying_cell_count": 3,
+      "seed_positions": [
+        21097,
+        30555,
+        32362
+      ],
+      "qualifying_position_count": 3,
+      "neighborhood_radius_tokens": 10,
+      "position_range": [
+        512,
+        32767
+      ],
+      "exclude_source_positions": true,
+      "excluded_existing_position_count": 3,
+      "generated_position_count": 60,
+      "execution_order": "ascending_context_length",
+      "validated_max_position_embeddings": 32768,
+      "qualifying_coverage_percentage": 20,
+      "minimum_success_probability": 0.1,
+      "excluded_configuration_sources": [
+        {
+          "configuration": "h1a_kl_0_01_blue_noise_v2.json",
+          "sha256": "f1d13d4ec79382f5abc4504414fa08304a2f11ea3b005624adc3bc35d81358ed",
+          "position_count": 200
+        }
+      ],
+      "excluded_existing_unique_position_count": 200
+    },
+    "expected_candidate_passes": 570000,
+    "block_width": 8,
+    "sampling_percentages": [
+      99,
+      97.5,
+      95,
+      92.5,
+      90,
+      87.5,
+      85,
+      82.5,
+      80,
+      75,
+      70,
+      65,
+      60,
+      55,
+      50,
+      40,
+      30,
+      20,
+      10
+    ],
+    "trial_start": 0,
+    "trials_per_fraction": 500,
+    "sampling_algorithm": "uniform-aligned-blocks-v2",
+    "fidelity_tolerances_nats": [
+      0.01
+    ],
+    "dense_snapshot_strategy": "largest_prefix_slice",
+    "retain_dense_snapshots": false
+  },
+  "execution": {
+    "prefill_chunk_tokens": 128,
+    "snapshot_candidate_batch_max_size": 128,
+    "snapshot_candidate_batch_token_budget": 1048576,
+    "snapshot_checkpoint_candidates": 50000,
+    "snapshot_selection_representation": "native_blocks",
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

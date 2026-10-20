@@ -537,6 +537,17 @@ configuration change to `study.source.coverage_percentage`, not a new execution 
 ./run.sh configs/h1a_kl_0_01_block_locations_10_percent.json
 ```
 
+`configs/h1a_kl_0_01_v2_spike_neighborhood_expansion.json` is a separate
+`draft_not_authorized` spatial-refinement study derived from the same complete v2 feasibility CSV.
+It selects the three measured positions whose 20%-coverage cells achieved at least a 10% success
+probability: tokens 21,097, 30,555, and 32,362. For each position it includes every token within an
+inclusive ten-token radius, then removes tokens outside the v2 range and all 200 previously measured
+v2 positions. Only the three center tokens overlap that exclusion set; the frozen result is 60 new
+positions with zero overlap against V2. It preserves the v2 model, data, block width, 19 coverage
+percentages, 500 candidates, seed, KL tolerance, and v2 sampler while using the optimized
+native-block execution controls. This implies 570,000 candidate passes, approximately 30% of the
+completed v2 workload. It must not run without separate authorization.
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise
