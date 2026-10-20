@@ -67,10 +67,18 @@ class HistoricalSelection:
 
 LEGACY_RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v1"
 RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v2"
+COUNTER_RANDOM_BLOCK_SAMPLER_VERSION = "uniform-aligned-blocks-v3"
 RANDOM_BLOCK_SAMPLER_VERSIONS = {
     LEGACY_RANDOM_BLOCK_SAMPLER_VERSION,
     RANDOM_BLOCK_SAMPLER_VERSION,
+    COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
 }
+
+_SPLITMIX_INCREMENT = np.uint64(0x9E3779B97F4A7C15)
+_SPLITMIX_MULTIPLIER_1 = np.uint64(0xBF58476D1CE4E5B9)
+_SPLITMIX_MULTIPLIER_2 = np.uint64(0x94D049BB133111EB)
+_ALIGNMENT_DOMAIN = np.uint64(0xD1B54A32D192ED03)
+_BLOCK_DOMAIN = np.uint64(0x8CB92BA72F3D8DD7)
 
 
 @dataclass(frozen=True, eq=False)
@@ -210,6 +218,222 @@ def derive_random_block_seed(base_seed: int, *coordinates: int) -> int:
     return int.from_bytes(hashlib.sha256(encoded).digest()[:8], "big")
 
 
+def _splitmix64(
+    values: np.ndarray | np.uint64,
+    *,
+    copy: bool = True,
+) -> np.ndarray:
+    values = np.array(values, dtype=np.uint64, copy=copy)
+    shifted = np.empty_like(values)
+    np.add(values, _SPLITMIX_INCREMENT, out=values)
+    np.right_shift(values, 30, out=shifted)
+    np.bitwise_xor(values, shifted, out=values)
+    np.multiply(values, _SPLITMIX_MULTIPLIER_1, out=values)
+    np.right_shift(values, 27, out=shifted)
+    np.bitwise_xor(values, shifted, out=values)
+    np.multiply(values, _SPLITMIX_MULTIPLIER_2, out=values)
+    np.right_shift(values, 31, out=shifted)
+    np.bitwise_xor(values, shifted, out=values)
+    return values
+
+
+def derive_counter_random_block_seeds(
+    base_seed: int | np.ndarray,
+    *coordinates: int | np.ndarray,
+) -> np.ndarray:
+    """Derive replay-stable v3 keys with broadcast NumPy operations."""
+
+    state = _splitmix64(np.asarray(base_seed, dtype=np.uint64))
+    for coordinate in coordinates:
+        state = _splitmix64(
+            np.bitwise_xor(state, np.asarray(coordinate, dtype=np.uint64))
+        )
+    return np.asarray(state, dtype=np.uint64)
+
+
+def _bounded_counter_draw(
+    seeds: np.ndarray,
+    bound: int,
+    domain: np.uint64,
+    coordinate: int,
+) -> np.ndarray:
+    """Map counter values uniformly into [0, bound) with deterministic rejection."""
+
+    counter = _splitmix64(np.bitwise_xor(domain, np.uint64(coordinate)))
+    random_values = _splitmix64(
+        np.bitwise_xor(seeds, counter),
+        copy=False,
+    )
+    rejection_threshold = (1 << 64) % bound
+    rejected = random_values < rejection_threshold
+    attempt = 1
+    while np.any(rejected):
+        retry_coordinate = np.uint64((attempt << 32) | coordinate)
+        retry_counter = _splitmix64(np.bitwise_xor(domain, retry_coordinate))
+        random_values[rejected] = _splitmix64(
+            np.bitwise_xor(seeds[rejected], retry_counter),
+            copy=False,
+        )
+        rejected = random_values < rejection_threshold
+        attempt += 1
+    return np.remainder(random_values, np.uint64(bound)).astype(np.int64)
+
+
+def _sample_counter_subset(
+    seeds: np.ndarray,
+    population_size: int,
+    sample_size: int,
+) -> np.ndarray:
+    """Run Floyd sampling concurrently over rows using counter-derived draws."""
+
+    selected_mask = np.zeros((len(seeds), population_size), dtype=np.bool_)
+    selected = np.empty((len(seeds), sample_size), dtype=np.int64)
+    rows = np.arange(len(seeds))
+    for output_index, upper_bound in enumerate(
+        range(population_size - sample_size, population_size)
+    ):
+        bound = upper_bound + 1
+        choices = _bounded_counter_draw(
+            seeds,
+            bound,
+            _BLOCK_DOMAIN,
+            output_index,
+        )
+        choices = np.where(selected_mask[rows, choices], upper_bound, choices)
+        selected_mask[rows, choices] = True
+        selected[:, output_index] = choices
+    selected.sort(axis=1)
+    return selected
+
+
+def _sample_counter_random_block_batch(
+    *,
+    available_positions: int,
+    block_width: int,
+    requested_fraction: float,
+    seeds: np.ndarray,
+) -> RandomBlockSelectionBatch:
+    """Select v3 blocks with batched counter draws and no per-selection generators."""
+
+    flat_seeds = np.asarray(seeds, dtype=np.uint64).reshape(-1)
+    if requested_fraction == 1.0:
+        alignments = np.zeros(flat_seeds.size, dtype=np.int64)
+    else:
+        alignments = _bounded_counter_draw(
+            flat_seeds,
+            block_width,
+            _ALIGNMENT_DOMAIN,
+            0,
+        )
+
+    aligned_block_counts = np.full(
+        flat_seeds.size,
+        (available_positions + block_width - 1) // block_width,
+        dtype=np.int64,
+    )
+    aligned = alignments != 0
+    aligned_block_counts[aligned] = 1 + np.maximum(
+        0,
+        (
+            available_positions
+            - alignments[aligned]
+            + block_width
+            - 1
+        )
+        // block_width,
+    )
+    block_counts = np.rint(requested_fraction * aligned_block_counts).astype(np.int64)
+    np.clip(block_counts, 1, aligned_block_counts, out=block_counts)
+    block_offsets = np.empty(flat_seeds.size + 1, dtype=np.int64)
+    block_offsets[0] = 0
+    np.cumsum(block_counts, out=block_offsets[1:])
+    selected_blocks = np.empty(block_offsets[-1], dtype=np.int64)
+    selected_token_counts = np.empty(flat_seeds.size, dtype=np.int64)
+    base_occurrence_counts = np.empty(flat_seeds.size, dtype=np.int64)
+
+    for aligned_block_count in np.unique(aligned_block_counts):
+        rows = np.flatnonzero(aligned_block_counts == aligned_block_count)
+        block_count = int(block_counts[rows[0]])
+        if block_count == aligned_block_count:
+            selected = np.broadcast_to(
+                np.arange(aligned_block_count, dtype=np.int64),
+                (len(rows), aligned_block_count),
+            )
+        else:
+            omitted_count = aligned_block_count - block_count
+            if block_count <= omitted_count:
+                selected = _sample_counter_subset(
+                    flat_seeds[rows],
+                    aligned_block_count,
+                    block_count,
+                )
+            else:
+                omitted = _sample_counter_subset(
+                    flat_seeds[rows],
+                    aligned_block_count,
+                    omitted_count,
+                )
+                selected_mask = np.ones(
+                    (len(rows), aligned_block_count),
+                    dtype=np.bool_,
+                )
+                np.put_along_axis(selected_mask, omitted, False, axis=1)
+                selected = np.nonzero(selected_mask)[1].reshape(len(rows), block_count)
+
+        destinations = block_offsets[rows, None] + np.arange(block_count, dtype=np.int64)
+        selected_blocks[destinations] = selected
+        row_alignments = alignments[rows]
+        token_counts = np.full(len(rows), block_count * block_width, dtype=np.int64)
+        first_lengths = np.where(
+            row_alignments,
+            row_alignments,
+            min(block_width, available_positions),
+        )
+        token_counts += np.where(
+            selected[:, 0] == 0,
+            first_lengths - block_width,
+            0,
+        )
+        last_block = aligned_block_count - 1
+        if last_block:
+            last_starts = np.where(
+                row_alignments,
+                row_alignments + (last_block - 1) * block_width,
+                last_block * block_width,
+            )
+            last_lengths = (
+                np.minimum(available_positions, last_starts + block_width) - last_starts
+            )
+            token_counts += np.where(
+                selected[:, -1] == last_block,
+                last_lengths - block_width,
+                0,
+            )
+        selected_token_counts[rows] = token_counts
+        base_occurrence_counts[rows] = token_counts - (selected[:, -1] == last_block)
+
+    for value in (
+        selected_blocks,
+        block_offsets,
+        alignments,
+        selected_token_counts,
+        base_occurrence_counts,
+    ):
+        value.setflags(write=False)
+    return RandomBlockSelectionBatch(
+        selected_blocks=selected_blocks,
+        block_offsets=block_offsets,
+        boundary_alignments=alignments,
+        selected_token_counts=selected_token_counts,
+        base_occurrence_counts=base_occurrence_counts,
+        candidate_count=seeds.shape[0],
+        layer_count=seeds.shape[1],
+        available_positions=available_positions,
+        block_width=block_width,
+        requested_fraction=requested_fraction,
+    )
+
+
 def _sample_uniform_random_block_array(
     *,
     available_positions: int,
@@ -218,6 +442,24 @@ def _sample_uniform_random_block_array(
     seed: int,
     algorithm: str,
 ) -> tuple[np.ndarray, int, int]:
+    if algorithm == COUNTER_RANDOM_BLOCK_SAMPLER_VERSION:
+        batch = _sample_counter_random_block_batch(
+            available_positions=available_positions,
+            block_width=block_width,
+            requested_fraction=requested_fraction,
+            seeds=np.asarray(((seed,),), dtype=np.uint64),
+        )
+        alignment = int(batch.boundary_alignments[0])
+        aligned_block_count = (
+            (available_positions + block_width - 1) // block_width
+            if not alignment
+            else 1
+            + max(
+                0,
+                (available_positions - alignment + block_width - 1) // block_width,
+            )
+        )
+        return batch.selected_blocks, alignment, aligned_block_count
     if requested_fraction == 1.0:
         alignment = 0
     elif algorithm == LEGACY_RANDOM_BLOCK_SAMPLER_VERSION:
@@ -342,6 +584,13 @@ def sample_uniform_random_block_batch(
         raise ValueError("random block sampling algorithm is unsupported")
     if seeds.ndim != 2 or not seeds.shape[0] or not seeds.shape[1]:
         raise ValueError("random block batch seeds must be a nonempty candidate/layer matrix")
+    if algorithm == COUNTER_RANDOM_BLOCK_SAMPLER_VERSION:
+        return _sample_counter_random_block_batch(
+            available_positions=available_positions,
+            block_width=block_width,
+            requested_fraction=requested_fraction,
+            seeds=seeds,
+        )
 
     selected_arrays: list[np.ndarray] = []
     block_counts = np.empty(seeds.size, dtype=np.int64)

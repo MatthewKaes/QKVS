@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from qkvs.selection import (
+    COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
     LEGACY_RANDOM_BLOCK_SAMPLER_VERSION,
     RANDOM_BLOCK_SAMPLER_VERSION,
     FixedOffsetPolicy,
@@ -15,6 +16,7 @@ from qkvs.selection import (
     LearnedHeatFieldPolicy,
     PolicyState,
     SelectionContext,
+    derive_counter_random_block_seeds,
     derive_random_block_seed,
     resolve_proposals,
     sample_uniform_random_block_batch,
@@ -140,6 +142,123 @@ def test_native_random_block_batch_preserves_scalar_samples(requested_fraction) 
         batch.candidate_occurrence_counts,
         expected_occurrences.reshape(4, 3).sum(axis=1),
     )
+
+
+@pytest.mark.parametrize("requested_fraction", (0.1, 0.5, 0.9, 1.0))
+def test_counter_random_block_batch_is_replayable_across_batch_boundaries(
+    requested_fraction,
+    monkeypatch,
+) -> None:
+    trial_ids = np.arange(400, 407, dtype=np.uint64)
+    candidate_seeds = derive_counter_random_block_seeds(
+        71,
+        22_000,
+        90_000,
+        trial_ids,
+    )
+    layer_seeds = derive_counter_random_block_seeds(
+        candidate_seeds[:, None],
+        np.arange(3, dtype=np.uint64)[None, :],
+    )
+    expected_candidate_seeds = [
+        15321721335827543043,
+        12011508823295275547,
+        17679342620259676627,
+        9428177127233054781,
+    ]
+    assert candidate_seeds[:4].tolist() == expected_candidate_seeds
+
+    def unexpected_pcg64(*args, **kwargs):
+        raise AssertionError("v3 must not construct per-selection PCG64 generators")
+
+    monkeypatch.setattr(np.random, "PCG64", unexpected_pcg64)
+    complete = sample_uniform_random_block_batch(
+        available_positions=22_001,
+        block_width=8,
+        requested_fraction=requested_fraction,
+        seeds=layer_seeds,
+        algorithm=COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+    )
+    chunks = tuple(
+        sample_uniform_random_block_batch(
+            available_positions=22_001,
+            block_width=8,
+            requested_fraction=requested_fraction,
+            seeds=layer_seeds[start:stop],
+            algorithm=COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+        )
+        for start, stop in ((0, 2), (2, 5), (5, 7))
+    )
+
+    def selection_records(batch):
+        return tuple(
+            (
+                int(batch.boundary_alignments[index]),
+                int(batch.selected_token_counts[index]),
+                int(batch.base_occurrence_counts[index]),
+                tuple(
+                    int(value)
+                    for value in batch.selected_blocks[
+                        batch.block_offsets[index] : batch.block_offsets[index + 1]
+                    ]
+                ),
+            )
+            for index in range(batch.candidate_count * batch.layer_count)
+        )
+
+    assert selection_records(complete) == tuple(
+        record for chunk in chunks for record in selection_records(chunk)
+    )
+    for selection_index, seed in enumerate(layer_seeds.flat):
+        scalar = sample_uniform_random_blocks(
+            available_positions=22_001,
+            block_width=8,
+            requested_fraction=requested_fraction,
+            seed=int(seed),
+            algorithm=COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+        )
+        assert selection_records(complete)[selection_index] == (
+            scalar.boundary_alignment,
+            scalar.selected_token_count,
+            scalar.selected_token_count - int(22_000 in scalar.indices),
+            tuple(int(value) for value in scalar.selected_blocks),
+        )
+
+
+def test_counter_random_block_scores_distribute_selections_across_blocks() -> None:
+    candidate_seeds = derive_counter_random_block_seeds(
+        19,
+        np.arange(4_096, dtype=np.uint64),
+    )
+    batch = sample_uniform_random_block_batch(
+        available_positions=65,
+        block_width=1,
+        requested_fraction=0.2,
+        seeds=candidate_seeds[:, None],
+        algorithm=COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+    )
+    frequencies = np.bincount(batch.selected_blocks, minlength=65)
+
+    assert batch.selected_blocks.size == 4_096 * 13
+    assert frequencies.mean() == pytest.approx(4_096 * 0.2)
+    assert np.max(np.abs(frequencies - frequencies.mean())) < 100
+
+    alignment_seeds = derive_counter_random_block_seeds(
+        23,
+        np.arange(7_000, dtype=np.uint64),
+    )
+    alignment_batch = sample_uniform_random_block_batch(
+        available_positions=17,
+        block_width=7,
+        requested_fraction=0.5,
+        seeds=alignment_seeds[:, None],
+        algorithm=COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+    )
+    alignment_frequencies = np.bincount(
+        alignment_batch.boundary_alignments,
+        minlength=7,
+    )
+    assert np.max(np.abs(alignment_frequencies - 1_000)) < 100
 
 
 def test_compact_uniform_random_blocks_preserve_v1_samples_exactly() -> None:

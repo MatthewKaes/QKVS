@@ -648,6 +648,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         }
     )
     assert validate_config(optimized)["runnable"]
+    counter_sampled = json.loads(json.dumps(optimized))
+    counter_sampled["study"]["sampling_algorithm"] = "uniform-aligned-blocks-v3"
+    assert validate_config(counter_sampled)["runnable"]
     invalid_batch = json.loads(json.dumps(optimized))
     invalid_batch["execution"]["snapshot_candidate_batch_max_size"] = 0
     assert (
@@ -1335,6 +1338,7 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     buffered_specification = json.loads(json.dumps(slice_specification))
     buffered_specification["run"]["id"] = "snapshot-harness-buffered-checkpoint-smoke"
     buffered_specification["study"]["positions"] = [3]
+    buffered_specification["study"]["sampling_algorithm"] = "uniform-aligned-blocks-v3"
     buffered_config = tmp_path / "snapshot-buffered-config.json"
     buffered_config.write_text(json.dumps(buffered_specification), encoding="utf-8")
     buffered_csv = tmp_path / "snapshot-buffered-feasibility.csv"

@@ -497,6 +497,12 @@ position boundaries while the current batch executes. Buffered durability writes
 manifest only after the configured number of candidates, performs one GPU-to-CPU metric
 materialization at that boundary, and may recompute at most that many candidates after interruption.
 
+Fresh studies may instead identify `uniform-aligned-blocks-v3`. It deliberately changes the
+seed-to-candidate mapping: broadcast SplitMix64 keys and concurrent Floyd sampling replace one
+PCG64 construction per candidate and layer. Each draw is rejection-mapped into its exact integer
+range, selections remain uniform without replacement, and candidate results are invariant to
+adaptive batch boundaries. The v1 and v2 mappings remain available for replaying existing studies.
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise

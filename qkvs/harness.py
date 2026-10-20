@@ -846,6 +846,7 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         if study.get("sampling_algorithm") not in {
             "uniform-aligned-blocks-v1",
             "uniform-aligned-blocks-v2",
+            "uniform-aligned-blocks-v3",
         }:
             errors.append("snapshot sampling_algorithm is unsupported")
         tolerances = study.get("fidelity_tolerances_nats")
@@ -2122,6 +2123,8 @@ def _run_snapshot_study(
 
     from qkvs.model import TokenStream
     from qkvs.selection import (
+        COUNTER_RANDOM_BLOCK_SAMPLER_VERSION,
+        derive_counter_random_block_seeds,
         derive_random_block_seed,
         sample_uniform_random_block_batch,
         sample_uniform_random_blocks,
@@ -2418,25 +2421,37 @@ def _run_snapshot_study(
             trial_start + batch_stop,
             dtype=np.int64,
         )
-        candidate_seeds = np.empty(len(trial_ids), dtype=np.uint64)
-        layer_seeds = np.empty(
-            (len(trial_ids), layer_count),
-            dtype=np.uint64,
-        )
         fraction_coordinate = _snapshot_fraction_coordinate(percentage)
-        for candidate_index, trial_id in enumerate(trial_ids):
-            candidate_seed = derive_random_block_seed(
+        if sampling_algorithm == COUNTER_RANDOM_BLOCK_SAMPLER_VERSION:
+            candidate_seeds = derive_counter_random_block_seeds(
                 base_seed,
                 position,
                 fraction_coordinate,
-                int(trial_id),
+                trial_ids,
             )
-            candidate_seeds[candidate_index] = candidate_seed
-            for layer_index in range(layer_count):
-                layer_seeds[candidate_index, layer_index] = derive_random_block_seed(
-                    candidate_seed,
-                    layer_index,
+            layer_seeds = derive_counter_random_block_seeds(
+                candidate_seeds[:, None],
+                np.arange(layer_count, dtype=np.uint64)[None, :],
+            )
+        else:
+            candidate_seeds = np.empty(len(trial_ids), dtype=np.uint64)
+            layer_seeds = np.empty(
+                (len(trial_ids), layer_count),
+                dtype=np.uint64,
+            )
+            for candidate_index, trial_id in enumerate(trial_ids):
+                candidate_seed = derive_random_block_seed(
+                    base_seed,
+                    position,
+                    fraction_coordinate,
+                    int(trial_id),
                 )
+                candidate_seeds[candidate_index] = candidate_seed
+                for layer_index in range(layer_count):
+                    layer_seeds[candidate_index, layer_index] = derive_random_block_seed(
+                        candidate_seed,
+                        layer_index,
+                    )
         block_batch = sample_uniform_random_block_batch(
             available_positions=position + 1,
             block_width=study["block_width"],
