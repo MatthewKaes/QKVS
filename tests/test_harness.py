@@ -311,6 +311,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_neighborhood_path = Path(
         "configs/h1a_kl_0_01_v2_spike_neighborhood_expansion.json"
     )
+    h1a_earliest_spike_path = Path(
+        "configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json"
+    )
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -325,6 +328,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_fresh_v3 = validate_config_file(h1a_fresh_v3_path)
     h1a_block_locations = validate_config_file(h1a_block_locations_path)
     h1a_neighborhood = validate_config_file(h1a_neighborhood_path)
+    h1a_earliest_spike = validate_config_file(h1a_earliest_spike_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -462,6 +466,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_v2_spike_neighborhood_expansion",
         "status": "approved",
     }
+    assert h1a_earliest_spike == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_v2_earliest_spike_radius_100",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -503,6 +515,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     fresh_v3 = json.loads(h1a_fresh_v3_path.read_text())
     block_locations = json.loads(h1a_block_locations_path.read_text())
     neighborhood = json.loads(h1a_neighborhood_path.read_text())
+    earliest_spike = json.loads(h1a_earliest_spike_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -754,6 +767,50 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     ):
         assert neighborhood["study"][field] == fresh_v2["study"][field]
     assert neighborhood["study"]["expected_candidate_passes"] == 570_000
+    earliest_selection = earliest_spike["study"]["position_selection"]
+    earliest_center = earliest_selection["center_position"]
+    earliest_radius = earliest_selection["neighborhood_radius_tokens"]
+    expected_earliest_positions = sorted(
+        set(range(earliest_center - earliest_radius, earliest_center + earliest_radius + 1))
+        - set(fresh_positions)
+    )
+    assert earliest_center == 1_768
+    assert earliest_selection["center_selection"] == "lowest_token_position"
+    assert earliest_selection["maximum_qualifying_coverage_percentage"] == 40
+    assert earliest_selection["center_source_hits"] == [
+        {
+            "coverage_percentage": 40.0,
+            "success_count": 41,
+            "attempts": 500,
+            "success_probability": 0.082,
+        },
+        {
+            "coverage_percentage": 30.0,
+            "success_count": 11,
+            "attempts": 500,
+            "success_probability": 0.022,
+        },
+    ]
+    assert earliest_spike["study"]["positions"] == expected_earliest_positions
+    assert len(expected_earliest_positions) == 200
+    assert set(expected_earliest_positions).isdisjoint(fresh_positions)
+    assert earliest_selection["excluded_existing_positions"] == [1_768]
+    assert earliest_spike["model"] == fresh_v2["model"]
+    assert earliest_spike["data"] == fresh_v2["data"]
+    assert earliest_spike["execution"] == fresh_v3["execution"]
+    assert earliest_spike["run"]["seed"] == fresh_v2["run"]["seed"]
+    for field in (
+        "block_width",
+        "sampling_percentages",
+        "trial_start",
+        "trials_per_fraction",
+        "sampling_algorithm",
+        "fidelity_tolerances_nats",
+        "dense_snapshot_strategy",
+        "retain_dense_snapshots",
+    ):
+        assert earliest_spike["study"][field] == fresh_v2["study"][field]
+    assert earliest_spike["study"]["expected_candidate_passes"] == 1_900_000
     optimized = json.loads(json.dumps(fresh_v2))
     optimized["execution"].pop("snapshot_candidate_batch_size")
     optimized["execution"].update(

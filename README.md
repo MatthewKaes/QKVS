@@ -553,6 +553,14 @@ completed v2 workload. Its human-run command writes a separate feasibility CSV:
   docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2_spike_neighborhood.csv
 ```
 
+`configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json` is a separate
+`draft_not_authorized` local-resolution study. The earliest V2 token with any KL≤0.01 success at
+coverage no greater than 40% is position 1,768, with 41/500 hits at 40% and 11/500 at 30%. The
+study freezes every token in `[1668, 1868]` except the already-measured center, producing 200 new
+positions with zero overlap against the 200-position V2 grid. It preserves all 19 coverage values,
+500 candidates, seed `20261019`, V2 sampling, and optimized native-block execution, for 1,900,000
+candidate passes. It must not run without separate authorization.
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise
