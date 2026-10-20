@@ -303,6 +303,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_cell_extension_path = Path("configs/h1a_kl_0_01_existing_cell_extension.json")
     h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
     h1a_fresh_v2_path = Path("configs/h1a_kl_0_01_blue_noise_v2.json")
+    h1a_fresh_v3_path = Path("configs/h1a_kl_0_01_blue_noise_v3.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -314,6 +315,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_cell_extension = validate_config_file(h1a_cell_extension_path)
     h1a_position_extension = validate_config_file(h1a_position_extension_path)
     h1a_fresh_v2 = validate_config_file(h1a_fresh_v2_path)
+    h1a_fresh_v3 = validate_config_file(h1a_fresh_v3_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -427,6 +429,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_blue_noise_v2",
         "status": "approved",
     }
+    assert h1a_fresh_v3 == {
+        "valid": True,
+        "runnable": True,
+        "errors": [],
+        "not_runnable_reasons": [],
+        "experiment": "h1a_kl_0_01_blue_noise_v3",
+        "status": "approved",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -465,6 +475,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     cell_extension = json.loads(h1a_cell_extension_path.read_text())
     position_extension = json.loads(h1a_position_extension_path.read_text())
     fresh_v2 = json.loads(h1a_fresh_v2_path.read_text())
+    fresh_v3 = json.loads(h1a_fresh_v3_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -637,6 +648,20 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert fresh_v2["study"]["retain_dense_snapshots"] is False
     assert fresh_v2["execution"]["snapshot_candidate_batch_size"] == 32
     assert "snapshot_checkpoint_candidates" not in fresh_v2["execution"]
+    expected_v3 = json.loads(json.dumps(fresh_v2))
+    expected_v3["experiment"] = "h1a_kl_0_01_blue_noise_v3"
+    expected_v3["run"]["id"] = "h1a-kl-0-01-blue-noise-v3"
+    expected_v3["study"]["sampling_algorithm"] = "uniform-aligned-blocks-v3"
+    expected_v3["execution"].pop("snapshot_candidate_batch_size")
+    expected_v3["execution"].update(
+        {
+            "snapshot_candidate_batch_max_size": 128,
+            "snapshot_candidate_batch_token_budget": 1_048_576,
+            "snapshot_checkpoint_candidates": 50_000,
+            "snapshot_selection_representation": "native_blocks",
+        }
+    )
+    assert fresh_v3 == expected_v3
     optimized = json.loads(json.dumps(fresh_v2))
     optimized["execution"].pop("snapshot_candidate_batch_size")
     optimized["execution"].update(

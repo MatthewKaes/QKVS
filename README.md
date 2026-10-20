@@ -503,6 +503,18 @@ PCG64 construction per candidate and layer. Each draw is rejection-mapped into i
 range, selections remain uniform without replacement, and candidate results are invariant to
 adaptive batch boundaries. The v1 and v2 mappings remain available for replaying existing studies.
 
+`configs/h1a_kl_0_01_blue_noise_v3.json` is the approved performance replay of the completed v2
+study. It preserves the frozen model, data, positions, coverage percentages, block width, trial
+count, tolerances, and device while assigning a new run identity. It enables the v3 counter sampler,
+native block selections, adaptive batches capped at 128 candidates and 1,048,576 selected tokens,
+one-batch-ahead preparation, and durability checkpoints every 50,000 candidates. Its output must
+use a separate CSV so the completed v2 measurements remain immutable:
+
+```bash
+./run.sh configs/h1a_kl_0_01_blue_noise_v3.json \
+  docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v3.csv
+```
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise
