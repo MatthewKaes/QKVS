@@ -5,8 +5,9 @@ set -euo pipefail
 repository_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd -- "${repository_directory}"
 
-if [[ "${#}" -lt 1 || "${#}" -gt 2 ]]; then
+if [[ "${#}" -lt 1 || "${#}" -gt 3 ]]; then
     echo "usage: ./run.sh <configuration.json> [snapshot-feasibility.csv]" >&2
+    echo "       ./run.sh <configuration.json> --confidence <confidence.csv>" >&2
     exit 2
 fi
 
@@ -54,8 +55,21 @@ elif [[ "${device}" != "cpu" ]]; then
     exit 1
 fi
 
-arguments=(run --config "${configuration}" --device "${device}")
-if [[ "${#}" -eq 2 ]]; then
-    arguments+=(--snapshot-csv "${2}")
+if [[ "${#}" -eq 3 ]]; then
+    if [[ "${2}" != "--confidence" ]]; then
+        echo "unsupported run mode: ${2}" >&2
+        exit 2
+    fi
+    arguments=(
+        snapshot-confidence
+        --config "${configuration}"
+        --device "${device}"
+        --output "${3}"
+    )
+else
+    arguments=(run --config "${configuration}" --device "${device}")
+    if [[ "${#}" -eq 2 ]]; then
+        arguments+=(--snapshot-csv "${2}")
+    fi
 fi
 exec "${qkvs_executable}" "${arguments[@]}"

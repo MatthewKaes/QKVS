@@ -567,6 +567,17 @@ human-run command writes a separate feasibility CSV:
   docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2_earliest_spike_radius_100.csv
 ```
 
+Full-QKV confidence can be exported from any approved snapshot configuration without replaying its
+sparse candidates. The reference-only pass constructs one reusable dense prefix, evaluates each
+configured position once, and records next-token cross-entropy, predictive entropy, target-token
+probability, dominant-token probability, decoded predicted/target identities, and top-one
+agreement. For the 201-position earliest-spike region:
+
+```bash
+./run.sh configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json --confidence \
+  docs/data/h1a-context-density-expansion/H1a_full_qkv_confidence_v2_earliest_spike_radius_100.csv
+```
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise

@@ -25,6 +25,7 @@ from qkvs.harness import (
     _read_snapshot_observation_sets,
     _snapshot_range_statistics,
     _tokenized_text_streams,
+    export_snapshot_confidence,
     export_snapshot_data,
     load_run,
     print_summary,
@@ -68,6 +69,23 @@ def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, mo
         "--snapshot-csv measurements.csv\n"
     )
     assert snapshot.stderr == ""
+
+    confidence = subprocess.run(
+        [
+            Path("run.sh").resolve(),
+            "configs/harness_smoke.json",
+            "--confidence",
+            "confidence.csv",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert confidence.stdout == (
+        "snapshot-confidence --config configs/harness_smoke.json --device cpu "
+        "--output confidence.csv\n"
+    )
+    assert confidence.stderr == ""
 
 
 def test_progress_line_is_short_enough_to_never_wrap() -> None:
@@ -1160,6 +1178,11 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         def get_vocab(self):
             return {str(index): index for index in range(64)}
 
+        def decode(self, token_ids, *, skip_special_tokens, clean_up_tokenization_spaces):
+            assert not skip_special_tokens
+            assert not clean_up_tokenization_spaces
+            return f"<token:{token_ids[0]}>"
+
     reader = model_module.HuggingFaceQwen2Reader(
         Qwen2ForCausalLM(
             Qwen2Config(
@@ -1342,6 +1365,36 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
         snapshot_csv=direct_csv,
     )
     assert repeated == resumed
+
+    confidence_csv = tmp_path / "snapshot-confidence.csv"
+    confidence_artifact = export_snapshot_confidence(
+        config,
+        confidence_csv,
+        device="cpu",
+        allow_dirty_source=True,
+    )
+    with confidence_csv.open(newline="", encoding="utf-8") as source:
+        confidence_rows = list(csv.DictReader(source))
+    assert confidence_artifact["rows"] == len(confidence_rows) == 2
+    assert [int(row["position"]) for row in confidence_rows] == [3, 7]
+    assert all(float(row["next_token_cross_entropy_nats"]) >= 0.0 for row in confidence_rows)
+    assert all(float(row["predictive_entropy_nats"]) >= 0.0 for row in confidence_rows)
+    assert all(0.0 <= float(row["target_token_probability"]) <= 1.0 for row in confidence_rows)
+    assert all(
+        0.0 <= float(row["dominant_token_probability"]) <= 1.0
+        for row in confidence_rows
+    )
+    assert all(
+        json.loads(row["dominant_token_text_json"]).startswith("<token:")
+        for row in confidence_rows
+    )
+    with pytest.raises(ValueError, match="output already exists"):
+        export_snapshot_confidence(
+            config,
+            confidence_csv,
+            device="cpu",
+            allow_dirty_source=True,
+        )
 
     reuse_specification = json.loads(json.dumps(specification))
     reuse_specification["run"]["id"] = "snapshot-harness-reuse-smoke"
@@ -2085,4 +2138,7 @@ def test_module_help_exposes_one_common_interface() -> None:
         text=True,
     )
     assert completed.stdout.startswith("usage: qkvs ")
-    assert "{run,validate,status,summarize,export-snapshot}" in completed.stdout
+    assert (
+        "{run,validate,status,summarize,export-snapshot,snapshot-confidence}"
+        in completed.stdout
+    )

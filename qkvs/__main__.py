@@ -4,6 +4,7 @@ import argparse
 
 from qkvs.harness import (
     dump_json,
+    export_snapshot_confidence,
     export_snapshot_data,
     load_run,
     print_status,
@@ -54,6 +55,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="publish the candidate table as deterministic H1a_trials.csv.gz",
     )
+    confidence = commands.add_parser(
+        "snapshot-confidence",
+        help="measure full-QKV predictive confidence at frozen snapshot positions",
+    )
+    confidence.add_argument("--config", required=True)
+    confidence.add_argument("--device", choices=("cpu", "cuda"), required=True)
+    confidence.add_argument("--output", required=True)
     return parser
 
 
@@ -84,6 +92,14 @@ def main() -> None:
             record for name, record in manifest["csv"].items() if name.startswith("H1a_trials.csv")
         )
         print(f"Exported {trial_record['rows']} candidates to {args.output}")
+        return
+    if args.command == "snapshot-confidence":
+        artifact = export_snapshot_confidence(
+            args.config,
+            args.output,
+            device=args.device,
+        )
+        print(f"Exported {artifact['rows']} confidence rows to {artifact['path']}")
         return
     if args.command == "run":
         _, result = run_experiment(

@@ -83,6 +83,26 @@ _SNAPSHOT_FEASIBILITY_FIELDS = (
     "attempts",
     "success_probability",
 )
+_SNAPSHOT_CONFIDENCE_FIELDS = (
+    "run_id",
+    "source_revision",
+    "config_sha256",
+    "model_identity_sha256",
+    "stream_id",
+    "position",
+    "context_length",
+    "current_token_id",
+    "current_token_text_json",
+    "target_token_id",
+    "target_token_text_json",
+    "next_token_cross_entropy_nats",
+    "predictive_entropy_nats",
+    "target_token_probability",
+    "dominant_token_id",
+    "dominant_token_text_json",
+    "dominant_token_probability",
+    "dominant_matches_target",
+)
 
 
 def _progress_bar(current: float, total: int, *, width: int = _PROGRESS_WIDTH) -> str:
@@ -3889,6 +3909,160 @@ def _train_learned_policy(
     ):
         raise ValueError("training steps do not cover every post-transition continuation")
     policy.eval()
+
+
+def export_snapshot_confidence(
+    config_path: str | Path,
+    output_path: str | Path,
+    *,
+    device: str,
+    allow_dirty_source: bool = False,
+) -> dict[str, Any]:
+    """Measure full-QKV predictive confidence once at each frozen snapshot position."""
+
+    config_path = Path(config_path)
+    output_path = Path(output_path).resolve()
+    specification = _load_json(config_path)
+    validation = validate_config(specification)
+    if not validation["valid"]:
+        raise ValueError("invalid configuration: " + "; ".join(validation["errors"]))
+    if not validation["runnable"]:
+        reasons = "; ".join(validation["not_runnable_reasons"])
+        raise ValueError("configuration is not runnable: " + reasons)
+    if specification.get("study", {}).get("kind") != _SNAPSHOT_STUDY_KIND:
+        raise ValueError("snapshot confidence requires a snapshot study configuration")
+    if device not in specification["execution"]["allowed_devices"]:
+        raise ValueError(f"device {device} is not allowed by this configuration")
+    if output_path.exists():
+        raise ValueError("snapshot confidence output already exists")
+
+    source_identity = _source_identity(config_path)
+    if not source_identity["tracked_files_clean"] and not allow_dirty_source:
+        raise ValueError("harness source must be committed before execution")
+
+    import torch
+
+    from qkvs.model import TokenStream, load_reader
+
+    torch_device = torch.device(device)
+    reader = load_reader(specification["model"], torch_device)
+    streams, _data_identity = _build_streams(
+        specification,
+        config_path=config_path,
+        tokenizer=reader.tokenizer,
+    )
+    if len(streams) != 1:
+        raise ValueError("snapshot confidence requires exactly one token stream")
+    stream_record = streams[0]
+    stream = TokenStream(
+        stream_id=stream_record["stream_id"],
+        tokens=tuple(stream_record["tokens"]),
+        support_positions=tuple(stream_record["support_positions"]),
+    )
+    positions = tuple(int(position) for position in specification["study"]["positions"])
+    prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
+    ownership = f"snapshot-confidence:{stream.stream_id}"
+    model_identity_sha256 = _canonical_sha256(reader.identity())
+    progress = _Progress(completed=0, total=len(positions) + 1)
+    rows: list[dict[str, Any]] = []
+
+    def decoded_token(token_id: int) -> str:
+        return json.dumps(
+            reader.tokenizer.decode(
+                [token_id],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            ),
+            ensure_ascii=True,
+        )
+
+    try:
+        maximum_position = max(positions)
+        progress.start_job(f"dense confidence prefix / position {maximum_position}")
+        master = reader.dense_causal_snapshot(
+            stream,
+            position=maximum_position,
+            device=torch_device,
+            ownership=ownership,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+        )
+        master = reader.place_dense_causal_snapshot(master, device=torch_device)
+        progress.complete_job()
+        for position in positions:
+            progress.start_job(f"full QKV confidence / position {position}")
+            snapshot = (
+                master
+                if position == maximum_position
+                else reader.derive_dense_causal_snapshot(
+                    master,
+                    stream,
+                    position=position,
+                    device=torch_device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
+            )
+            state = reader.prepare_snapshot_probe(
+                snapshot,
+                stream,
+                position=position,
+                device=torch_device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
+            reference = reader.snapshot_probe(
+                stream,
+                state,
+                position=position,
+                selected_positions=None,
+                device=torch_device,
+            )
+            log_probabilities = torch.log_softmax(reference.logits.float(), dim=-1)
+            probabilities = log_probabilities.exp()
+            entropy = -(probabilities * log_probabilities).sum()
+            dominant_token_id = int(reference.prediction)
+            target_token_id = int(stream.tokens[position + 1])
+            values = torch.stack(
+                (
+                    reference.loss.float(),
+                    entropy,
+                    probabilities[target_token_id],
+                    probabilities[dominant_token_id],
+                )
+            ).cpu().tolist()
+            if not all(math.isfinite(value) for value in values):
+                raise RuntimeError("snapshot confidence measurement is nonfinite")
+            rows.append(
+                {
+                    "run_id": specification["run"]["id"],
+                    "source_revision": source_identity["git_revision"],
+                    "config_sha256": _sha256(config_path),
+                    "model_identity_sha256": model_identity_sha256,
+                    "stream_id": stream.stream_id,
+                    "position": position,
+                    "context_length": position + 1,
+                    "current_token_id": int(stream.tokens[position]),
+                    "current_token_text_json": decoded_token(int(stream.tokens[position])),
+                    "target_token_id": target_token_id,
+                    "target_token_text_json": decoded_token(target_token_id),
+                    "next_token_cross_entropy_nats": values[0],
+                    "predictive_entropy_nats": values[1],
+                    "target_token_probability": values[2],
+                    "dominant_token_id": dominant_token_id,
+                    "dominant_token_text_json": decoded_token(dominant_token_id),
+                    "dominant_token_probability": values[3],
+                    "dominant_matches_target": int(dominant_token_id == target_token_id),
+                }
+            )
+            progress.complete_job()
+    finally:
+        progress.close()
+    _write_csv(output_path, _SNAPSHOT_CONFIDENCE_FIELDS, rows)
+    return {
+        "path": str(output_path),
+        "rows": len(rows),
+        "sha256": _sha256(output_path),
+    }
 
 
 def run_experiment(
