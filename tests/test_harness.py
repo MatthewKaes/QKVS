@@ -692,6 +692,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert block_locations["model"] == fresh_v3["model"]
     assert block_locations["data"] == fresh_v3["data"]
     assert block_locations["execution"] == fresh_v3["execution"]
+    assert block_locations["run"]["seed"] == fresh_v2["run"]["seed"] == 20_261_019
     assert block_locations["study"] == {
         "kind": "snapshot_block_emission",
         "source": {
@@ -720,6 +721,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert neighborhood["model"] == fresh_v2["model"]
     assert neighborhood["data"] == fresh_v2["data"]
     assert neighborhood["execution"] == fresh_v3["execution"]
+    assert neighborhood["run"]["seed"] == fresh_v2["run"]["seed"]
     assert neighborhood["study"]["positions"] == expected_neighborhood_positions
     assert len(expected_neighborhood_positions) == 60
     assert neighborhood_seeds == {21_097, 30_555, 32_362}
