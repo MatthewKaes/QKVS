@@ -10,8 +10,11 @@ import shutil
 import struct
 import subprocess
 import zlib
+from collections.abc import Iterable
 from html import escape
 from pathlib import Path
+
+import numpy as np
 
 _HERE = Path(__file__).resolve().parent
 _THRESHOLDS = (
@@ -25,6 +28,16 @@ _COLOR_STOPS = (
     (0.75, (94, 201, 98)),
     (1.00, (253, 231, 37)),
 )
+
+
+def _available_thresholds(paths: Iterable[Path]) -> set[float]:
+    thresholds = set()
+    for path in paths:
+        with path.open(newline="", encoding="utf-8") as source:
+            for row in csv.DictReader(source):
+                if row.get("metric") == "kl_divergence_nats":
+                    thresholds.add(float(row["threshold"]))
+    return thresholds
 
 
 def _color(value: float) -> tuple[int, int, int]:
@@ -47,35 +60,103 @@ def _hex_color(value: float) -> str:
 
 
 def _load(
-    path: Path,
+    paths: Path | Iterable[Path],
     threshold: float,
 ) -> tuple[list[int], list[float], dict[tuple[int, float], dict[str, str]]]:
-    cells: dict[tuple[int, float], dict[str, str]] = {}
-    with path.open(newline="", encoding="utf-8") as source:
-        for row in csv.DictReader(source):
-            if row["metric"] != "kl_divergence_nats":
-                continue
-            if float(row["threshold"]) != threshold:
-                continue
-            position = int(row["position"])
-            coverage = float(row["requested_sampling_percentage"])
-            key = (position, coverage)
-            if key in cells:
-                raise ValueError(f"duplicate feasibility cell: {key}")
-            cells[key] = row
+    if isinstance(paths, Path):
+        paths = (paths,)
+    pooled: dict[tuple[int, float], list[int]] = {}
+    for path in paths:
+        with path.open(newline="", encoding="utf-8") as source:
+            for row in csv.DictReader(source):
+                if row.get("metric") in {None, "metric"}:
+                    continue
+                if row["metric"] != "kl_divergence_nats":
+                    continue
+                if float(row["threshold"]) != threshold:
+                    continue
+                position = int(row["position"])
+                coverage = float(row["requested_sampling_percentage"])
+                successes = int(row["success_count"])
+                attempts = int(row["attempts"])
+                if attempts <= 0 or not 0 <= successes <= attempts:
+                    raise ValueError("invalid feasibility success counts")
+                counts = pooled.setdefault((position, coverage), [0, 0])
+                counts[0] += successes
+                counts[1] += attempts
+    if not pooled:
+        raise ValueError(f"no KL <= {threshold:g} feasibility cells")
+    cells = {
+        key: {
+            "success_count": str(successes),
+            "attempts": str(attempts),
+            "success_probability": str(successes / attempts),
+        }
+        for key, (successes, attempts) in pooled.items()
+    }
     positions = sorted({position for position, _ in cells})
     percentages = sorted({coverage for _, coverage in cells})
-    if percentages and percentages[-1] < 100.0:
-        for position in positions:
-            cells[(position, 100.0)] = {
-                "success_probability": "1.0",
-            }
+    for position in positions:
+        cells[(position, 100.0)] = {
+            "success_count": "1",
+            "attempts": "1",
+            "success_probability": "1.0",
+        }
+    if percentages[-1] < 100.0:
         percentages.append(100.0)
-    expected = {(position, coverage) for position in positions for coverage in percentages}
-    missing = expected - cells.keys()
-    if missing:
-        raise ValueError(f"missing {len(missing)} feasibility cells")
     return positions, percentages, cells
+
+
+def _probability_grid(
+    positions: list[int],
+    percentages: list[float],
+    cells: dict[tuple[int, float], dict[str, str]],
+) -> np.ndarray:
+    grid = np.full((len(percentages), len(positions)), np.nan, dtype=np.float64)
+    position_indices = {position: index for index, position in enumerate(positions)}
+    percentage_indices = {percentage: index for index, percentage in enumerate(percentages)}
+    for (position, percentage), row in cells.items():
+        grid[percentage_indices[percentage], position_indices[position]] = float(
+            row["success_probability"]
+        )
+    missing = np.argwhere(np.isnan(grid))
+    if not len(missing):
+        return grid
+
+    x_scale = max(1.0, float(positions[-1] - positions[0]))
+    y_scale = max(1.0, float(percentages[-1] - percentages[0]))
+    measured = np.argwhere(~np.isnan(grid))
+    measured_coordinates = np.column_stack(
+        (
+            (np.asarray(positions)[measured[:, 1]] - positions[0]) / x_scale,
+            (np.asarray(percentages)[measured[:, 0]] - percentages[0]) / y_scale,
+        )
+    )
+    measured_values = grid[measured[:, 0], measured[:, 1]]
+    neighbor_count = min(8, len(measured))
+    for start in range(0, len(missing), 512):
+        rows = missing[start : start + 512]
+        targets = np.column_stack(
+            (
+                (np.asarray(positions)[rows[:, 1]] - positions[0]) / x_scale,
+                (np.asarray(percentages)[rows[:, 0]] - percentages[0]) / y_scale,
+            )
+        )
+        distances = np.sum(
+            (targets[:, None, :] - measured_coordinates[None, :, :]) ** 2,
+            axis=2,
+        )
+        neighbors = np.argpartition(distances, neighbor_count - 1, axis=1)[
+            :, :neighbor_count
+        ]
+        neighbor_distances = np.take_along_axis(distances, neighbors, axis=1)
+        weights = 1.0 / np.maximum(neighbor_distances, 1e-12)
+        values = measured_values[neighbors]
+        grid[rows[:, 0], rows[:, 1]] = np.sum(weights * values, axis=1) / np.sum(
+            weights,
+            axis=1,
+        )
+    return grid
 
 
 def _bracket(values: list[float] | list[int], target: float) -> tuple[int, int, float]:
@@ -108,17 +189,17 @@ def _interpolated_raster(
     ]
     x_brackets = [_bracket(positions, sample) for sample in x_samples]
     y_brackets = [_bracket(percentages, sample) for sample in y_samples]
-    probabilities = {key: float(row["success_probability"]) for key, row in cells.items()}
+    probabilities = _probability_grid(positions, percentages, cells)
     raster_rows = []
     for lower_y, upper_y, y_weight in y_brackets:
-        y0 = percentages[lower_y]
-        y1 = percentages[upper_y]
         row = bytearray()
         for lower_x, upper_x, x_weight in x_brackets:
-            x0 = positions[lower_x]
-            x1 = positions[upper_x]
-            lower = probabilities[(x0, y0)] * (1.0 - x_weight) + probabilities[(x1, y0)] * x_weight
-            upper = probabilities[(x0, y1)] * (1.0 - x_weight) + probabilities[(x1, y1)] * x_weight
+            lower = probabilities[lower_y, lower_x] * (
+                1.0 - x_weight
+            ) + probabilities[lower_y, upper_x] * x_weight
+            upper = probabilities[upper_y, lower_x] * (
+                1.0 - x_weight
+            ) + probabilities[upper_y, upper_x] * x_weight
             row.extend(_color(lower * (1.0 - y_weight) + upper * y_weight))
         raster_rows.append(bytes(row))
     return _png(width, height, raster_rows)
@@ -147,7 +228,7 @@ def _text(x: float, y: float, value: str, **attributes: object) -> str:
     return f'<text x="{x:.2f}" y="{y:.2f}" {properties}>{escape(value)}</text>'
 
 
-def _render_svg(source: Path, destination: Path, threshold: float) -> None:
+def _render_svg(source: Path | Iterable[Path], destination: Path, threshold: float) -> None:
     positions, percentages, cells = _load(source, threshold)
     plot_x = 105
     plot_y = 92
@@ -321,8 +402,8 @@ def main() -> None:
     parser.add_argument(
         "--data",
         type=Path,
-        default=_HERE / "H1a_feasibility.csv",
-        help="feasibility CSV produced by qkvs export-snapshot",
+        action="append",
+        help="feasibility CSV to pool; repeat for independently sampled files",
     )
     parser.add_argument(
         "--output-directory",
@@ -330,12 +411,36 @@ def main() -> None:
         default=_HERE,
         help="directory for the generated SVG and PNG files",
     )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        action="append",
+        help="KL threshold to render; repeat as needed (defaults to available standard thresholds)",
+    )
     arguments = parser.parse_args()
+    data = arguments.data or [_HERE / "H1a_feasibility.csv"]
+    available = _available_thresholds(data)
+    thresholds = (
+        tuple(
+            (
+                threshold,
+                dict(_THRESHOLDS).get(
+                    threshold,
+                    f"H1a_KL_{format(threshold, 'g').replace('.', '_')}",
+                ),
+            )
+            for threshold in arguments.threshold
+        )
+        if arguments.threshold
+        else tuple(item for item in _THRESHOLDS if item[0] in available)
+    )
+    if not thresholds:
+        raise ValueError("no requested KL thresholds are present in the feasibility data")
     arguments.output_directory.mkdir(parents=True, exist_ok=True)
-    for threshold, stem in _THRESHOLDS:
+    for threshold, stem in thresholds:
         svg = arguments.output_directory / f"{stem}.svg"
         png = arguments.output_directory / f"{stem}.png"
-        _render_svg(arguments.data, svg, threshold)
+        _render_svg(data, svg, threshold)
         _render_png(svg, png)
         print(svg)
         print(png)

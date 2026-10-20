@@ -556,15 +556,22 @@ The same directory includes deterministic SVG and PNG density heatmaps for the `
 measured hit rates. The interpretive display omits individual measurement dots, uses regular
 10-percentage-point labels for the amount of K/V history ignored, and places greater sparsity
 higher on the plot. Its 0%-ignored boundary is the known 100%-coverage/100%-hit dense endpoint, so
-that redundant control does not need to be sampled. Regenerate the figures from the feasibility CSV
-with:
+that redundant control does not need to be sampled. Repeated position/coverage cells are pooled by
+their successful-candidate and attempt counts. Missing cells in irregular merged grids are filled
+only for display from the eight nearest measured cells in normalized token/coverage space; source
+CSV observations remain authoritative. Regenerate the figures from one feasibility CSV with:
 
 ```bash
 python docs/data/h1a-context-density-expansion/visualize.py
 ```
 
-PNG rasterization uses `rsvg-convert`; interpolation and SVG construction require no additional
-Python packages.
+Pass `--data` more than once to pool independently sampled CSVs without first constructing a merged
+file. The renderer uses QKVS's pinned NumPy dependency; PNG rasterization uses `rsvg-convert`.
+
+```bash
+python docs/data/h1a-context-density-expansion/visualize.py \
+  --data first.csv --data selective-extension.csv --threshold 0.01
+```
 
 The exporter verifies every trial-set hash, then writes atomic candidate, dense-reference, and
 feasibility CSVs plus a provenance manifest. Seeds use exact unsigned 64-bit hexadecimal strings;
