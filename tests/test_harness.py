@@ -444,11 +444,11 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     }
     assert h1a_block_locations == {
         "valid": True,
-        "runnable": False,
+        "runnable": True,
         "errors": [],
-        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "not_runnable_reasons": [],
         "experiment": "h1a_kl_0_01_block_locations_10_percent",
-        "status": "draft_not_authorized",
+        "status": "approved",
     }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
@@ -682,10 +682,10 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     assert block_locations["study"] == {
         "kind": "snapshot_block_emission",
         "source": {
-            "configuration": "h1a_kl_0_01_blue_noise_v3.json",
+            "configuration": "h1a_kl_0_01_blue_noise_v2.json",
             "feasibility_csv": (
                 "../docs/data/h1a-context-density-expansion/"
-                "H1a_KL_0_01_feasibility_v3.csv"
+                "H1a_KL_0_01_feasibility_v2.csv"
             ),
             "coverage_percentage": 10,
             "fidelity_tolerance_nats": 0.01,
@@ -1558,6 +1558,10 @@ def test_snapshot_block_emission_selects_successful_positions_at_exact_coverage(
             },
         },
     }
+    emission_specification["execution"] = json.loads(
+        json.dumps(source_specification["execution"])
+    )
+    emission_specification["execution"]["snapshot_candidate_batch_max_size"] = 64
     emission_config = tmp_path / "emission.json"
     emission_config.write_text(json.dumps(emission_specification), encoding="utf-8")
     source_hash = hashlib.sha256(source_config.read_bytes()).hexdigest()

@@ -526,10 +526,16 @@ predictive measurements, and exact selected token ranges for every layer. Ranges
 half-open, ordered, and nonoverlapping, so they reproduce every selected index without expanding
 long adjacent runs into individual integers.
 
-`configs/h1a_kl_0_01_block_locations_10_percent.json` is the initial 10% coverage protocol. It is
-`draft_not_authorized`; it cannot run until the v3 feasibility CSV is complete and the selective
-follow-up receives independent authorization. A later 20% pass requires a new run identity and a
-configuration change to `study.source.coverage_percentage`, not a new execution path.
+`configs/h1a_kl_0_01_block_locations_10_percent.json` is the approved initial 10% coverage
+protocol. Its position filter and exact candidate identities come from the complete v2 feasibility
+CSV and v2 sampler, while the selective replay uses the current native-block batching and buffered
+execution controls. A later 20% pass requires a new run identity, separate authorization, and a
+configuration change to `study.source.coverage_percentage`, not a new execution path. The approved
+10% command is:
+
+```bash
+./run.sh configs/h1a_kl_0_01_block_locations_10_percent.json
+```
 
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.

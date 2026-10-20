@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "h1a_kl_0_01_block_locations_10_percent",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "h1a-kl-0-01-block-locations-10-percent",
     "seed": 20261019
@@ -33,8 +33,8 @@
   "study": {
     "kind": "snapshot_block_emission",
     "source": {
-      "configuration": "h1a_kl_0_01_blue_noise_v3.json",
-      "feasibility_csv": "../docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v3.csv",
+      "configuration": "h1a_kl_0_01_blue_noise_v2.json",
+      "feasibility_csv": "../docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv",
       "coverage_percentage": 10,
       "fidelity_tolerance_nats": 0.01
     }

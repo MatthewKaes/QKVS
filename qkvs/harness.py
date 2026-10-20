@@ -1541,7 +1541,7 @@ def _load_snapshot_block_emission_source(
         raise ValueError("snapshot block emission source configuration is not a snapshot study")
     if source_specification.get("status") not in {"approved", "harness_verification"}:
         raise ValueError("snapshot block emission source configuration is not approved")
-    for field in ("model", "data", "execution"):
+    for field in ("model", "data"):
         if specification.get(field) != source_specification.get(field):
             raise ValueError(f"snapshot block emission {field} differs from its source study")
     if specification["run"]["id"] == source_specification.get("run", {}).get("id"):
@@ -2459,7 +2459,7 @@ def _run_snapshot_study(
             _load_snapshot_block_emission_source(config_path, specification)
         )
     study = source_specification["study"]
-    execution = source_specification["execution"]
+    execution = specification["execution"]
     candidate_batch_max_size = execution.get(
         "snapshot_candidate_batch_max_size",
         execution.get("snapshot_candidate_batch_size", 1),
