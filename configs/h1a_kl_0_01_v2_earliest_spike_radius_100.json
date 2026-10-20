@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "h1a_kl_0_01_v2_earliest_spike_radius_100",
-  "status": "draft_not_authorized",
+  "status": "approved",
   "run": {
     "id": "h1a-kl-0-01-v2-earliest-spike-radius-100",
     "seed": 20261019
