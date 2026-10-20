@@ -515,6 +515,22 @@ use a separate CSV so the completed v2 measurements remain immutable:
   docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v3.csv
 ```
 
+Snapshot block emission is a configuration-controlled second-stage measurement. Its source names a
+completed snapshot configuration and feasibility CSV, one exact requested coverage percentage, and
+one KL tolerance. The harness first verifies that the CSV contains the complete source position
+grid with matching run, configuration, sampler, stream, and revision identities. It selects only
+positions whose cell at that exact coverage has at least one hit, writes those source cells to
+`selected_cells.csv`, and deterministically replays the source trial IDs only at those positions.
+Every replayed candidate meeting the KL tolerance is retained in `result.json` with its seed,
+predictive measurements, and exact selected token ranges for every layer. Ranges are zero-based,
+half-open, ordered, and nonoverlapping, so they reproduce every selected index without expanding
+long adjacent runs into individual integers.
+
+`configs/h1a_kl_0_01_block_locations_10_percent.json` is the initial 10% coverage protocol. It is
+`draft_not_authorized`; it cannot run until the v3 feasibility CSV is complete and the selective
+follow-up receives independent authorization. A later 20% pass requires a new run identity and a
+configuration change to `study.source.coverage_percentage`, not a new execution path.
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise

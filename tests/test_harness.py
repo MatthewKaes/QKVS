@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from qkvs.harness import (
+    _load_snapshot_block_emission_source,
     _predictive_execution_version,
     _predictive_measurement_key,
     _Progress,
@@ -304,6 +305,9 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
     h1a_fresh_v2_path = Path("configs/h1a_kl_0_01_blue_noise_v2.json")
     h1a_fresh_v3_path = Path("configs/h1a_kl_0_01_blue_noise_v3.json")
+    h1a_block_locations_path = Path(
+        "configs/h1a_kl_0_01_block_locations_10_percent.json"
+    )
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -316,6 +320,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_position_extension = validate_config_file(h1a_position_extension_path)
     h1a_fresh_v2 = validate_config_file(h1a_fresh_v2_path)
     h1a_fresh_v3 = validate_config_file(h1a_fresh_v3_path)
+    h1a_block_locations = validate_config_file(h1a_block_locations_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -437,6 +442,14 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_blue_noise_v3",
         "status": "approved",
     }
+    assert h1a_block_locations == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_kl_0_01_block_locations_10_percent",
+        "status": "draft_not_authorized",
+    }
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -476,6 +489,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     position_extension = json.loads(h1a_position_extension_path.read_text())
     fresh_v2 = json.loads(h1a_fresh_v2_path.read_text())
     fresh_v3 = json.loads(h1a_fresh_v3_path.read_text())
+    block_locations = json.loads(h1a_block_locations_path.read_text())
     original_positions = set(h1a_specification["study"]["positions"])
     expansion_positions = expansion["study"]["positions"]
     expansion_cohorts = expansion["study"]["position_cohorts"]
@@ -662,6 +676,21 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         }
     )
     assert fresh_v3 == expected_v3
+    assert block_locations["model"] == fresh_v3["model"]
+    assert block_locations["data"] == fresh_v3["data"]
+    assert block_locations["execution"] == fresh_v3["execution"]
+    assert block_locations["study"] == {
+        "kind": "snapshot_block_emission",
+        "source": {
+            "configuration": "h1a_kl_0_01_blue_noise_v3.json",
+            "feasibility_csv": (
+                "../docs/data/h1a-context-density-expansion/"
+                "H1a_KL_0_01_feasibility_v3.csv"
+            ),
+            "coverage_percentage": 10,
+            "fidelity_tolerance_nats": 0.01,
+        },
+    }
     optimized = json.loads(json.dumps(fresh_v2))
     optimized["execution"].pop("snapshot_candidate_batch_size")
     optimized["execution"].update(
@@ -1406,6 +1435,178 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     )
     assert buffered["complete"]
     assert len(buffered["snapshot_observations"]) == 2
+
+    block_source_specification = json.loads(json.dumps(slice_specification))
+    block_source_specification["run"]["id"] = "snapshot-block-source"
+    block_source_specification["study"]["fidelity_tolerances_nats"] = [100.0]
+    block_source_config = tmp_path / "snapshot-block-source.json"
+    block_source_config.write_text(
+        json.dumps(block_source_specification),
+        encoding="utf-8",
+    )
+    block_source_hash = hashlib.sha256(block_source_config.read_bytes()).hexdigest()
+    block_source_csv = tmp_path / "snapshot-block-source.csv"
+    block_rows = [
+        {
+            "run_id": "snapshot-block-source",
+            "source_revision": "2" * 40,
+            "config_sha256": block_source_hash,
+            "sampling_algorithm": block_source_specification["study"]["sampling_algorithm"],
+            "stream_id": "snapshot-stream",
+            "position": position,
+            "context_length": position + 1,
+            "requested_sampling_percentage": 25,
+            "requested_sampled_fraction": 0.25,
+            "metric": "kl_divergence_nats",
+            "comparison": "<=",
+            "threshold": 100.0,
+            "success_count": 3,
+            "attempts": 3,
+            "success_probability": 1.0,
+        }
+        for position in (3, 7, 9)
+    ]
+    with block_source_csv.open("w", newline="", encoding="utf-8") as source:
+        writer = csv.DictWriter(source, fieldnames=block_rows[0])
+        writer.writeheader()
+        writer.writerows(block_rows)
+
+    block_emission_specification = {
+        **block_source_specification,
+        "experiment": "snapshot_block_emission_smoke",
+        "run": {"id": "snapshot-block-emission-smoke", "seed": 91},
+        "study": {
+            "kind": "snapshot_block_emission",
+            "source": {
+                "configuration": block_source_config.name,
+                "feasibility_csv": block_source_csv.name,
+                "coverage_percentage": 25,
+                "fidelity_tolerance_nats": 100.0,
+            },
+        },
+    }
+    block_emission_config = tmp_path / "snapshot-block-emission.json"
+    block_emission_config.write_text(
+        json.dumps(block_emission_specification),
+        encoding="utf-8",
+    )
+    block_output, block_result = run_experiment(
+        block_emission_config,
+        device="cpu",
+        output_root=tmp_path / "block-results",
+        allow_dirty_source=True,
+    )
+
+    assert block_result["complete"]
+    assert block_result["summary"] == {
+        "selected_positions": 3,
+        "replayed_candidates": 9,
+        "emitted_hits": 9,
+        "range_encoding": "zero-based-half-open-token-intervals-by-layer",
+    }
+    assert len(block_result["block_emission_cells"]) == 3
+    assert block_result["selected_cells_csv"]["rows"] == 3
+    assert (block_output.parent / "selected_cells.csv").is_file()
+    for cell in block_result["block_emission_cells"]:
+        assert cell["hit_count"] == 3
+        for hit in cell["hits"]:
+            assert hit["kl_divergence_nats"] <= 100.0
+            assert len(hit["selected_token_ranges_by_layer"]) == 2
+            for ranges in hit["selected_token_ranges_by_layer"]:
+                assert ranges
+                assert all(0 <= start < stop <= cell["context_length"] for start, stop in ranges)
+                assert all(
+                    stop <= next_start
+                    for (_, stop), (next_start, _) in zip(ranges, ranges[1:], strict=False)
+                )
+    _, repeated_blocks = run_experiment(
+        block_emission_config,
+        device="cpu",
+        output_root=tmp_path / "block-results",
+        allow_dirty_source=True,
+    )
+    assert repeated_blocks == block_result
+
+
+def test_snapshot_block_emission_selects_successful_positions_at_exact_coverage(
+    tmp_path,
+) -> None:
+    source_specification = json.loads(
+        Path("configs/h1a_kl_0_01_blue_noise_v3.json").read_text()
+    )
+    source_specification["study"]["positions"] = [3, 7]
+    source_specification["study"]["sampling_percentages"] = [10, 20]
+    source_specification["study"]["trials_per_fraction"] = 5
+    source_specification["study"].pop("position_cohorts", None)
+    source_specification["study"].pop("position_selection", None)
+    source_specification["study"].pop("expected_candidate_passes", None)
+    source_config = tmp_path / "source.json"
+    source_config.write_text(json.dumps(source_specification), encoding="utf-8")
+
+    emission_specification = {
+        **source_specification,
+        "experiment": "block_emission_test",
+        "status": "harness_verification",
+        "run": {"id": "block-emission-test", "seed": 91},
+        "study": {
+            "kind": "snapshot_block_emission",
+            "source": {
+                "configuration": source_config.name,
+                "feasibility_csv": "source.csv",
+                "coverage_percentage": 10,
+                "fidelity_tolerance_nats": 0.01,
+            },
+        },
+    }
+    emission_config = tmp_path / "emission.json"
+    emission_config.write_text(json.dumps(emission_specification), encoding="utf-8")
+    source_hash = hashlib.sha256(source_config.read_bytes()).hexdigest()
+    rows = []
+    for position, successes in ((3, 0), (7, 2)):
+        rows.append(
+            {
+                "run_id": source_specification["run"]["id"],
+                "source_revision": "1" * 40,
+                "config_sha256": source_hash,
+                "sampling_algorithm": "uniform-aligned-blocks-v3",
+                "stream_id": source_specification["data"]["boundaries"][0]["id"],
+                "position": position,
+                "context_length": position + 1,
+                "requested_sampling_percentage": 10,
+                "requested_sampled_fraction": 0.1,
+                "metric": "kl_divergence_nats",
+                "comparison": "<=",
+                "threshold": 0.01,
+                "success_count": successes,
+                "attempts": 5,
+                "success_probability": successes / 5,
+            }
+        )
+    source_csv = tmp_path / "source.csv"
+    with source_csv.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=rows[0])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    loaded_source, selected_cells, identity = _load_snapshot_block_emission_source(
+        emission_config,
+        emission_specification,
+    )
+
+    assert loaded_source == source_specification
+    assert [cell["position"] for cell in selected_cells] == [7]
+    assert selected_cells[0]["source_success_count"] == 2
+    assert identity["coverage_percentage"] == 10
+    assert identity["fidelity_tolerance_nats"] == 0.01
+    assert identity["matched_position_count"] == 1
+
+    rows.pop()
+    with source_csv.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=rows[0])
+        writer.writeheader()
+        writer.writerows(rows)
+    with pytest.raises(ValueError, match="feasibility grid is incomplete"):
+        _load_snapshot_block_emission_source(emission_config, emission_specification)
 
 
 def test_predictive_keys_track_condition_specific_invalidation_boundaries() -> None:

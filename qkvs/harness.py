@@ -57,6 +57,7 @@ _LEGACY_BASELINE_SOURCE = {
 }
 _LEGACY_REUSABLE_POLICIES = {"rolling", "fixed_offsets", "full_qkv"}
 _SNAPSHOT_STUDY_KIND = "unconstrained_snapshot_compressibility"
+_SNAPSHOT_BLOCK_EMISSION_KIND = "snapshot_block_emission"
 _SNAPSHOT_EXECUTION_VERSION = "qwen2-h1a-current-token-v1"
 _SNAPSHOT_HISTOGRAM_BINS = 20
 _SNAPSHOT_PROBABILITY_TOLERANCE = 1e-6
@@ -262,6 +263,32 @@ class _Progress:
 
 def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:
     specification = result["config"]
+    if specification.get("study", {}).get("kind") == _SNAPSHOT_BLOCK_EMISSION_KIND:
+        cells = result.get("source_cells", [])
+        prefix_total = (
+            1
+            if result.get("source_snapshot", {})
+            .get("config", {})
+            .get("study", {})
+            .get("dense_snapshot_strategy")
+            == "largest_prefix_slice"
+            else len({int(cell["position"]) for cell in cells})
+        )
+        phases = {
+            "snapshot_prefixes": (
+                min(prefix_total, len(result.get("snapshot_prefixes", {}))),
+                prefix_total,
+            ),
+            "snapshot_trial_sets": (
+                min(len(cells), len(result.get("block_emission_cells", []))),
+                len(cells),
+            ),
+        }
+        return (
+            sum(completed for completed, _ in phases.values()),
+            sum(total for _, total in phases.values()),
+            phases,
+        )
     if specification.get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
         positions = specification["study"]["positions"]
         fractions = specification["study"]["sampling_percentages"]
@@ -760,6 +787,79 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("data.kind is unsupported")
 
     study = specification.get("study")
+    if isinstance(study, dict) and study.get("kind") == _SNAPSHOT_BLOCK_EMISSION_KIND:
+        source = study.get("source", {})
+        if not isinstance(source, dict):
+            errors.append("snapshot block emission source must be an object")
+            source = {}
+        for field in ("configuration", "feasibility_csv"):
+            if not isinstance(source.get(field), str) or not source.get(field):
+                errors.append(f"snapshot block emission source.{field} must be a nonempty path")
+        coverage = source.get("coverage_percentage")
+        if (
+            not isinstance(coverage, (int, float))
+            or isinstance(coverage, bool)
+            or not 0.0 < float(coverage) <= 100.0
+        ):
+            errors.append(
+                "snapshot block emission source.coverage_percentage must be in (0, 100]"
+            )
+        tolerance = source.get("fidelity_tolerance_nats")
+        if (
+            not isinstance(tolerance, (int, float))
+            or isinstance(tolerance, bool)
+            or float(tolerance) <= 0.0
+        ):
+            errors.append(
+                "snapshot block emission source.fidelity_tolerance_nats must be positive"
+            )
+        if any(
+            field in specification for field in ("attention", "selection", "training", "evaluation")
+        ):
+            errors.append("snapshot studies must not define QKVS attention or selector controls")
+        boundaries = data.get("boundaries", []) if data_kind == "tokenized_text" else []
+        if len(boundaries) != 1:
+            errors.append("snapshot studies require exactly one tokenized-text boundary")
+        execution = specification.get("execution", {})
+        devices = execution.get("allowed_devices")
+        if (
+            not isinstance(devices, list)
+            or not devices
+            or any(device not in {"cpu", "cuda"} for device in devices)
+        ):
+            errors.append("execution.allowed_devices must contain cpu and/or cuda")
+        if not isinstance(execution.get("output_root"), str):
+            errors.append("execution.output_root must be a string")
+        if not _positive_integer(execution.get("prefill_chunk_tokens")):
+            errors.append("execution.prefill_chunk_tokens must be a positive integer")
+        if not _positive_integer(execution.get("snapshot_candidate_batch_max_size", 1)):
+            errors.append("execution.snapshot_candidate_batch_max_size must be a positive integer")
+        token_budget = execution.get("snapshot_candidate_batch_token_budget")
+        if token_budget is not None and not _positive_integer(token_budget):
+            errors.append(
+                "execution.snapshot_candidate_batch_token_budget must be a positive integer"
+            )
+        if not _positive_integer(execution.get("snapshot_checkpoint_candidates", 1)):
+            errors.append("execution.snapshot_checkpoint_candidates must be a positive integer")
+        if execution.get("snapshot_selection_representation") != "native_blocks":
+            errors.append("snapshot block emission requires native block selections")
+        reasons: list[str] = []
+        if status not in {"harness_verification", "approved"}:
+            reasons.append("configuration is not authorized for harness execution")
+        if backend != "huggingface":
+            reasons.append("snapshot studies require the Hugging Face Qwen2 reader")
+        if backend == "huggingface" and model.get("dtype") not in {"float32", "bfloat16"}:
+            reasons.append("a Hugging Face execution dtype has not been frozen")
+        if data_kind != "tokenized_text":
+            reasons.append("snapshot studies require identity-pinned tokenized_text data")
+        return {
+            "valid": not errors,
+            "runnable": not errors and not reasons,
+            "errors": errors,
+            "not_runnable_reasons": reasons,
+            "experiment": specification.get("experiment"),
+            "status": status,
+        }
     if study is not None:
         if not isinstance(study, dict) or study.get("kind") != _SNAPSHOT_STUDY_KIND:
             errors.append("study.kind is unsupported")
@@ -1264,7 +1364,18 @@ def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w") as output:
-        json.dump(value, output, indent=2, sort_keys=True)
+        compact = (
+            isinstance(value, dict)
+            and value.get("config", {}).get("study", {}).get("kind")
+            == _SNAPSHOT_BLOCK_EMISSION_KIND
+        )
+        json.dump(
+            value,
+            output,
+            indent=None if compact else 2,
+            separators=(",", ":") if compact else None,
+            sort_keys=True,
+        )
         output.write("\n")
     temporary.replace(path)
 
@@ -1415,6 +1526,207 @@ def _result_path(
 
 def _snapshot_fraction_coordinate(percentage: float) -> int:
     return round(float(percentage) * 1_000_000)
+
+
+def _load_snapshot_block_emission_source(
+    config_path: Path,
+    specification: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    emission = specification["study"]["source"]
+    source_config_path = (config_path.parent / emission["configuration"]).resolve()
+    source_csv_path = (config_path.parent / emission["feasibility_csv"]).resolve()
+    source_specification = _load_json(source_config_path)
+    source_study = source_specification.get("study", {})
+    if source_study.get("kind") != _SNAPSHOT_STUDY_KIND:
+        raise ValueError("snapshot block emission source configuration is not a snapshot study")
+    if source_specification.get("status") not in {"approved", "harness_verification"}:
+        raise ValueError("snapshot block emission source configuration is not approved")
+    for field in ("model", "data", "execution"):
+        if specification.get(field) != source_specification.get(field):
+            raise ValueError(f"snapshot block emission {field} differs from its source study")
+    if specification["run"]["id"] == source_specification.get("run", {}).get("id"):
+        raise ValueError("snapshot block emission requires a distinct run id")
+
+    coverage = float(emission["coverage_percentage"])
+    tolerance = float(emission["fidelity_tolerance_nats"])
+    percentages = [float(value) for value in source_study.get("sampling_percentages", [])]
+    if coverage not in percentages:
+        raise ValueError("snapshot block emission coverage is absent from the source study")
+    if tolerance not in [
+        float(value) for value in source_study.get("fidelity_tolerances_nats", [])
+    ]:
+        raise ValueError("snapshot block emission tolerance is absent from the source study")
+    if not source_csv_path.is_file():
+        raise ValueError("snapshot block emission feasibility CSV is unavailable")
+
+    source_config_sha256 = _sha256(source_config_path)
+    source_run_id = source_specification["run"]["id"]
+    sampling_algorithm = source_study["sampling_algorithm"]
+    stream_id = source_specification["data"]["boundaries"][0]["id"]
+    rows_by_position: dict[int, dict[str, Any]] = {}
+    source_revisions: set[str] = set()
+    with source_csv_path.open(newline="", encoding="utf-8") as source:
+        for row in csv.DictReader(source):
+            if row.get("metric") != "kl_divergence_nats" or row.get("comparison") != "<=":
+                continue
+            if float(row["threshold"]) != tolerance:
+                continue
+            if float(row["requested_sampling_percentage"]) != coverage:
+                continue
+            if row["run_id"] != source_run_id:
+                raise ValueError("snapshot block emission source run id does not match")
+            if row["config_sha256"] != source_config_sha256:
+                raise ValueError("snapshot block emission source configuration hash does not match")
+            if row["sampling_algorithm"] != sampling_algorithm:
+                raise ValueError("snapshot block emission source sampler does not match")
+            if row["stream_id"] != stream_id:
+                raise ValueError("snapshot block emission source stream does not match")
+            source_revisions.add(row["source_revision"])
+            position = int(row["position"])
+            if position in rows_by_position:
+                raise ValueError("snapshot block emission source contains a duplicate cell")
+            attempts = int(row["attempts"])
+            success_count = int(row["success_count"])
+            success_probability = float(row["success_probability"])
+            if (
+                attempts <= 0
+                or not 0 <= success_count <= attempts
+                or not math.isclose(
+                    success_probability,
+                    success_count / attempts,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise ValueError("snapshot block emission source success counts are invalid")
+            rows_by_position[position] = {
+                "source_run_id": source_run_id,
+                "source_revision": row["source_revision"],
+                "source_config_sha256": source_config_sha256,
+                "sampling_algorithm": sampling_algorithm,
+                "stream_id": stream_id,
+                "position": position,
+                "context_length": int(row["context_length"]),
+                "requested_sampling_percentage": coverage,
+                "requested_sampled_fraction": float(row["requested_sampled_fraction"]),
+                "fidelity_tolerance_nats": tolerance,
+                "source_success_count": success_count,
+                "source_attempts": attempts,
+                "source_success_probability": success_probability,
+            }
+
+    expected_positions = [int(position) for position in source_study["positions"]]
+    if set(rows_by_position) != set(expected_positions):
+        raise ValueError("snapshot block emission source feasibility grid is incomplete")
+    selected_cells = [
+        rows_by_position[position]
+        for position in expected_positions
+        if rows_by_position[position]["source_success_count"] > 0
+    ]
+    if not selected_cells:
+        raise ValueError("snapshot block emission source contains no successful positions")
+    if len(source_revisions) != 1:
+        raise ValueError("snapshot block emission source revisions are inconsistent")
+    identity = {
+        "config": source_specification,
+        "config_path": os.path.relpath(source_config_path, config_path.parent),
+        "config_sha256": source_config_sha256,
+        "feasibility_csv": os.path.relpath(source_csv_path, config_path.parent),
+        "feasibility_csv_sha256": _sha256(source_csv_path),
+        "source_revision": source_revisions.pop(),
+        "coverage_percentage": coverage,
+        "fidelity_tolerance_nats": tolerance,
+        "matched_position_count": len(selected_cells),
+    }
+    return source_specification, selected_cells, identity
+
+
+def _snapshot_block_candidate_ranges(
+    block_batch: Any,
+    candidate_index: int,
+) -> list[list[list[int]]]:
+    from qkvs.selection import RandomBlockSelection
+
+    layers = []
+    for layer_index in range(block_batch.layer_count):
+        selection_index = candidate_index * block_batch.layer_count + layer_index
+        start = int(block_batch.block_offsets[selection_index])
+        stop = int(block_batch.block_offsets[selection_index + 1])
+        selection = RandomBlockSelection(
+            selected_blocks=block_batch.selected_blocks[start:stop],
+            seed=0,
+            boundary_alignment=int(block_batch.boundary_alignments[selection_index]),
+            available_positions=block_batch.available_positions,
+            block_width=block_batch.block_width,
+            aligned_block_count=(
+                (block_batch.available_positions + block_batch.block_width - 1)
+                // block_batch.block_width
+                if int(block_batch.boundary_alignments[selection_index]) == 0
+                else 1
+                + max(
+                    0,
+                    (
+                        block_batch.available_positions
+                        - int(block_batch.boundary_alignments[selection_index])
+                        + block_batch.block_width
+                        - 1
+                    )
+                    // block_batch.block_width,
+                )
+            ),
+            requested_fraction=block_batch.requested_fraction,
+        )
+        layers.append([[int(first), int(last)] for first, last in selection.contiguous_ranges])
+    return layers
+
+
+def _validate_snapshot_block_emission_result(
+    result: dict[str, Any],
+    result_path: Path,
+) -> None:
+    selected_csv = result.get("selected_cells_csv", {})
+    selected_path = (result_path.parent / selected_csv.get("path", "")).resolve()
+    if (
+        not selected_path.is_relative_to(result_path.parent.resolve())
+        or not selected_path.is_file()
+        or selected_csv.get("sha256") != _sha256(selected_path)
+    ):
+        raise ValueError("snapshot block emission selected-cell artifact does not match")
+    with selected_path.open(newline="", encoding="utf-8") as source:
+        if sum(1 for _ in csv.DictReader(source)) != selected_csv.get("rows"):
+            raise ValueError("snapshot block emission selected-cell row count does not match")
+
+    source_cells = {
+        (int(cell["position"]), float(cell["requested_sampling_percentage"])): cell
+        for cell in result.get("source_cells", [])
+    }
+    observed: set[tuple[int, float]] = set()
+    tolerance = float(result["source_snapshot"]["fidelity_tolerance_nats"])
+    for cell in result.get("block_emission_cells", []):
+        key = (int(cell["position"]), float(cell["requested_sampling_percentage"]))
+        if key not in source_cells or key in observed:
+            raise ValueError("snapshot block emission contains an unexpected or duplicate cell")
+        observed.add(key)
+        hits = cell.get("hits", [])
+        if cell.get("hit_count") != len(hits):
+            raise ValueError("snapshot block emission hit count does not match")
+        trial_ids: set[int] = set()
+        for hit in hits:
+            trial_id = int(hit["trial_id"])
+            if trial_id in trial_ids or float(hit["kl_divergence_nats"]) > tolerance:
+                raise ValueError("snapshot block emission contains an invalid hit")
+            trial_ids.add(trial_id)
+            for ranges in hit["selected_token_ranges_by_layer"]:
+                previous_stop = 0
+                for start, stop in ranges:
+                    if (
+                        not 0 <= start < stop <= int(cell["context_length"])
+                        or start < previous_stop
+                    ):
+                        raise ValueError("snapshot block emission contains an invalid token range")
+                    previous_stop = stop
+    if result.get("complete") and observed != set(source_cells):
+        raise ValueError("complete snapshot block emission is missing source cells")
 
 
 def _snapshot_observation_path(
@@ -2138,8 +2450,16 @@ def _run_snapshot_study(
         tokens=tuple(stream_record["tokens"]),
         support_positions=tuple(stream_record["support_positions"]),
     )
-    study = specification["study"]
-    execution = specification["execution"]
+    emits_blocks = specification["study"]["kind"] == _SNAPSHOT_BLOCK_EMISSION_KIND
+    source_cells: list[dict[str, Any]] = []
+    source_snapshot: dict[str, Any] | None = None
+    source_specification = specification
+    if emits_blocks:
+        source_specification, source_cells, source_snapshot = (
+            _load_snapshot_block_emission_source(config_path, specification)
+        )
+    study = source_specification["study"]
+    execution = source_specification["execution"]
     candidate_batch_max_size = execution.get(
         "snapshot_candidate_batch_max_size",
         execution.get("snapshot_candidate_batch_size", 1),
@@ -2172,8 +2492,10 @@ def _run_snapshot_study(
 
     output = _result_path(specification, output_root=output_root)
     snapshot_csv_path = Path(snapshot_csv).resolve() if snapshot_csv is not None else None
-    if snapshot_csv_path is None:
+    if not emits_blocks and snapshot_csv_path is None:
         raise ValueError("snapshot studies require a direct feasibility CSV destination")
+    if emits_blocks and snapshot_csv_path is not None:
+        raise ValueError("snapshot block emission does not accept a feasibility CSV output")
     reuse_prefixes: dict[int, tuple[Path, dict[str, Any]]] = {}
     reuse_identity = None
     reuse_source = study.get("reuse_dense_snapshots_from")
@@ -2218,10 +2540,11 @@ def _run_snapshot_study(
         "data_identity": data_identity,
         "device": str(device),
         "snapshot_execution_version": snapshot_execution_version,
-        "snapshot_feasibility_csv": (
-            str(snapshot_csv_path) if snapshot_csv_path is not None else None
-        ),
+        "snapshot_feasibility_csv": str(snapshot_csv_path) if snapshot_csv_path else None,
     }
+    if emits_blocks:
+        expected["source_snapshot"] = source_snapshot
+        expected["snapshot_feasibility_csv"] = None
     if reuse_identity is not None:
         expected["dense_snapshot_reuse"] = reuse_identity
     if output.exists():
@@ -2230,6 +2553,8 @@ def _run_snapshot_study(
             "streams"
         ) != streams:
             raise ValueError("saved snapshot study does not match current source and configuration")
+        if emits_blocks:
+            _validate_snapshot_block_emission_result(result, output)
     else:
         result = {
             "schema_version": 1,
@@ -2243,6 +2568,8 @@ def _run_snapshot_study(
             "streams": streams,
             "snapshot_prefixes": {},
             "snapshot_observations": [],
+            "block_emission_cells": [],
+            "source_cells": source_cells,
             "snapshot_summary": {},
             "measurements": [],
             "measurement_references": [],
@@ -2250,6 +2577,29 @@ def _run_snapshot_study(
             "summary": {},
             "complete": False,
         }
+        if emits_blocks:
+            selected_cells_path = output.parent / "selected_cells.csv"
+            selected_cell_fields = (
+                "source_run_id",
+                "source_revision",
+                "source_config_sha256",
+                "sampling_algorithm",
+                "stream_id",
+                "position",
+                "context_length",
+                "requested_sampling_percentage",
+                "requested_sampled_fraction",
+                "fidelity_tolerance_nats",
+                "source_success_count",
+                "source_attempts",
+                "source_success_probability",
+            )
+            _write_csv(selected_cells_path, selected_cell_fields, source_cells)
+            result["selected_cells_csv"] = {
+                "path": os.path.relpath(selected_cells_path, output.parent),
+                "sha256": _sha256(selected_cells_path),
+                "rows": len(source_cells),
+            }
         _write_json(output, result)
     result["environment"].update(
         {
@@ -2259,16 +2609,45 @@ def _run_snapshot_study(
             "cuda_initialized_after_reader": torch.cuda.is_initialized(),
         }
     )
-    observations = _read_snapshot_observation_sets(result, output, load_candidates=False)
-    _append_snapshot_feasibility_rows(
-        snapshot_csv_path,
-        [row for observation in observations for row in observation["feasibility"]],
-    )
-    completed = {
-        (observation["position"], observation["requested_sampling_percentage"])
-        for observation in observations
+    if emits_blocks:
+        observations = result["block_emission_cells"]
+        completed = {
+            (observation["position"], observation["requested_sampling_percentage"])
+            for observation in observations
+        }
+        target_units = tuple(
+            (int(cell["position"]), float(cell["requested_sampling_percentage"]))
+            for cell in source_cells
+        )
+    else:
+        observations = _read_snapshot_observation_sets(result, output, load_candidates=False)
+        _append_snapshot_feasibility_rows(
+            snapshot_csv_path,
+            [row for observation in observations for row in observation["feasibility"]],
+        )
+        completed = {
+            (observation["position"], observation["requested_sampling_percentage"])
+            for observation in observations
+        }
+        target_units = tuple(
+            (int(position), float(percentage))
+            for position in study["positions"]
+            for percentage in study["sampling_percentages"]
+        )
+    expected_trial_sets = len(target_units)
+    target_percentages_by_position = {
+        position: tuple(
+            percentage
+            for candidate_position, percentage in target_units
+            if candidate_position == position
+        )
+        for position in dict.fromkeys(position for position, _ in target_units)
     }
-    expected_trial_sets = len(study["positions"]) * len(study["sampling_percentages"])
+    target_positions = tuple(target_percentages_by_position)
+    source_cell_by_unit = {
+        (int(cell["position"]), float(cell["requested_sampling_percentage"])): cell
+        for cell in source_cells
+    }
     retain_dense_snapshots = study.get("retain_dense_snapshots", True)
     if result.get("complete") and len(completed) == expected_trial_sets:
         if not retain_dense_snapshots:
@@ -2286,7 +2665,7 @@ def _run_snapshot_study(
     ownership = f"snapshot-study:{stream.stream_id}"
     prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
     fidelity_tolerances = [float(value) for value in study["fidelity_tolerances_nats"]]
-    base_seed = specification["run"]["seed"]
+    base_seed = source_specification["run"]["seed"]
     trial_start = study["trial_start"]
     sampling_algorithm = study["sampling_algorithm"]
     dense_snapshot_strategy = study.get("dense_snapshot_strategy", "independent")
@@ -2302,6 +2681,45 @@ def _run_snapshot_study(
             f"checkpoint / {pending_checkpoint_candidates} candidates",
             advances=False,
         )
+        if emits_blocks:
+            for cell in pending_cells:
+                observations.append(
+                    {
+                        "position": cell["position"],
+                        "context_length": cell["position"] + 1,
+                        "requested_sampling_percentage": cell["percentage"],
+                        "requested_sampled_fraction": cell["requested_fraction"],
+                        "source_success_count": cell["source_success_count"],
+                        "source_attempts": cell["source_attempts"],
+                        "source_success_probability": cell["source_success_probability"],
+                        "trial_start": trial_start,
+                        "trial_count": cell["trial_count"],
+                        "hit_count": len(cell["hits"]),
+                        "hits": cell["hits"],
+                    }
+                )
+            observations.sort(
+                key=lambda item: (
+                    item["position"],
+                    item["requested_sampling_percentage"],
+                )
+            )
+            result["complete"] = len(completed) == expected_trial_sets
+            result["summary"] = {
+                "selected_positions": len(source_cells),
+                "replayed_candidates": sum(
+                    int(observation["trial_count"]) for observation in observations
+                ),
+                "emitted_hits": sum(int(observation["hit_count"]) for observation in observations),
+                "range_encoding": "zero-based-half-open-token-intervals-by-layer",
+            }
+            _write_json(output, result)
+            progress.complete_job(durable=False)
+            progress.commit_units(pending_checkpoint_units)
+            pending_cells.clear()
+            pending_checkpoint_units = 0
+            pending_checkpoint_candidates = 0
+            return
         materialized = torch.cat([cell["values"] for cell in pending_cells]).cpu().tolist()
         pending_feasibility_rows: list[dict[str, Any]] = []
         value_offset = 0
@@ -2399,12 +2817,7 @@ def _run_snapshot_study(
         pending_checkpoint_units = 0
         pending_checkpoint_candidates = 0
 
-    native_units = tuple(
-        (position, percentage)
-        for position in study["positions"]
-        for percentage in study["sampling_percentages"]
-        if (position, percentage) not in completed
-    )
+    native_units = tuple(unit for unit in target_units if unit not in completed)
     native_unit_indices = {unit: index for index, unit in enumerate(native_units)}
     prefetched_native_batch = None
     layer_count = reader.model.config.num_hidden_layers
@@ -2471,7 +2884,7 @@ def _run_snapshot_study(
         )
 
     master_snapshot = None
-    master_position = max(study["positions"])
+    master_position = max(target_positions)
     master_position_key = str(master_position)
     master_path = (
         output.parent
@@ -2511,7 +2924,7 @@ def _run_snapshot_study(
                     "artifact_sha256": _sha256(master_path),
                     "identity": master_snapshot.identity,
                     "retained": True,
-                    "derived_positions": len(study["positions"]) - 1,
+                    "derived_positions": len(target_positions) - 1,
                 }
                 _write_json(output, result)
                 progress.complete_job()
@@ -2534,11 +2947,11 @@ def _run_snapshot_study(
                 master_snapshot,
                 device=device,
             )
-        for position in study["positions"]:
+        for position in target_positions:
             position_key = str(position)
             position_complete = all(
                 (position, percentage) in completed
-                for percentage in study["sampling_percentages"]
+                for percentage in target_percentages_by_position[position]
             )
             if position_complete:
                 if dense_snapshot_strategy == "largest_prefix_slice":
@@ -2672,7 +3085,7 @@ def _run_snapshot_study(
             reference_log_probs = torch.log_softmax(reference.logits.float(), dim=-1)
             reference_probabilities = reference_log_probs.exp()
 
-            for percentage in study["sampling_percentages"]:
+            for percentage in target_percentages_by_position[position]:
                 unit = (position, percentage)
                 if unit in completed:
                     continue
@@ -2718,6 +3131,7 @@ def _run_snapshot_study(
                     candidate_trial_id_batches: list[Any] = []
                     candidate_seed_batches: list[Any] = []
                     candidate_realized_fraction_batches: list[Any] = []
+                    emitted_hits: list[dict[str, Any]] = []
                     cell_batch_size = snapshot_candidate_batch_size(
                         position,
                         requested_fraction,
@@ -2729,6 +3143,8 @@ def _run_snapshot_study(
                         candidate_seeds: Any,
                         selected_occurrence_counts: Any,
                         *,
+                        block_batch: Any | None,
+                        emitted_hits: list[dict[str, Any]],
                         candidate_values: list[Any],
                         candidate_trial_id_batches: list[Any],
                         candidate_seed_batches: list[Any],
@@ -2774,20 +3190,22 @@ def _run_snapshot_study(
                             raise RuntimeError(
                                 "snapshot probe read accounting does not match selection"
                             )
-                        candidate_trial_id_batches.append(
+                        trial_array = (
                             trial_ids.astype(np.int64, copy=False)
                             if isinstance(trial_ids, np.ndarray)
                             else np.fromiter(trial_ids, dtype=np.int64, count=batch_count)
                         )
-                        candidate_seed_batches.append(
+                        seed_array = (
                             candidate_seeds.astype(np.uint64, copy=False)
                             if isinstance(candidate_seeds, np.ndarray)
                             else np.fromiter(candidate_seeds, dtype=np.uint64, count=batch_count)
                         )
-                        candidate_realized_fraction_batches.append(
-                            selected_array
-                            / (reader.model.config.num_hidden_layers * (position + 1))
+                        realized_array = selected_array / (
+                            reader.model.config.num_hidden_layers * (position + 1)
                         )
+                        candidate_trial_id_batches.append(trial_array)
+                        candidate_seed_batches.append(seed_array)
+                        candidate_realized_fraction_batches.append(realized_array)
 
                         sparse_log_probs = torch.log_softmax(probe_logits.float(), dim=-1)
                         sparse_probabilities = sparse_log_probs.exp()
@@ -2805,20 +3223,75 @@ def _run_snapshot_study(
                             probe_logits.float() - reference.logits.float().unsqueeze(0)
                         ).abs().amax(dim=-1)
                         loss_errors = loss_deltas.abs()
-                        candidate_values.append(
-                            torch.stack(
-                                (
-                                    divergences,
-                                    probability_overlaps,
-                                    probe_losses,
-                                    loss_deltas,
-                                    probe_predictions,
-                                    logit_errors,
-                                    loss_errors,
-                                ),
-                                dim=-1,
-                            )
+                        values = torch.stack(
+                            (
+                                divergences,
+                                probability_overlaps,
+                                probe_losses,
+                                loss_deltas,
+                                probe_predictions,
+                                logit_errors,
+                                loss_errors,
+                            ),
+                            dim=-1,
                         )
+                        if not emits_blocks:
+                            candidate_values.append(values)
+                            return
+                        if block_batch is None:
+                            raise RuntimeError("snapshot block emission requires native blocks")
+                        materialized = values.cpu().tolist()
+                        tolerance = float(
+                            specification["study"]["source"]["fidelity_tolerance_nats"]
+                        )
+                        for candidate_index, (
+                            trial_id,
+                            candidate_seed,
+                            realized_fraction,
+                            candidate_measurements,
+                        ) in enumerate(
+                            zip(
+                                trial_array,
+                                seed_array,
+                                realized_array,
+                                materialized,
+                                strict=True,
+                            )
+                        ):
+                            if not all(math.isfinite(value) for value in candidate_measurements):
+                                raise RuntimeError("snapshot candidate measurement is nonfinite")
+                            if not (
+                                -_SNAPSHOT_PROBABILITY_TOLERANCE
+                                <= candidate_measurements[1]
+                                <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
+                            ):
+                                raise RuntimeError(
+                                    "snapshot probability overlap is outside [0, 1]"
+                                )
+                            if candidate_measurements[0] > tolerance:
+                                continue
+                            emitted_hits.append(
+                                {
+                                    "trial_id": int(trial_id),
+                                    "candidate_seed_hex": _snapshot_seed_hex(
+                                        int(candidate_seed)
+                                    ),
+                                    "realized_sampled_fraction": float(realized_fraction),
+                                    "kl_divergence_nats": candidate_measurements[0],
+                                    "probability_distribution_overlap": candidate_measurements[1],
+                                    "sparse_next_token_loss": candidate_measurements[2],
+                                    "next_token_ce_delta_nats": candidate_measurements[3],
+                                    "sparse_top_one_prediction": int(candidate_measurements[4]),
+                                    "top_one_agreement": int(candidate_measurements[4])
+                                    == int(reference.prediction),
+                                    "selected_token_ranges_by_layer": (
+                                        _snapshot_block_candidate_ranges(
+                                            block_batch,
+                                            candidate_index,
+                                        )
+                                    ),
+                                }
+                            )
 
                     if selection_representation == "native_blocks":
                         batch_spans = native_batch_spans(position, percentage)
@@ -2890,6 +3363,8 @@ def _run_snapshot_study(
                                 trial_ids,
                                 candidate_seeds,
                                 block_batch.candidate_occurrence_counts,
+                                block_batch=block_batch,
+                                emitted_hits=emitted_hits,
                                 candidate_values=candidate_values,
                                 candidate_trial_id_batches=candidate_trial_id_batches,
                                 candidate_seed_batches=candidate_seed_batches,
@@ -2981,6 +3456,8 @@ def _run_snapshot_study(
                                 (record[0] for record in batch_metadata),
                                 (record[1] for record in batch_metadata),
                                 (record[2] for record in batch_metadata),
+                                block_batch=None,
+                                emitted_hits=emitted_hits,
                                 candidate_values=candidate_values,
                                 candidate_trial_id_batches=candidate_trial_id_batches,
                                 candidate_seed_batches=candidate_seed_batches,
@@ -2997,21 +3474,38 @@ def _run_snapshot_study(
                                 f"trial {batch_stop}/{trial_count}",
                                 fraction=batch_stop / trial_count,
                             )
-                    pending_cells.append(
-                        {
-                            "identity_sha256": identity_sha256,
-                            "position": position,
-                            "percentage": percentage,
-                            "requested_fraction": requested_fraction,
-                            "reference_prediction": int(reference_values[1]),
-                            "trial_ids": np.concatenate(candidate_trial_id_batches),
-                            "candidate_seeds": np.concatenate(candidate_seed_batches),
-                            "realized_fractions": np.concatenate(
-                                candidate_realized_fraction_batches
-                            ),
-                            "values": torch.cat(candidate_values),
-                        }
-                    )
+                    if emits_blocks:
+                        source_cell = source_cell_by_unit[unit]
+                        pending_cells.append(
+                            {
+                                "position": position,
+                                "percentage": percentage,
+                                "requested_fraction": requested_fraction,
+                                "source_success_count": source_cell["source_success_count"],
+                                "source_attempts": source_cell["source_attempts"],
+                                "source_success_probability": source_cell[
+                                    "source_success_probability"
+                                ],
+                                "trial_count": trial_count,
+                                "hits": emitted_hits,
+                            }
+                        )
+                    else:
+                        pending_cells.append(
+                            {
+                                "identity_sha256": identity_sha256,
+                                "position": position,
+                                "percentage": percentage,
+                                "requested_fraction": requested_fraction,
+                                "reference_prediction": int(reference_values[1]),
+                                "trial_ids": np.concatenate(candidate_trial_id_batches),
+                                "candidate_seeds": np.concatenate(candidate_seed_batches),
+                                "realized_fractions": np.concatenate(
+                                    candidate_realized_fraction_batches
+                                ),
+                                "values": torch.cat(candidate_values),
+                            }
+                        )
                 completed.add(unit)
                 pending_checkpoint_units += 1
                 pending_checkpoint_candidates += trial_count
@@ -3415,9 +3909,10 @@ def run_experiment(
         raise ValueError("configuration is not runnable: " + reasons)
     if device not in specification["execution"]["allowed_devices"]:
         raise ValueError(f"device {device} is not allowed by this configuration")
-    is_snapshot_study = (
-        specification.get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND
-    )
+    is_snapshot_study = specification.get("study", {}).get("kind") in {
+        _SNAPSHOT_STUDY_KIND,
+        _SNAPSHOT_BLOCK_EMISSION_KIND,
+    }
     if snapshot_csv is not None and not is_snapshot_study:
         raise ValueError("snapshot CSV output requires a snapshot study")
 
@@ -3678,8 +4173,12 @@ def load_run(path: str | Path) -> dict[str, Any]:
     result = _load_json(result_path)
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
-    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+    study_kind = result.get("config", {}).get("study", {}).get("kind")
+    if study_kind == _SNAPSHOT_STUDY_KIND:
         _read_snapshot_observation_sets(result, result_path, load_candidates=False)
+        return result
+    if study_kind == _SNAPSHOT_BLOCK_EMISSION_KIND:
+        _validate_snapshot_block_emission_result(result, result_path)
         return result
     result["measurements"] = _resolved_measurements(result, result_path)
     return result
@@ -3690,11 +4189,13 @@ def status(path: str | Path) -> dict[str, Any]:
     result = _load_json(result_path)
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
-    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+    study_kind = result.get("config", {}).get("study", {}).get("kind")
+    if study_kind == _SNAPSHOT_STUDY_KIND:
         _read_snapshot_observation_sets(result, result_path, load_candidates=False)
+    elif study_kind == _SNAPSHOT_BLOCK_EMISSION_KIND:
+        _validate_snapshot_block_emission_result(result, result_path)
     completed, total, phases = _progress_counts(result)
     training = result.get("training", {})
-    study_kind = result.get("config", {}).get("study", {}).get("kind")
     return {
         "run_id": result["run_id"],
         "study_kind": study_kind,
@@ -3725,7 +4226,10 @@ def print_status(value: dict[str, Any]) -> None:
         f"[{_progress_bar(completed, total)}] {state}"
     )
     phases = value["phase_units"]
-    if value.get("study_kind") == _SNAPSHOT_STUDY_KIND:
+    if value.get("study_kind") in {
+        _SNAPSHOT_STUDY_KIND,
+        _SNAPSHOT_BLOCK_EMISSION_KIND,
+    }:
         print(
             "Phases: "
             f"snapshot prefixes {phases['snapshot_prefixes']['completed']}/"
@@ -3754,7 +4258,16 @@ def print_status(value: dict[str, Any]) -> None:
 
 def print_summary(result: dict[str, Any]) -> None:
     print(f"Run {result['run_id']} ({'complete' if result['complete'] else 'incomplete'})")
-    if result.get("config", {}).get("study", {}).get("kind") == _SNAPSHOT_STUDY_KIND:
+    study_kind = result.get("config", {}).get("study", {}).get("kind")
+    if study_kind == _SNAPSHOT_BLOCK_EMISSION_KIND:
+        summary = result.get("summary", {})
+        print(
+            f"selected_positions={summary.get('selected_positions', 0)}, "
+            f"replayed_candidates={summary.get('replayed_candidates', 0)}, "
+            f"emitted_hits={summary.get('emitted_hits', 0)}"
+        )
+        return
+    if study_kind == _SNAPSHOT_STUDY_KIND:
         frontiers = result.get("snapshot_summary", {}).get("frontiers_by_position", {})
         for position, tolerances in sorted(frontiers.items(), key=lambda item: int(item[0])):
             values = []
