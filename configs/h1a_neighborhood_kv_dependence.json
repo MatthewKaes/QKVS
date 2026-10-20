@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "experiment": "h1a_neighborhood_historical_kv_dependence",
+  "status": "draft_not_authorized",
+  "run": {
+    "id": "h1a-neighborhood-historical-kv-dependence",
+    "seed": 20261019
+  },
+  "model": {
+    "backend": "huggingface",
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "tokenizer_id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "dtype": "bfloat16",
+    "frozen": true
+  },
+  "data": {
+    "kind": "tokenized_text",
+    "source": {
+      "path": "../data/project_gutenberg_1661.txt",
+      "url": "https://www.gutenberg.org/cache/epub/1661/pg1661.txt",
+      "bytes": 607606,
+      "sha256": "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0"
+    },
+    "boundaries": [
+      {
+        "id": "h1a-expansion-sherlock-000",
+        "split": "evaluation",
+        "start_token": 0,
+        "stop_token": 32768
+      }
+    ]
+  },
+  "study": {
+    "kind": "historical_kv_dependence",
+    "position_range": [
+      1668,
+      1868
+    ],
+    "preceding_token_counts": [
+      0,
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      1536
+    ],
+    "fidelity_tolerances_nats": [
+      0.001,
+      0.01,
+      0.1
+    ],
+    "expected_observations": 3015,
+    "expected_identity": {
+      "model_identity_sha256": "bcdbc0e6cfafe38d2a135b7c2bc1f5e41b2652cb0b0973f2e7e5528adea286b5",
+      "data_identity_sha256": "916769466607e15bdcb536d556c8b5eb86630592f300d4b5a5de87e665e9ef5b",
+      "stream_token_sha256": "f88dfe64e00ce0df5e649375125d5001ae9938f304003267c6d10a06f3775ef5"
+    },
+    "source_neighborhood": {
+      "configuration": "h1a_kl_0_01_v2_earliest_spike_radius_100.json",
+      "config_sha256": "a1ee47f82d76e099bea171577a7eda96357d58b3d1048fdf785b65dccd6d0e92",
+      "run_id": "h1a-kl-0-01-v2-earliest-spike-radius-100",
+      "source_revision": "d0a9e859da7e32d4c6a937065c73874dd197147d",
+      "feasibility_csv_sha256": "3bf42da31ea0e0f30b16938f51eca7ffc1b03f3bc07f744d92bea6439d725fba"
+    },
+    "spike_positions": [
+      1680,
+      1687,
+      1701,
+      1756,
+      1768,
+      1797,
+      1862
+    ],
+    "highlighted_tokens": [
+      {
+        "position": 1680,
+        "current_token_id": 71139,
+        "current_token_piece": "pron",
+        "next_token_id": 9734,
+        "next_token_piece": "ounce"
+      },
+      {
+        "position": 1687,
+        "current_token_id": 4462,
+        "current_token_piece": " member",
+        "next_token_id": 315,
+        "next_token_piece": " of"
+      },
+      {
+        "position": 1701,
+        "current_token_id": 448,
+        "current_token_piece": " with",
+        "next_token_id": 892,
+        "next_token_piece": " which"
+      },
+      {
+        "position": 1756,
+        "current_token_id": 64416,
+        "current_token_piece": " baff",
+        "next_token_id": 832,
+        "next_token_piece": "led"
+      },
+      {
+        "position": 1768,
+        "current_token_id": 9779,
+        "current_token_piece": "bel",
+        "next_token_id": 19155,
+        "next_token_piece": "ieve"
+      },
+      {
+        "position": 1797,
+        "current_token_id": 6773,
+        "current_token_piece": " arm",
+        "next_token_id": 34196,
+        "next_token_piece": "chair"
+      },
+      {
+        "position": 1862,
+        "current_token_id": 1513,
+        "current_token_piece": " don",
+        "next_token_id": 1405,
+        "next_token_piece": "’t"
+      }
+    ]
+  },
+  "execution": {
+    "prefill_chunk_tokens": 128,
+    "snapshot_candidate_batch_max_size": 14,
+    "allowed_devices": [
+      "cuda"
+    ],
+    "output_root": "artifacts/results"
+  }
+}

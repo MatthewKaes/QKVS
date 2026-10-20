@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -525,6 +526,106 @@ def test_snapshot_probe_batch_matches_full_depth_bfloat16_without_repeating_gqa_
         assert torch.equal(batch_results.losses[index], scalar.loss)
         assert torch.equal(batch_results.predictions[index], scalar.prediction)
         assert batch_results.occurrence_counts[index] == scalar.gathered_keys_per_layer
+
+
+def test_snapshot_suffix_interventions_use_exact_noncommitting_occurrences() -> None:
+    reader = _qwen_reader(torch.float32)
+    stream = _stream((1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    position = 6
+    snapshot = reader.dense_causal_snapshot(
+        stream,
+        position=position,
+        device=torch.device("cpu"),
+        ownership="suffix-intervention-test",
+        prefill_chunk_tokens=2,
+    )
+    state = reader.prepare_snapshot_probe(
+        snapshot,
+        stream,
+        position=position,
+        device=torch.device("cpu"),
+        ownership="suffix-intervention-test",
+        prefill_chunk_tokens=2,
+    )
+    keys_before = tuple(cache.clone() for cache in state.key_cache)
+    values_before = tuple(cache.clone() for cache in state.value_cache)
+    layer_count = len(reader.model.model.layers)
+    preceding_counts = (0, 1, 2, 4)
+    suffix_ranges = tuple(
+        (((position - count, position + 1),),) * layer_count for count in preceding_counts
+    )
+    previous_only_ranges = (((position - 1, position),),) * layer_count
+    range_batches = (*suffix_ranges, previous_only_ranges)
+    selections = reader.prepare_snapshot_selection_batch(
+        range_batches,
+        position=position,
+        device=torch.device("cpu"),
+    )
+
+    for count, selection in zip(preceding_counts, selections[:-1], strict=True):
+        expected = torch.arange(position - count, position + 1)
+        assert selection.occurrence_counts == (count + 1,) * layer_count
+        assert selection.base_occurrence_counts == (count,) * layer_count
+        assert all(torch.equal(indices, expected) for indices in selection.layers)
+    previous_only = selections[-1]
+    assert previous_only.occurrence_counts == (1,) * layer_count
+    assert previous_only.base_occurrence_counts == (1,) * layer_count
+    assert all(
+        torch.equal(indices, torch.tensor([position - 1])) for indices in previous_only.layers
+    )
+
+    batched = reader.snapshot_probe_batch(
+        stream,
+        state,
+        position=position,
+        selected_positions=selections,
+        device=torch.device("cpu"),
+    )
+    for index, selection in enumerate(selections):
+        scalar = reader.snapshot_probe(
+            stream,
+            state,
+            position=position,
+            selected_positions=selection,
+            device=torch.device("cpu"),
+        )
+        torch.testing.assert_close(batched.logits[index], scalar.logits, rtol=0.0, atol=1e-6)
+        torch.testing.assert_close(batched.losses[index], scalar.loss, rtol=0.0, atol=1e-6)
+        assert batched.occurrence_counts[index] == scalar.gathered_keys_per_layer
+        assert torch.isfinite(scalar.logits).all()
+        assert torch.isfinite(scalar.loss)
+
+    altered_state = replace(
+        state,
+        key_cache=tuple(cache + 17.0 for cache in state.key_cache),
+        value_cache=tuple(cache - 23.0 for cache in state.value_cache),
+    )
+    current_only = reader.snapshot_probe(
+        stream,
+        state,
+        position=position,
+        selected_positions=selections[0],
+        device=torch.device("cpu"),
+    )
+    altered_current_only = reader.snapshot_probe(
+        stream,
+        altered_state,
+        position=position,
+        selected_positions=selections[0],
+        device=torch.device("cpu"),
+    )
+    assert torch.equal(current_only.logits, altered_current_only.logits)
+    assert torch.equal(current_only.loss, altered_current_only.loss)
+    assert current_only.gathered_keys_per_layer == (1,) * layer_count
+    assert current_only.gathered_values_per_layer == (1,) * layer_count
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(keys_before, state.key_cache, strict=True)
+    )
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(values_before, state.value_cache, strict=True)
+    )
 
 
 @pytest.mark.parametrize("reader_factory", (_reader, _qwen_reader), ids=("synthetic", "qwen2"))

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from qkvs.harness import (
+    _canonical_sha256,
     _load_snapshot_block_emission_source,
     _predictive_execution_version,
     _predictive_measurement_key,
@@ -65,8 +66,7 @@ def test_run_wrapper_delegates_without_printing_a_validation_report(tmp_path, mo
         text=True,
     )
     assert snapshot.stdout == (
-        "run --config configs/harness_smoke.json --device cpu "
-        "--snapshot-csv measurements.csv\n"
+        "run --config configs/harness_smoke.json --device cpu --snapshot-csv measurements.csv\n"
     )
     assert snapshot.stderr == ""
 
@@ -323,15 +323,10 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_position_extension_path = Path("configs/h1a_kl_0_01_position_extension.json")
     h1a_fresh_v2_path = Path("configs/h1a_kl_0_01_blue_noise_v2.json")
     h1a_fresh_v3_path = Path("configs/h1a_kl_0_01_blue_noise_v3.json")
-    h1a_block_locations_path = Path(
-        "configs/h1a_kl_0_01_block_locations_10_percent.json"
-    )
-    h1a_neighborhood_path = Path(
-        "configs/h1a_kl_0_01_v2_spike_neighborhood_expansion.json"
-    )
-    h1a_earliest_spike_path = Path(
-        "configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json"
-    )
+    h1a_block_locations_path = Path("configs/h1a_kl_0_01_block_locations_10_percent.json")
+    h1a_neighborhood_path = Path("configs/h1a_kl_0_01_v2_spike_neighborhood_expansion.json")
+    h1a_earliest_spike_path = Path("configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json")
+    h1a_kv_dependence_path = Path("configs/h1a_neighborhood_kv_dependence.json")
     learning_study = validate_config_file(pilot_path)
     followup = validate_config_file(followup_path)
     hard_aligned = validate_config_file(hard_aligned_path)
@@ -347,6 +342,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     h1a_block_locations = validate_config_file(h1a_block_locations_path)
     h1a_neighborhood = validate_config_file(h1a_neighborhood_path)
     h1a_earliest_spike = validate_config_file(h1a_earliest_spike_path)
+    h1a_kv_dependence = validate_config_file(h1a_kv_dependence_path)
     assert smoke == {
         "valid": True,
         "runnable": True,
@@ -492,6 +488,32 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "experiment": "h1a_kl_0_01_v2_earliest_spike_radius_100",
         "status": "approved",
     }
+    assert h1a_kv_dependence == {
+        "valid": True,
+        "runnable": False,
+        "errors": [],
+        "not_runnable_reasons": ["configuration is not authorized for harness execution"],
+        "experiment": "h1a_neighborhood_historical_kv_dependence",
+        "status": "draft_not_authorized",
+    }
+    kv_dependence = json.loads(h1a_kv_dependence_path.read_text())
+    assert kv_dependence["study"]["position_range"] == [1668, 1868]
+    assert kv_dependence["study"]["preceding_token_counts"] == [
+        0,
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        1536,
+    ]
+    assert kv_dependence["study"]["expected_observations"] == 3015
     assert hashlib.sha256(h1a_path.read_bytes()).hexdigest() == (
         "dfaea9ba01928ac8e1bc041a3d3ae94f1e0f126ae87623b6d7892454ce671425"
     )
@@ -729,8 +751,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "source": {
             "configuration": "h1a_kl_0_01_blue_noise_v2.json",
             "feasibility_csv": (
-                "../docs/data/h1a-context-density-expansion/"
-                "H1a_KL_0_01_feasibility_v2.csv"
+                "../docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2.csv"
             ),
             "coverage_percentage": 10,
             "fidelity_tolerance_nats": 0.01,
@@ -851,9 +872,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         in validate_config(invalid_batch)["errors"]
     )
     assert {
-        position
-        for cohort in fresh_v2["study"]["position_cohorts"].values()
-        for position in cohort
+        position for cohort in fresh_v2["study"]["position_cohorts"].values() for position in cohort
     } == set(fresh_positions)
     blue_noise = fresh_v2["study"]["position_selection"]
     assert blue_noise["algorithm"] == "pcg64-log-weighted-blue-noise-1d-v1"
@@ -876,9 +895,10 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         upper = stop - 1 - (count - index - 1) * blue_noise["minimum_spacing_tokens"]
         regenerated_blue_noise.append(min(max(int(round(float(target))), lower), upper))
     assert regenerated_blue_noise == fresh_positions
-    assert min(
-        right - left for left, right in zip(fresh_positions, fresh_positions[1:], strict=False)
-    ) >= blue_noise["minimum_spacing_tokens"]
+    assert (
+        min(right - left for left, right in zip(fresh_positions, fresh_positions[1:], strict=False))
+        >= blue_noise["minimum_spacing_tokens"]
+    )
     assert sum(position >= 30000 for position in fresh_positions) == 9
     assert fresh_v2["run"]["id"] not in {
         cell_extension["run"]["id"],
@@ -1342,13 +1362,10 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert len(direct_rows) == 8
     assert fsync_calls == 4
     assert {
-        (int(row["position"]), float(row["requested_sampling_percentage"]))
-        for row in direct_rows
+        (int(row["position"]), float(row["requested_sampling_percentage"])) for row in direct_rows
     } == {(3, 25.0), (3, 100.0), (7, 25.0), (7, 100.0)}
     assert {row["run_id"] for row in direct_rows} == {"snapshot-harness-smoke"}
-    assert {row["sampling_algorithm"] for row in direct_rows} == {
-        "uniform-aligned-blocks-v2"
-    }
+    assert {row["sampling_algorithm"] for row in direct_rows} == {"uniform-aligned-blocks-v2"}
     assert all(len(row["source_revision"]) == 40 for row in direct_rows)
     assert all(len(row["config_sha256"]) == 64 for row in direct_rows)
     print_summary(resumed)
@@ -1380,13 +1397,9 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert all(float(row["next_token_cross_entropy_nats"]) >= 0.0 for row in confidence_rows)
     assert all(float(row["predictive_entropy_nats"]) >= 0.0 for row in confidence_rows)
     assert all(0.0 <= float(row["target_token_probability"]) <= 1.0 for row in confidence_rows)
+    assert all(0.0 <= float(row["dominant_token_probability"]) <= 1.0 for row in confidence_rows)
     assert all(
-        0.0 <= float(row["dominant_token_probability"]) <= 1.0
-        for row in confidence_rows
-    )
-    assert all(
-        json.loads(row["dominant_token_text_json"]).startswith("<token:")
-        for row in confidence_rows
+        json.loads(row["dominant_token_text_json"]).startswith("<token:") for row in confidence_rows
     )
     with pytest.raises(ValueError, match="output already exists"):
         export_snapshot_confidence(
@@ -1590,10 +1603,7 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
             snapshot_csv=buffered_csv,
         )
     buffered_output = (
-        tmp_path
-        / "buffered-results"
-        / "snapshot-harness-buffered-checkpoint-smoke"
-        / "result.json"
+        tmp_path / "buffered-results" / "snapshot-harness-buffered-checkpoint-smoke" / "result.json"
     )
     buffered_partial = json.loads(buffered_output.read_text())
     assert buffered_partial["snapshot_observations"] == []
@@ -1702,12 +1712,206 @@ def test_snapshot_study_resumes_atomic_trial_sets_without_duplicate_observations
     assert repeated_blocks == block_result
 
 
+def test_historical_kv_dependence_resumes_complete_positions_without_duplicates(
+    tmp_path, monkeypatch
+) -> None:
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    import qkvs.model as model_module
+
+    class ByteTokenizer:
+        init_kwargs = {"_commit_hash": "1" * 40}
+
+        def encode(self, text, *, add_special_tokens, verbose):
+            assert not add_special_tokens
+            assert not verbose
+            return [byte % 64 for byte in text.encode()]
+
+        def get_vocab(self):
+            return {str(index): index for index in range(64)}
+
+        def decode(self, token_ids, *, skip_special_tokens, clean_up_tokenization_spaces):
+            assert not skip_special_tokens
+            assert not clean_up_tokenization_spaces
+            return f"<token:{token_ids[0]}>"
+
+    reader = model_module.HuggingFaceQwen2Reader(
+        Qwen2ForCausalLM(
+            Qwen2Config(
+                vocab_size=64,
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                max_position_embeddings=64,
+                attention_dropout=0.0,
+            )
+        ),
+        ByteTokenizer(),
+        specification={
+            "id": "test/tiny-qwen2",
+            "revision": "1" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+    )
+    source = tmp_path / "kv-dependence-source.txt"
+    source.write_text("abcdefghijklmnop", encoding="utf-8")
+    specification = {
+        "schema_version": 1,
+        "experiment": "historical_kv_dependence_smoke",
+        "status": "harness_verification",
+        "run": {"id": "historical-kv-dependence-smoke", "seed": 91},
+        "model": {
+            "backend": "huggingface",
+            "id": "test/tiny-qwen2",
+            "revision": "1" * 40,
+            "dtype": "float32",
+            "frozen": True,
+        },
+        "data": {
+            "kind": "tokenized_text",
+            "source": {
+                "path": str(source),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+            "boundaries": [
+                {
+                    "id": "kv-dependence-stream",
+                    "split": "evaluation",
+                    "start_token": 0,
+                    "stop_token": 12,
+                }
+            ],
+        },
+        "study": {
+            "kind": "historical_kv_dependence",
+            "position_range": [3, 4],
+            "preceding_token_counts": [0, 1, 2],
+            "fidelity_tolerances_nats": [0.001, 0.01, 0.1],
+            "expected_observations": 10,
+            "expected_identity": {},
+            "spike_positions": [3],
+            "highlighted_tokens": [
+                {
+                    "position": 3,
+                    "current_token_id": ord("d") % 64,
+                    "current_token_piece": f"<token:{ord('d') % 64}>",
+                    "next_token_id": ord("e") % 64,
+                    "next_token_piece": f"<token:{ord('e') % 64}>",
+                }
+            ],
+        },
+        "execution": {
+            "allowed_devices": ["cpu"],
+            "output_root": str(tmp_path),
+            "prefill_chunk_tokens": 2,
+            "snapshot_candidate_batch_max_size": 4,
+        },
+    }
+    provisional_config = tmp_path / "kv-dependence-config.json"
+    streams, data_identity = _tokenized_text_streams(
+        specification,
+        config_path=provisional_config,
+        tokenizer=reader.tokenizer,
+    )
+    specification["study"]["expected_identity"] = {
+        "model_identity_sha256": _canonical_sha256(reader.identity()),
+        "data_identity_sha256": _canonical_sha256(data_identity),
+        "stream_token_sha256": streams[0]["token_sha256"],
+    }
+    provisional_config.write_text(json.dumps(specification), encoding="utf-8")
+    assert validate_config(specification)["runnable"]
+    monkeypatch.setattr(model_module, "load_reader", lambda model, device: reader)
+
+    original_batch_probe = reader.snapshot_probe_batch
+    batch_calls = 0
+
+    def interrupted_batch_probe(*args, **kwargs):
+        nonlocal batch_calls
+        batch_calls += 1
+        if batch_calls == 2:
+            raise RuntimeError("test interruption after one complete position")
+        return original_batch_probe(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "snapshot_probe_batch", interrupted_batch_probe)
+    direct_csv = tmp_path / "kv-dependence.csv"
+    with pytest.raises(RuntimeError, match="one complete position"):
+        run_experiment(
+            provisional_config,
+            device="cpu",
+            output_root=tmp_path / "results",
+            allow_dirty_source=True,
+            snapshot_csv=direct_csv,
+        )
+    with direct_csv.open(newline="", encoding="utf-8") as source_file:
+        partial_rows = list(csv.DictReader(source_file))
+    assert len(partial_rows) == 5
+    partial_status = status(tmp_path / "results" / "historical-kv-dependence-smoke" / "result.json")
+    assert partial_status["completed_units"] == 2
+    assert partial_status["total_units"] == 3
+
+    monkeypatch.setattr(reader, "snapshot_probe_batch", original_batch_probe)
+    output, completed = run_experiment(
+        provisional_config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+        snapshot_csv=direct_csv,
+    )
+    assert completed["complete"]
+    assert completed["completed_positions"] == [3, 4]
+    with direct_csv.open(newline="", encoding="utf-8") as source_file:
+        rows = list(csv.DictReader(source_file))
+    assert len(rows) == 10
+    assert (
+        len({(row["position"], row["condition"], row["preceding_token_count"]) for row in rows})
+        == 10
+    )
+    finite_fields = (
+        "dense_next_token_cross_entropy_nats",
+        "dense_predictive_entropy_nats",
+        "dense_top_one_probability",
+        "kl_divergence_nats",
+        "probability_distribution_overlap",
+        "intervention_next_token_cross_entropy_nats",
+        "next_token_ce_delta_nats",
+        "dense_top_token_probability",
+        "realized_retained_fraction",
+    )
+    assert all(np.isfinite(float(row[field])) for row in rows for field in finite_fields)
+    for row in rows:
+        position = int(row["position"])
+        layer_count = reader.model.config.num_hidden_layers
+        if row["condition"] == "suffix":
+            expected_reads = layer_count * (int(row["preceding_token_count"]) + 1)
+        elif row["condition"] == "previous_only":
+            expected_reads = layer_count
+        else:
+            expected_reads = layer_count * (position + 1)
+            assert float(row["kl_divergence_nats"]) == 0.0
+            assert float(row["probability_distribution_overlap"]) == pytest.approx(1.0)
+        assert int(row["actual_kv_reads_across_layers"]) == expected_reads
+    manifest = json.loads((output.parent / "provenance.json").read_text())
+    assert manifest["complete"]
+    assert manifest["csv"]["rows"] == 10
+    assert manifest["csv"]["sha256"] == hashlib.sha256(direct_csv.read_bytes()).hexdigest()
+
+    _, repeated = run_experiment(
+        provisional_config,
+        device="cpu",
+        output_root=tmp_path / "results",
+        allow_dirty_source=True,
+        snapshot_csv=direct_csv,
+    )
+    assert repeated == completed
+
+
 def test_snapshot_block_emission_selects_successful_positions_at_exact_coverage(
     tmp_path,
 ) -> None:
-    source_specification = json.loads(
-        Path("configs/h1a_kl_0_01_blue_noise_v3.json").read_text()
-    )
+    source_specification = json.loads(Path("configs/h1a_kl_0_01_blue_noise_v3.json").read_text())
     source_specification["study"]["positions"] = [3, 7]
     source_specification["study"]["sampling_percentages"] = [10, 20]
     source_specification["study"]["trials_per_fraction"] = 5
@@ -1732,9 +1936,7 @@ def test_snapshot_block_emission_selects_successful_positions_at_exact_coverage(
             },
         },
     }
-    emission_specification["execution"] = json.loads(
-        json.dumps(source_specification["execution"])
-    )
+    emission_specification["execution"] = json.loads(json.dumps(source_specification["execution"]))
     emission_specification["execution"]["snapshot_candidate_batch_max_size"] = 64
     emission_config = tmp_path / "emission.json"
     emission_config.write_text(json.dumps(emission_specification), encoding="utf-8")
@@ -2138,7 +2340,4 @@ def test_module_help_exposes_one_common_interface() -> None:
         text=True,
     )
     assert completed.stdout.startswith("usage: qkvs ")
-    assert (
-        "{run,validate,status,summarize,export-snapshot,snapshot-confidence}"
-        in completed.stdout
-    )
+    assert "{run,validate,status,summarize,export-snapshot,snapshot-confidence}" in completed.stdout

@@ -578,6 +578,28 @@ agreement. For the 201-position earliest-spike region:
   docs/data/h1a-context-density-expansion/H1a_full_qkv_confidence_v2_earliest_spike_radius_100.csv
 ```
 
+`configs/h1a_neighborhood_kv_dependence.json` is a separate `draft_not_authorized`
+deterministic intervention study over the same 201-token Sherlock neighborhood. From one immutable
+dense prefix it tests suffixes retaining 0, 1, 2, 4, ..., 1,536 preceding positions, a
+previous-token-only condition that excludes the current K/V, and full QKV. Every intervention is
+applied at all 24 layers, recomputes the current token normally, and is discarded after that token.
+The 3,015 raw rows retain distributional and next-token measurements, actual gathered occurrence
+counts, token pieces, and execution identities; the result records the smallest tested suffix at
+KL thresholds 0.001, 0.01, and 0.1. Historical K/V remains dense-prefix state, so this does not
+demonstrate a sustained sparse trajectory or isolate local information. Subject to independent
+authorization, the proposed command is:
+
+```bash
+./run.sh configs/h1a_neighborhood_kv_dependence.json \
+  docs/data/h1a-context-density-expansion/H1a_C_historical_kv_dependence.csv
+```
+
+The source-revision audit in
+`docs/data/h1a-context-density-expansion/source_revision_audit.json` records why the neighborhood
+feasibility and later confidence CSVs have different revisions despite sharing a run/config
+identity. The reader, selection, and metric modules are byte-identical between those revisions;
+the intervening commit only added the confidence-reporting path.
+
 The fresh 500-trial v2 configuration is approved for one human-initiated exploratory GPU run with
 a new run identity.
 `configs/h1a_kl_0_01_blue_noise_v2.json` uses deterministic one-dimensional log-weighted blue-noise

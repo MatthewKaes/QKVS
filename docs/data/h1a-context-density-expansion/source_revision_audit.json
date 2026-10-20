@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "shared_identity": {
+    "run_id": "h1a-kl-0-01-v2-earliest-spike-radius-100",
+    "config_sha256": "a1ee47f82d76e099bea171577a7eda96357d58b3d1048fdf785b65dccd6d0e92"
+  },
+  "files": [
+    {
+      "path": "artifacts/results/h1a-kl-0-01-v2-earliest-spike-radius-100/result.json",
+      "sha256": "3f4d02551ab88ba4f0cdecb52a421f9f0fd57c24edcb2181aaeef49f2587fad1",
+      "source_revision": "d0a9e859da7e32d4c6a937065c73874dd197147d",
+      "role": "completed neighborhood run manifest"
+    },
+    {
+      "path": "docs/data/h1a-context-density-expansion/H1a_KL_0_01_feasibility_v2_earliest_spike_radius_100.csv",
+      "sha256": "3bf42da31ea0e0f30b16938f51eca7ffc1b03f3bc07f744d92bea6439d725fba",
+      "source_revision": "d0a9e859da7e32d4c6a937065c73874dd197147d",
+      "role": "random-sparse feasibility observations"
+    },
+    {
+      "path": "docs/data/h1a-context-density-expansion/H1a_KL_0_02_feasibility_v2_earliest_spike_radius_100.csv",
+      "sha256": "3bf42da31ea0e0f30b16938f51eca7ffc1b03f3bc07f744d92bea6439d725fba",
+      "source_revision": "d0a9e859da7e32d4c6a937065c73874dd197147d",
+      "role": "byte-identical duplicate of the KL 0.01 feasibility CSV under a misleading filename"
+    },
+    {
+      "path": "docs/data/h1a-context-density-expansion/H1a_full_qkv_confidence_v2_earliest_spike_radius_100.csv",
+      "sha256": "33d602b06c15e8be4344e5e3e472bfa671c559ac493bcff6a537bfc1ea93f7c5",
+      "source_revision": "f50bd2fe577034500666c0a652c54738591380a4",
+      "role": "full-QKV confidence observations"
+    }
+  ],
+  "revision_comparison": {
+    "base": "d0a9e859da7e32d4c6a937065c73874dd197147d",
+    "head": "f50bd2fe577034500666c0a652c54738591380a4",
+    "unchanged_sha256": {
+      "qkvs/model.py": "e17c5ad518f53e46b4dfe3e4fe069aa733646133cf71ce1006e40ffb1ee02f9f",
+      "qkvs/selection.py": "916234ca1958417fdcfe98233b4321376eebf94a1ade83ff88910cfb3cb8d19b",
+      "qkvs/metrics.py": "2b68421fd2e140a6ec615fd14abb7d6e55c2ae07ac865c5eb6334cc6d88d2911"
+    },
+    "changed_paths": [
+      "README.md",
+      "qkvs/__main__.py",
+      "qkvs/harness.py",
+      "run.sh",
+      "tests/test_harness.py"
+    ],
+    "finding": "The only intervening commit added the full-QKV confidence export and its CLI, documentation, and tests. The reader, tokenizer construction, attention execution, random sampler, and metric module are byte-identical. The two files contain different observation roles but compatible underlying numerical execution; neither historical file was rewritten."
+  }
+}

@@ -58,7 +58,9 @@ _LEGACY_BASELINE_SOURCE = {
 _LEGACY_REUSABLE_POLICIES = {"rolling", "fixed_offsets", "full_qkv"}
 _SNAPSHOT_STUDY_KIND = "unconstrained_snapshot_compressibility"
 _SNAPSHOT_BLOCK_EMISSION_KIND = "snapshot_block_emission"
+_SNAPSHOT_KV_DEPENDENCE_KIND = "historical_kv_dependence"
 _SNAPSHOT_EXECUTION_VERSION = "qwen2-h1a-current-token-v1"
+_SNAPSHOT_KV_DEPENDENCE_EXECUTION_VERSION = "qwen2-h1ac-kv-dependence-v1"
 _SNAPSHOT_HISTOGRAM_BINS = 20
 _SNAPSHOT_PROBABILITY_TOLERANCE = 1e-6
 _SNAPSHOT_EXPORT_FORMAT = "qkvs-h1a-csv-v1"
@@ -102,6 +104,40 @@ _SNAPSHOT_CONFIDENCE_FIELDS = (
     "dominant_token_text_json",
     "dominant_token_probability",
     "dominant_matches_target",
+)
+_SNAPSHOT_KV_DEPENDENCE_FIELDS = (
+    "run_id",
+    "source_revision",
+    "config_sha256",
+    "execution_identity_sha256",
+    "model_identity_sha256",
+    "data_identity_sha256",
+    "stream_id",
+    "stream_token_sha256",
+    "position",
+    "context_length",
+    "position_cohort",
+    "condition",
+    "preceding_token_count",
+    "current_token_id",
+    "current_token_text_json",
+    "next_token_id",
+    "next_token_text_json",
+    "dense_next_token_cross_entropy_nats",
+    "dense_predictive_entropy_nats",
+    "dense_top_one_token_id",
+    "dense_top_one_token_text_json",
+    "dense_top_one_probability",
+    "kl_divergence_nats",
+    "probability_distribution_overlap",
+    "intervention_next_token_cross_entropy_nats",
+    "next_token_ce_delta_nats",
+    "intervention_top_one_token_id",
+    "intervention_top_one_token_text_json",
+    "top_one_agreement",
+    "dense_top_token_probability",
+    "actual_kv_reads_across_layers",
+    "realized_retained_fraction",
 )
 
 
@@ -283,6 +319,21 @@ class _Progress:
 
 def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[int, int]]]:
     specification = result["config"]
+    if specification.get("study", {}).get("kind") == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        start, stop = specification["study"]["position_range"]
+        position_total = stop - start + 1
+        phases = {
+            "snapshot_prefixes": (int(bool(result.get("dense_prefix"))), 1),
+            "snapshot_interventions": (
+                min(position_total, len(result.get("completed_positions", []))),
+                position_total,
+            ),
+        }
+        return (
+            sum(completed for completed, _ in phases.values()),
+            sum(total for _, total in phases.values()),
+            phases,
+        )
     if specification.get("study", {}).get("kind") == _SNAPSHOT_BLOCK_EMISSION_KIND:
         cells = result.get("source_cells", [])
         prefix_total = (
@@ -314,8 +365,7 @@ def _progress_counts(result: dict[str, Any]) -> tuple[int, int, dict[str, tuple[
         fractions = specification["study"]["sampling_percentages"]
         prefix_total = (
             1
-            if specification["study"].get("dense_snapshot_strategy")
-            == "largest_prefix_slice"
+            if specification["study"].get("dense_snapshot_strategy") == "largest_prefix_slice"
             else len(positions)
         )
         trial_total = len(positions) * len(fractions)
@@ -807,6 +857,143 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
         errors.append("data.kind is unsupported")
 
     study = specification.get("study")
+    if isinstance(study, dict) and study.get("kind") == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        position_range = study.get("position_range")
+        positions: list[int] = []
+        if (
+            not isinstance(position_range, list)
+            or len(position_range) != 2
+            or any(not _positive_integer(value) for value in position_range)
+            or position_range[0] > position_range[1]
+        ):
+            errors.append(
+                "historical K/V dependence position_range must be an inclusive positive pair"
+            )
+        else:
+            positions = list(range(position_range[0], position_range[1] + 1))
+        preceding_counts = study.get("preceding_token_counts")
+        if (
+            not isinstance(preceding_counts, list)
+            or not preceding_counts
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in preceding_counts
+            )
+            or preceding_counts != sorted(set(preceding_counts))
+            or preceding_counts[0] != 0
+        ):
+            errors.append(
+                "historical K/V dependence preceding_token_counts must be unique, sorted, "
+                "nonnegative, and start at zero"
+            )
+            preceding_counts = []
+        if positions and preceding_counts and preceding_counts[-1] > positions[0]:
+            errors.append("every suffix condition must fit at every configured position")
+        expected_observations = study.get("expected_observations")
+        calculated_observations = len(positions) * (len(preceding_counts) + 2)
+        if (
+            not _positive_integer(expected_observations)
+            or expected_observations != calculated_observations
+        ):
+            errors.append(
+                "historical K/V dependence expected_observations does not match its schedule"
+            )
+        tolerances = study.get("fidelity_tolerances_nats")
+        if (
+            not isinstance(tolerances, list)
+            or not tolerances
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or float(value) <= 0.0
+                for value in tolerances
+            )
+            or len(tolerances) != len(set(tolerances))
+        ):
+            errors.append("historical K/V dependence tolerances must be unique and positive")
+        spikes = study.get("spike_positions")
+        if (
+            not isinstance(spikes, list)
+            or not spikes
+            or any(not _positive_integer(position) for position in spikes)
+            or len(spikes) != len(set(spikes))
+            or any(position not in positions for position in spikes)
+        ):
+            errors.append("historical K/V dependence spike_positions are invalid")
+            spikes = []
+        highlighted = study.get("highlighted_tokens")
+        if (
+            not isinstance(highlighted, list)
+            or len(highlighted) != len(spikes)
+            or any(
+                not isinstance(record, dict)
+                or record.get("position") not in spikes
+                or not isinstance(record.get("current_token_id"), int)
+                or not isinstance(record.get("current_token_piece"), str)
+                or not isinstance(record.get("next_token_id"), int)
+                or not isinstance(record.get("next_token_piece"), str)
+                for record in highlighted
+            )
+            or len({record.get("position") for record in highlighted}) != len(spikes)
+        ):
+            errors.append("historical K/V dependence highlighted token identities are invalid")
+        expected_identity = study.get("expected_identity")
+        if not isinstance(expected_identity, dict):
+            errors.append("historical K/V dependence expected_identity must be an object")
+            expected_identity = {}
+        for field in (
+            "model_identity_sha256",
+            "data_identity_sha256",
+            "stream_token_sha256",
+        ):
+            digest = expected_identity.get(field)
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                errors.append(f"historical K/V dependence {field} must be a SHA-256 digest")
+        if any(
+            field in specification for field in ("attention", "selection", "training", "evaluation")
+        ):
+            errors.append("snapshot studies must not define QKVS attention or selector controls")
+        boundaries = data.get("boundaries", []) if data_kind == "tokenized_text" else []
+        if len(boundaries) != 1:
+            errors.append("snapshot studies require exactly one tokenized-text boundary")
+        elif positions and isinstance(boundaries[0], dict):
+            start = boundaries[0].get("start_token")
+            stop = boundaries[0].get("stop_token")
+            if isinstance(start, int) and isinstance(stop, int):
+                stream_length = stop - start
+                if positions[-1] >= stream_length - 1:
+                    errors.append("snapshot positions must retain a next-token target")
+        execution = specification.get("execution", {})
+        devices = execution.get("allowed_devices")
+        if (
+            not isinstance(devices, list)
+            or not devices
+            or any(device not in {"cpu", "cuda"} for device in devices)
+        ):
+            errors.append("execution.allowed_devices must contain cpu and/or cuda")
+        if not isinstance(execution.get("output_root"), str):
+            errors.append("execution.output_root must be a string")
+        if not _positive_integer(execution.get("prefill_chunk_tokens")):
+            errors.append("execution.prefill_chunk_tokens must be a positive integer")
+        if not _positive_integer(execution.get("snapshot_candidate_batch_max_size")):
+            errors.append("execution.snapshot_candidate_batch_max_size must be a positive integer")
+        reasons: list[str] = []
+        if status not in {"harness_verification", "approved"}:
+            reasons.append("configuration is not authorized for harness execution")
+        if backend != "huggingface":
+            reasons.append("snapshot studies require the Hugging Face Qwen2 reader")
+        if backend == "huggingface" and model.get("dtype") not in {"float32", "bfloat16"}:
+            reasons.append("a Hugging Face execution dtype has not been frozen")
+        if data_kind != "tokenized_text":
+            reasons.append("snapshot studies require identity-pinned tokenized_text data")
+        return {
+            "valid": not errors,
+            "runnable": not errors and not reasons,
+            "errors": errors,
+            "not_runnable_reasons": reasons,
+            "experiment": specification.get("experiment"),
+            "status": status,
+        }
     if isinstance(study, dict) and study.get("kind") == _SNAPSHOT_BLOCK_EMISSION_KIND:
         source = study.get("source", {})
         if not isinstance(source, dict):
@@ -821,18 +1008,14 @@ def validate_config(specification: dict[str, Any]) -> dict[str, Any]:
             or isinstance(coverage, bool)
             or not 0.0 < float(coverage) <= 100.0
         ):
-            errors.append(
-                "snapshot block emission source.coverage_percentage must be in (0, 100]"
-            )
+            errors.append("snapshot block emission source.coverage_percentage must be in (0, 100]")
         tolerance = source.get("fidelity_tolerance_nats")
         if (
             not isinstance(tolerance, (int, float))
             or isinstance(tolerance, bool)
             or float(tolerance) <= 0.0
         ):
-            errors.append(
-                "snapshot block emission source.fidelity_tolerance_nats must be positive"
-            )
+            errors.append("snapshot block emission source.fidelity_tolerance_nats must be positive")
         if any(
             field in specification for field in ("attention", "selection", "training", "evaluation")
         ):
@@ -2301,13 +2484,11 @@ def _snapshot_feasibility_rows(
             "comparison": "<=",
             "threshold": tolerance,
             "success_count": sum(
-                float(candidate["kl_divergence_nats"]) <= tolerance
-                for candidate in candidates
+                float(candidate["kl_divergence_nats"]) <= tolerance for candidate in candidates
             ),
             "attempts": attempts,
             "success_probability": sum(
-                float(candidate["kl_divergence_nats"]) <= tolerance
-                for candidate in candidates
+                float(candidate["kl_divergence_nats"]) <= tolerance for candidate in candidates
             )
             / attempts,
         }
@@ -2434,6 +2615,562 @@ def _update_snapshot_frontiers(
     return summary
 
 
+def _read_kv_dependence_rows(
+    path: Path,
+    *,
+    expected_identity: dict[str, str],
+    preceding_counts: tuple[int, ...],
+    conditions_per_position: int,
+) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(source)
+        if tuple(reader.fieldnames or ()) != _SNAPSHOT_KV_DEPENDENCE_FIELDS:
+            raise ValueError("historical K/V dependence CSV schema does not match")
+        rows = list(reader)
+    keys: set[tuple[int, str, int]] = set()
+    counts: dict[int, int] = {}
+    for row in rows:
+        if any(row[field] != value for field, value in expected_identity.items()):
+            raise ValueError("historical K/V dependence CSV identity does not match")
+        position = int(row["position"])
+        key = (position, row["condition"], int(row["preceding_token_count"]))
+        if key in keys:
+            raise ValueError("historical K/V dependence CSV contains duplicate observations")
+        keys.add(key)
+        counts[position] = counts.get(position, 0) + 1
+    if any(count != conditions_per_position for count in counts.values()):
+        raise ValueError("historical K/V dependence CSV contains a partial position")
+    for position in counts:
+        actual = {
+            (row["condition"], int(row["preceding_token_count"]))
+            for row in rows
+            if int(row["position"]) == position
+        }
+        expected = {
+            *(("suffix", preceding_count) for preceding_count in preceding_counts),
+            ("previous_only", 1),
+            ("full_qkv", position),
+        }
+        if actual != expected:
+            raise ValueError("historical K/V dependence CSV condition schedule does not match")
+    return rows
+
+
+def _summarize_kv_dependence(
+    rows: list[dict[str, Any]],
+    *,
+    positions: tuple[int, ...],
+    spike_positions: set[int],
+    tolerances: tuple[float, ...],
+) -> dict[str, Any]:
+    by_position: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_position.setdefault(int(row["position"]), []).append(row)
+    frontiers: dict[str, Any] = {}
+    for position in positions:
+        suffix_rows = sorted(
+            (row for row in by_position.get(position, []) if row["condition"] == "suffix"),
+            key=lambda row: int(row["preceding_token_count"]),
+        )
+        position_frontiers = {}
+        for tolerance in tolerances:
+            qualifying = next(
+                (row for row in suffix_rows if float(row["kl_divergence_nats"]) <= tolerance),
+                None,
+            )
+            position_frontiers[format(tolerance, ".12g")] = (
+                {
+                    "status": "found",
+                    "smallest_tested_preceding_token_count": int(
+                        qualifying["preceding_token_count"]
+                    ),
+                    "kl_divergence_nats": float(qualifying["kl_divergence_nats"]),
+                    "top_one_agreement": bool(int(qualifying["top_one_agreement"])),
+                }
+                if qualifying is not None
+                else {
+                    "status": "not_found",
+                    "smallest_tested_preceding_token_count": None,
+                }
+            )
+        frontiers[str(position)] = position_frontiers
+    completed = set(by_position)
+    return {
+        "interpretation": "smallest_tested_suffix_not_a_continuous_minimum",
+        "frontiers_by_position": frontiers,
+        "cohorts": {
+            "previously_identified_spikes": {
+                "positions": sorted(spike_positions),
+                "completed_positions": len(completed & spike_positions),
+            },
+            "remaining_neighborhood": {
+                "position_count": len(positions) - len(spike_positions),
+                "completed_positions": len(completed - spike_positions),
+            },
+        },
+    }
+
+
+def _run_kv_dependence_study(
+    *,
+    config_path: Path,
+    specification: dict[str, Any],
+    source_identity: dict[str, Any],
+    reader: Any,
+    streams: list[dict[str, Any]],
+    data_identity: dict[str, Any],
+    model_identity: dict[str, Any],
+    device: Any,
+    torch: Any,
+    cuda_initialized_before_reader: bool,
+    output_root: str | Path | None,
+    snapshot_csv: str | Path | None,
+) -> tuple[Path, dict[str, Any]]:
+    """Run deterministic current-token branches from one immutable dense prefix."""
+
+    from qkvs.model import TokenStream
+
+    if len(streams) != 1:
+        raise ValueError("historical K/V dependence requires exactly one token stream")
+    if snapshot_csv is None:
+        raise ValueError("historical K/V dependence requires a direct CSV destination")
+    stream_record = streams[0]
+    stream = TokenStream(
+        stream_id=stream_record["stream_id"],
+        tokens=tuple(stream_record["tokens"]),
+        support_positions=tuple(stream_record["support_positions"]),
+    )
+    study = specification["study"]
+    positions = tuple(range(study["position_range"][0], study["position_range"][1] + 1))
+    preceding_counts = tuple(int(value) for value in study["preceding_token_counts"])
+    conditions_per_position = len(preceding_counts) + 2
+    expected_observations = len(positions) * conditions_per_position
+    spike_positions = set(int(value) for value in study["spike_positions"])
+    tolerances = tuple(float(value) for value in study["fidelity_tolerances_nats"])
+    output = _result_path(specification, output_root=output_root)
+    csv_path = Path(snapshot_csv).resolve()
+    config_sha256 = _sha256(config_path)
+    model_identity_sha256 = _canonical_sha256(model_identity)
+    data_identity_sha256 = _canonical_sha256(data_identity)
+    frozen_identity = study["expected_identity"]
+    actual_frozen_identity = {
+        "model_identity_sha256": model_identity_sha256,
+        "data_identity_sha256": data_identity_sha256,
+        "stream_token_sha256": stream_record["token_sha256"],
+    }
+    if actual_frozen_identity != frozen_identity:
+        raise ValueError("historical K/V dependence frozen model/data identity does not match")
+
+    def decoded_token(token_id: int) -> str:
+        return reader.tokenizer.decode(
+            [token_id],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+
+    for expected_token in study["highlighted_tokens"]:
+        position = int(expected_token["position"])
+        actual = {
+            "position": position,
+            "current_token_id": int(stream.tokens[position]),
+            "current_token_piece": decoded_token(int(stream.tokens[position])),
+            "next_token_id": int(stream.tokens[position + 1]),
+            "next_token_piece": decoded_token(int(stream.tokens[position + 1])),
+        }
+        if actual != expected_token:
+            raise ValueError(
+                f"historical K/V dependence highlighted token identity differs at {position}"
+            )
+
+    environment = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "pid": os.getpid(),
+        "torch": torch.__version__,
+        "torch_cuda": torch.version.cuda,
+        "cuda_initialized_before_reader": cuda_initialized_before_reader,
+        "cuda_initialized_after_reader": torch.cuda.is_initialized(),
+    }
+    execution_environment = {
+        key: value for key, value in environment.items() if key != "pid"
+    }
+    execution_identity = {
+        "format": "qkvs-h1ac-execution-v1",
+        "source_identity": source_identity,
+        "config_sha256": config_sha256,
+        "model_identity": model_identity,
+        "data_identity": data_identity,
+        "stream_token_sha256": stream_record["token_sha256"],
+        "execution_version": _SNAPSHOT_KV_DEPENDENCE_EXECUTION_VERSION,
+        "device": str(device),
+        "environment": execution_environment,
+    }
+    execution_identity_sha256 = _canonical_sha256(execution_identity)
+    csv_identity = {
+        "run_id": specification["run"]["id"],
+        "source_revision": source_identity["git_revision"],
+        "config_sha256": config_sha256,
+        "execution_identity_sha256": execution_identity_sha256,
+        "model_identity_sha256": model_identity_sha256,
+        "data_identity_sha256": data_identity_sha256,
+        "stream_id": stream.stream_id,
+        "stream_token_sha256": stream_record["token_sha256"],
+    }
+    rows: list[dict[str, Any]] = list(
+        _read_kv_dependence_rows(
+            csv_path,
+            expected_identity=csv_identity,
+            preceding_counts=preceding_counts,
+            conditions_per_position=conditions_per_position,
+        )
+    )
+    completed_positions = {int(row["position"]) for row in rows}
+    if not completed_positions <= set(positions):
+        raise ValueError("historical K/V dependence CSV contains an unconfigured position")
+
+    expected = {
+        "config": specification,
+        "config_sha256": config_sha256,
+        "source_identity": source_identity,
+        "model_identity": model_identity,
+        "data_identity": data_identity,
+        "device": str(device),
+        "snapshot_execution_version": _SNAPSHOT_KV_DEPENDENCE_EXECUTION_VERSION,
+        "snapshot_intervention_csv": str(csv_path),
+        "execution_identity": execution_identity,
+        "execution_identity_sha256": execution_identity_sha256,
+    }
+    if output.exists():
+        result = _load_json(output)
+        if {key: result.get(key) for key in expected} != expected or result.get(
+            "streams"
+        ) != streams:
+            raise ValueError(
+                "saved historical K/V dependence study does not match current source and "
+                "configuration"
+            )
+        recorded_positions = set(result.get("completed_positions", []))
+        if not recorded_positions <= completed_positions:
+            raise ValueError("saved historical K/V dependence progress is absent from its CSV")
+    else:
+        result = {
+            "schema_version": 1,
+            "run_id": specification["run"]["id"],
+            **expected,
+            "environment": environment,
+            "streams": streams,
+            "dense_prefix": {},
+            "completed_positions": [],
+            "kv_dependence_summary": {},
+            "measurements": [],
+            "measurement_references": [],
+            "training": {},
+            "summary": {},
+            "complete": False,
+        }
+        _write_json(output, result)
+
+    prefill_chunk_tokens = specification["execution"]["prefill_chunk_tokens"]
+    ownership = f"historical-kv-dependence:{stream.stream_id}"
+    maximum_position = positions[-1]
+    prefix_path = (
+        output.parent
+        / "snapshot_prefixes"
+        / f"{stream.stream_id}-position-{maximum_position:08d}.pt"
+    )
+    manifest_path = output.parent / "provenance.json"
+    completed_units, total_units, _ = _progress_counts(result)
+    progress = _Progress(completed=completed_units, total=total_units)
+
+    def checkpoint() -> None:
+        rows.sort(
+            key=lambda row: (
+                int(row["position"]),
+                {"suffix": 0, "previous_only": 1, "full_qkv": 2}[row["condition"]],
+                int(row["preceding_token_count"]),
+            )
+        )
+        _write_csv(csv_path, _SNAPSHOT_KV_DEPENDENCE_FIELDS, rows)
+        result["completed_positions"] = sorted({int(row["position"]) for row in rows})
+        result["kv_dependence_summary"] = _summarize_kv_dependence(
+            rows,
+            positions=positions,
+            spike_positions=spike_positions,
+            tolerances=tolerances,
+        )
+        result["summary"] = result["kv_dependence_summary"]
+        result["complete"] = len(rows) == expected_observations
+        manifest = {
+            "format": "qkvs-h1ac-provenance-v1",
+            "run_id": result["run_id"],
+            "source_revision": source_identity["git_revision"],
+            "config_sha256": config_sha256,
+            "execution_identity": execution_identity,
+            "execution_identity_sha256": execution_identity_sha256,
+            "model_identity_sha256": model_identity_sha256,
+            "data_identity_sha256": data_identity_sha256,
+            "stream_token_sha256": stream_record["token_sha256"],
+            "csv": {
+                "path": str(csv_path),
+                "sha256": _sha256(csv_path),
+                "rows": len(rows),
+                "fields": list(_SNAPSHOT_KV_DEPENDENCE_FIELDS),
+            },
+            "dense_prefix": result["dense_prefix"],
+            "complete": result["complete"],
+        }
+        _write_json(manifest_path, manifest)
+        result["provenance_manifest"] = {
+            "path": os.path.relpath(manifest_path, output.parent),
+            "sha256": _sha256(manifest_path),
+        }
+        _write_json(output, result)
+
+    if result.get("completed_positions") != sorted(completed_positions):
+        checkpoint()
+    if result.get("complete"):
+        return output, load_run(output)
+
+    master = None
+    try:
+        prefix_record = result.get("dense_prefix", {})
+        if prefix_record:
+            if (
+                prefix_record.get("path") != os.path.relpath(prefix_path, output.parent)
+                or not prefix_path.is_file()
+                or prefix_record.get("sha256") != _sha256(prefix_path)
+            ):
+                raise ValueError("saved historical K/V dependence dense prefix does not match")
+            master = reader.load_dense_causal_snapshot(
+                prefix_path,
+                stream,
+                position=maximum_position,
+                device=device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
+        else:
+            progress.start_job(f"dense master snapshot / position {maximum_position}")
+            if prefix_path.exists():
+                master = reader.load_dense_causal_snapshot(
+                    prefix_path,
+                    stream,
+                    position=maximum_position,
+                    device=device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
+            else:
+                master = reader.dense_causal_snapshot(
+                    stream,
+                    position=maximum_position,
+                    device=device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
+                reader.save_dense_causal_snapshot(master, prefix_path)
+            result["dense_prefix"] = {
+                "path": os.path.relpath(prefix_path, output.parent),
+                "sha256": _sha256(prefix_path),
+                "identity": master.identity,
+                "derived_positions": len(positions) - 1,
+            }
+            _write_json(output, result)
+            progress.complete_job()
+        master = reader.place_dense_causal_snapshot(master, device=device)
+
+        layer_count = reader.model.config.num_hidden_layers
+        candidate_batch_max_size = specification["execution"]["snapshot_candidate_batch_max_size"]
+        for position in positions:
+            if position in completed_positions:
+                continue
+            progress.start_job(f"historical K/V interventions / position {position}")
+            snapshot = (
+                master
+                if position == maximum_position
+                else reader.derive_dense_causal_snapshot(
+                    master,
+                    stream,
+                    position=position,
+                    device=device,
+                    ownership=ownership,
+                    prefill_chunk_tokens=prefill_chunk_tokens,
+                )
+            )
+            state = reader.prepare_snapshot_probe(
+                snapshot,
+                stream,
+                position=position,
+                device=device,
+                ownership=ownership,
+                prefill_chunk_tokens=prefill_chunk_tokens,
+            )
+            reference = reader.snapshot_probe(
+                stream,
+                state,
+                position=position,
+                selected_positions=None,
+                device=device,
+            )
+            reference_log_probs = torch.log_softmax(reference.logits.float(), dim=-1)
+            reference_probabilities = reference_log_probs.exp()
+            reference_entropy = -(reference_probabilities * reference_log_probs).sum()
+            dense_prediction = int(reference.prediction)
+            dense_top_probability = reference_probabilities[dense_prediction]
+            dense_values = (
+                torch.stack((reference.loss.float(), reference_entropy, dense_top_probability))
+                .cpu()
+                .tolist()
+            )
+            if not all(math.isfinite(value) for value in dense_values):
+                raise RuntimeError("historical K/V dependence dense reference is nonfinite")
+
+            conditions: list[tuple[str, int, tuple[tuple[tuple[int, int], ...], ...]]] = []
+            for preceding_count in preceding_counts:
+                ranges = (((position - preceding_count, position + 1),),) * layer_count
+                conditions.append(("suffix", preceding_count, ranges))
+            previous_ranges = (((position - 1, position),),) * layer_count
+            conditions.append(("previous_only", 1, previous_ranges))
+
+            intervention_results: list[tuple[str, int, Any]] = []
+            for batch_start in range(0, len(conditions), candidate_batch_max_size):
+                batch = conditions[batch_start : batch_start + candidate_batch_max_size]
+                prepared = reader.prepare_snapshot_selection_batch(
+                    tuple(condition[2] for condition in batch),
+                    position=position,
+                    device=device,
+                )
+                probes = reader.snapshot_probe_batch(
+                    stream,
+                    state,
+                    position=position,
+                    selected_positions=prepared,
+                    device=device,
+                )
+                for index, (condition, preceding_count, _ranges) in enumerate(batch):
+                    intervention_results.append((condition, preceding_count, (probes, index)))
+
+            current_token_id = int(stream.tokens[position])
+            next_token_id = int(stream.tokens[position + 1])
+            common = {
+                **csv_identity,
+                "position": position,
+                "context_length": position + 1,
+                "position_cohort": (
+                    "previously_identified_spike"
+                    if position in spike_positions
+                    else "remaining_neighborhood"
+                ),
+                "current_token_id": current_token_id,
+                "current_token_text_json": json.dumps(
+                    decoded_token(current_token_id), ensure_ascii=True
+                ),
+                "next_token_id": next_token_id,
+                "next_token_text_json": json.dumps(decoded_token(next_token_id), ensure_ascii=True),
+                "dense_next_token_cross_entropy_nats": dense_values[0],
+                "dense_predictive_entropy_nats": dense_values[1],
+                "dense_top_one_token_id": dense_prediction,
+                "dense_top_one_token_text_json": json.dumps(
+                    decoded_token(dense_prediction), ensure_ascii=True
+                ),
+                "dense_top_one_probability": dense_values[2],
+            }
+
+            position_rows: list[dict[str, Any]] = []
+            for condition, preceding_count, (probes, index) in intervention_results:
+                intervention_log_probs = torch.log_softmax(probes.logits[index].float(), dim=-1)
+                intervention_probabilities = intervention_log_probs.exp()
+                values = (
+                    torch.stack(
+                        (
+                            torch.sum(
+                                reference_probabilities
+                                * (reference_log_probs - intervention_log_probs)
+                            ).clamp_min(0.0),
+                            torch.minimum(
+                                reference_probabilities, intervention_probabilities
+                            ).sum(),
+                            probes.losses[index].float(),
+                            probes.losses[index].float() - reference.loss.float(),
+                            intervention_probabilities[dense_prediction],
+                        )
+                    )
+                    .cpu()
+                    .tolist()
+                )
+                if not all(math.isfinite(value) for value in values):
+                    raise RuntimeError("historical K/V dependence measurement is nonfinite")
+                if not (
+                    -_SNAPSHOT_PROBABILITY_TOLERANCE
+                    <= values[1]
+                    <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
+                ):
+                    raise RuntimeError(
+                        "historical K/V dependence probability overlap is outside [0, 1]"
+                    )
+                occurrence_counts = probes.occurrence_counts[index]
+                expected_occurrences = preceding_count + 1 if condition == "suffix" else 1
+                if occurrence_counts != (expected_occurrences,) * layer_count:
+                    raise RuntimeError("historical K/V dependence read accounting is incorrect")
+                actual_reads = sum(occurrence_counts)
+                prediction = int(probes.predictions[index])
+                position_rows.append(
+                    {
+                        **common,
+                        "condition": condition,
+                        "preceding_token_count": preceding_count,
+                        "kl_divergence_nats": values[0],
+                        "probability_distribution_overlap": values[1],
+                        "intervention_next_token_cross_entropy_nats": values[2],
+                        "next_token_ce_delta_nats": values[3],
+                        "intervention_top_one_token_id": prediction,
+                        "intervention_top_one_token_text_json": json.dumps(
+                            decoded_token(prediction), ensure_ascii=True
+                        ),
+                        "top_one_agreement": int(prediction == dense_prediction),
+                        "dense_top_token_probability": values[4],
+                        "actual_kv_reads_across_layers": actual_reads,
+                        "realized_retained_fraction": actual_reads / (layer_count * (position + 1)),
+                    }
+                )
+
+            if reference.gathered_keys_per_layer != reference.gathered_values_per_layer:
+                raise RuntimeError("full-QKV key/value read accounting differs")
+            if reference.gathered_keys_per_layer != (position + 1,) * layer_count:
+                raise RuntimeError("full-QKV read accounting is incorrect")
+            full_reads = sum(reference.gathered_keys_per_layer)
+            position_rows.append(
+                {
+                    **common,
+                    "condition": "full_qkv",
+                    "preceding_token_count": position,
+                    "kl_divergence_nats": 0.0,
+                    "probability_distribution_overlap": float(reference_probabilities.sum().cpu()),
+                    "intervention_next_token_cross_entropy_nats": dense_values[0],
+                    "next_token_ce_delta_nats": 0.0,
+                    "intervention_top_one_token_id": dense_prediction,
+                    "intervention_top_one_token_text_json": json.dumps(
+                        decoded_token(dense_prediction), ensure_ascii=True
+                    ),
+                    "top_one_agreement": 1,
+                    "dense_top_token_probability": dense_values[2],
+                    "actual_kv_reads_across_layers": full_reads,
+                    "realized_retained_fraction": 1.0,
+                }
+            )
+            if len(position_rows) != conditions_per_position:
+                raise RuntimeError("historical K/V dependence position is incomplete")
+            rows.extend(position_rows)
+            completed_positions.add(position)
+            checkpoint()
+            progress.complete_job()
+    finally:
+        progress.close()
+    return output, load_run(output)
+
+
 def _run_snapshot_study(
     *,
     config_path: Path,
@@ -2475,8 +3212,8 @@ def _run_snapshot_study(
     source_snapshot: dict[str, Any] | None = None
     source_specification = specification
     if emits_blocks:
-        source_specification, source_cells, source_snapshot = (
-            _load_snapshot_block_emission_source(config_path, specification)
+        source_specification, source_cells, source_snapshot = _load_snapshot_block_emission_source(
+            config_path, specification
         )
     study = source_specification["study"]
     execution = specification["execution"]
@@ -2499,9 +3236,7 @@ def _run_snapshot_study(
         if candidate_batch_token_budget is not None:
             selected_tokens = max(
                 1,
-                math.ceil(
-                    (position + 1) * requested_fraction / study["block_width"]
-                )
+                math.ceil((position + 1) * requested_fraction / study["block_width"])
                 * study["block_width"],
             )
             batch_size = min(
@@ -2774,8 +3509,7 @@ def _run_snapshot_study(
                         "sparse_next_token_loss": values[2],
                         "next_token_ce_delta_nats": values[3],
                         "sparse_top_one_prediction": int(values[4]),
-                        "top_one_agreement": int(values[4])
-                        == cell["reference_prediction"],
+                        "top_one_agreement": int(values[4]) == cell["reference_prediction"],
                         "full_logit_max_abs_error": values[5],
                         "full_loss_abs_error": values[6],
                     }
@@ -2912,9 +3646,7 @@ def _run_snapshot_study(
         / f"{stream.stream_id}-position-{master_position:08d}.pt"
     )
     selection_producer = (
-        ThreadPoolExecutor(max_workers=1)
-        if selection_representation == "native_blocks"
-        else None
+        ThreadPoolExecutor(max_workers=1) if selection_representation == "native_blocks" else None
     )
     try:
         if dense_snapshot_strategy == "largest_prefix_slice":
@@ -3240,8 +3972,10 @@ def _run_snapshot_study(
                         ).sum(dim=-1)
                         loss_deltas = probe_losses - reference.loss.float()
                         logit_errors = (
-                            probe_logits.float() - reference.logits.float().unsqueeze(0)
-                        ).abs().amax(dim=-1)
+                            (probe_logits.float() - reference.logits.float().unsqueeze(0))
+                            .abs()
+                            .amax(dim=-1)
+                        )
                         loss_errors = loss_deltas.abs()
                         values = torch.stack(
                             (
@@ -3285,17 +4019,13 @@ def _run_snapshot_study(
                                 <= candidate_measurements[1]
                                 <= 1.0 + _SNAPSHOT_PROBABILITY_TOLERANCE
                             ):
-                                raise RuntimeError(
-                                    "snapshot probability overlap is outside [0, 1]"
-                                )
+                                raise RuntimeError("snapshot probability overlap is outside [0, 1]")
                             if candidate_measurements[0] > tolerance:
                                 continue
                             emitted_hits.append(
                                 {
                                     "trial_id": int(trial_id),
-                                    "candidate_seed_hex": _snapshot_seed_hex(
-                                        int(candidate_seed)
-                                    ),
+                                    "candidate_seed_hex": _snapshot_seed_hex(int(candidate_seed)),
                                     "realized_sampled_fraction": float(realized_fraction),
                                     "kl_divergence_nats": candidate_measurements[0],
                                     "probability_distribution_overlap": candidate_measurements[1],
@@ -3425,9 +4155,7 @@ def _run_snapshot_study(
                                         ),
                                         algorithm=sampling_algorithm,
                                     )
-                                    for layer_index in range(
-                                        reader.model.config.num_hidden_layers
-                                    )
+                                    for layer_index in range(reader.model.config.num_hidden_layers)
                                 )
                                 layer_range_batches.append(
                                     tuple(sample.contiguous_ranges for sample in layer_samples)
@@ -3437,8 +4165,7 @@ def _run_snapshot_study(
                                         trial_id,
                                         candidate_seed,
                                         sum(
-                                            sample.selected_token_count
-                                            for sample in layer_samples
+                                            sample.selected_token_count for sample in layer_samples
                                         ),
                                     )
                                 )
@@ -4022,14 +4749,18 @@ def export_snapshot_confidence(
             entropy = -(probabilities * log_probabilities).sum()
             dominant_token_id = int(reference.prediction)
             target_token_id = int(stream.tokens[position + 1])
-            values = torch.stack(
-                (
-                    reference.loss.float(),
-                    entropy,
-                    probabilities[target_token_id],
-                    probabilities[dominant_token_id],
+            values = (
+                torch.stack(
+                    (
+                        reference.loss.float(),
+                        entropy,
+                        probabilities[target_token_id],
+                        probabilities[dominant_token_id],
+                    )
                 )
-            ).cpu().tolist()
+                .cpu()
+                .tolist()
+            )
             if not all(math.isfinite(value) for value in values):
                 raise RuntimeError("snapshot confidence measurement is nonfinite")
             rows.append(
@@ -4086,6 +4817,7 @@ def run_experiment(
     is_snapshot_study = specification.get("study", {}).get("kind") in {
         _SNAPSHOT_STUDY_KIND,
         _SNAPSHOT_BLOCK_EMISSION_KIND,
+        _SNAPSHOT_KV_DEPENDENCE_KIND,
     }
     if snapshot_csv is not None and not is_snapshot_study:
         raise ValueError("snapshot CSV output requires a snapshot study")
@@ -4109,6 +4841,21 @@ def run_experiment(
     )
     streams = json.loads(json.dumps(streams))
     model_identity = reader.identity()
+    if specification.get("study", {}).get("kind") == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        return _run_kv_dependence_study(
+            config_path=config_path,
+            specification=specification,
+            source_identity=identity,
+            reader=reader,
+            streams=streams,
+            data_identity=data_identity,
+            model_identity=model_identity,
+            device=torch_device,
+            torch=torch,
+            cuda_initialized_before_reader=cuda_initialized_before_reader,
+            output_root=output_root,
+            snapshot_csv=snapshot_csv,
+        )
     if is_snapshot_study:
         return _run_snapshot_study(
             config_path=config_path,
@@ -4348,6 +5095,8 @@ def load_run(path: str | Path) -> dict[str, Any]:
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
     study_kind = result.get("config", {}).get("study", {}).get("kind")
+    if study_kind == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        return result
     if study_kind == _SNAPSHOT_STUDY_KIND:
         _read_snapshot_observation_sets(result, result_path, load_candidates=False)
         return result
@@ -4364,7 +5113,9 @@ def status(path: str | Path) -> dict[str, Any]:
     if result.get("schema_version") != 1 or "measurements" not in result:
         raise ValueError("run artifact is not a QKVS harness result")
     study_kind = result.get("config", {}).get("study", {}).get("kind")
-    if study_kind == _SNAPSHOT_STUDY_KIND:
+    if study_kind == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        pass
+    elif study_kind == _SNAPSHOT_STUDY_KIND:
         _read_snapshot_observation_sets(result, result_path, load_candidates=False)
     elif study_kind == _SNAPSHOT_BLOCK_EMISSION_KIND:
         _validate_snapshot_block_emission_result(result, result_path)
@@ -4400,6 +5151,18 @@ def print_status(value: dict[str, Any]) -> None:
         f"[{_progress_bar(completed, total)}] {state}"
     )
     phases = value["phase_units"]
+    if value.get("study_kind") == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        print(
+            "Phases: "
+            f"snapshot prefix {phases['snapshot_prefixes']['completed']}/"
+            f"{phases['snapshot_prefixes']['total']}, "
+            f"intervention positions {phases['snapshot_interventions']['completed']}/"
+            f"{phases['snapshot_interventions']['total']}"
+        )
+        print(f"Run: {value['run_id']}")
+        print(f"Source: {value['source_revision']}")
+        print(f"Artifact SHA-256: {value['artifact_sha256']}")
+        return
     if value.get("study_kind") in {
         _SNAPSHOT_STUDY_KIND,
         _SNAPSHOT_BLOCK_EMISSION_KIND,
@@ -4433,6 +5196,18 @@ def print_status(value: dict[str, Any]) -> None:
 def print_summary(result: dict[str, Any]) -> None:
     print(f"Run {result['run_id']} ({'complete' if result['complete'] else 'incomplete'})")
     study_kind = result.get("config", {}).get("study", {}).get("kind")
+    if study_kind == _SNAPSHOT_KV_DEPENDENCE_KIND:
+        summary = result.get("kv_dependence_summary", {})
+        completed = len(result.get("completed_positions", []))
+        total = result["config"]["study"]["position_range"]
+        total_positions = total[1] - total[0] + 1
+        print(f"intervention positions={completed}/{total_positions}")
+        frontiers = summary.get("frontiers_by_position", {})
+        found = sum(
+            frontier.get("0.01", {}).get("status") == "found" for frontier in frontiers.values()
+        )
+        print(f"KL<=0.01 suffix frontiers found={found}/{total_positions}")
+        return
     if study_kind == _SNAPSHOT_BLOCK_EMISSION_KIND:
         summary = result.get("summary", {})
         print(
