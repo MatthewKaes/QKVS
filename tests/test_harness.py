@@ -771,8 +771,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
     earliest_center = earliest_selection["center_position"]
     earliest_radius = earliest_selection["neighborhood_radius_tokens"]
     expected_earliest_positions = sorted(
-        set(range(earliest_center - earliest_radius, earliest_center + earliest_radius + 1))
-        - set(fresh_positions)
+        range(earliest_center - earliest_radius, earliest_center + earliest_radius + 1)
     )
     assert earliest_center == 1_768
     assert earliest_selection["center_selection"] == "lowest_token_position"
@@ -792,9 +791,11 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         },
     ]
     assert earliest_spike["study"]["positions"] == expected_earliest_positions
-    assert len(expected_earliest_positions) == 200
-    assert set(expected_earliest_positions).isdisjoint(fresh_positions)
-    assert earliest_selection["excluded_existing_positions"] == [1_768]
+    assert len(expected_earliest_positions) == 201
+    assert set(expected_earliest_positions).intersection(fresh_positions) == {1_768}
+    assert earliest_selection["exclude_source_positions"] is False
+    assert earliest_selection["excluded_existing_positions"] == []
+    assert earliest_selection["included_existing_positions"] == [1_768]
     assert earliest_spike["model"] == fresh_v2["model"]
     assert earliest_spike["data"] == fresh_v2["data"]
     assert earliest_spike["execution"] == fresh_v3["execution"]
@@ -810,7 +811,7 @@ def test_checked_in_configurations_preserve_prior_runs_and_draft_full_qkvs_train
         "retain_dense_snapshots",
     ):
         assert earliest_spike["study"][field] == fresh_v2["study"][field]
-    assert earliest_spike["study"]["expected_candidate_passes"] == 1_900_000
+    assert earliest_spike["study"]["expected_candidate_passes"] == 1_909_500
     optimized = json.loads(json.dumps(fresh_v2))
     optimized["execution"].pop("snapshot_candidate_batch_size")
     optimized["execution"].update(

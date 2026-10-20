@@ -133,6 +133,7 @@
       1765,
       1766,
       1767,
+      1768,
       1769,
       1770,
       1771,
@@ -267,20 +268,21 @@
         512,
         32767
       ],
-      "exclude_source_positions": true,
+      "exclude_source_positions": false,
       "excluded_configuration": {
         "path": "h1a_kl_0_01_blue_noise_v2.json",
         "sha256": "f1d13d4ec79382f5abc4504414fa08304a2f11ea3b005624adc3bc35d81358ed",
         "position_count": 200
       },
-      "excluded_existing_positions": [
-        1768
-      ],
-      "generated_position_count": 200,
+      "excluded_existing_positions": [],
+      "generated_position_count": 201,
       "execution_order": "ascending_context_length",
-      "validated_max_position_embeddings": 32768
+      "validated_max_position_embeddings": 32768,
+      "included_existing_positions": [
+        1768
+      ]
     },
-    "expected_candidate_passes": 1900000,
+    "expected_candidate_passes": 1909500,
     "block_width": 8,
     "sampling_percentages": [
       99,

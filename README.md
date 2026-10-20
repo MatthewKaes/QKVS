@@ -556,10 +556,11 @@ completed v2 workload. Its human-run command writes a separate feasibility CSV:
 `configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json` is a separate
 approved local-resolution study. The earliest V2 token with any KL≤0.01 success at
 coverage no greater than 40% is position 1,768, with 41/500 hits at 40% and 11/500 at 30%. The
-study freezes every token in `[1668, 1868]` except the already-measured center, producing 200 new
-positions with zero overlap against the 200-position V2 grid. It preserves all 19 coverage values,
-500 candidates, seed `20261019`, V2 sampling, and optimized native-block execution, for 1,900,000
-candidate passes. Its human-run command writes a separate feasibility CSV:
+study freezes every token in `[1668, 1868]`, including the already-measured center so the local
+region is captured by one coherent run. It therefore contains 201 positions with one intentional
+overlap against the 200-position V2 grid. It preserves all 19 coverage values, 500 candidates, seed
+`20261019`, V2 sampling, and optimized native-block execution, for 1,909,500 candidate passes. Its
+human-run command writes a separate feasibility CSV:
 
 ```bash
 ./run.sh configs/h1a_kl_0_01_v2_earliest_spike_radius_100.json \
