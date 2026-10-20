@@ -553,8 +553,11 @@ study completes, then is discarded. The authorized command writes the initially 
 
 The same directory includes deterministic SVG and PNG density heatmaps for the `0.001`-nat and
 `0.01`-nat KL thresholds. They use actual token coordinates and bilinear interpolation between
-measured hit rates; plotted dots identify the observations underlying the smooth field. Regenerate
-them from the feasibility CSV with:
+measured hit rates. The interpretive display omits individual measurement dots, uses regular
+10-percentage-point labels for the amount of K/V history ignored, and places greater sparsity
+higher on the plot. Its 0%-ignored boundary is the known 100%-coverage/100%-hit dense endpoint, so
+that redundant control does not need to be sampled. Regenerate the figures from the feasibility CSV
+with:
 
 ```bash
 python docs/data/h1a-context-density-expansion/visualize.py

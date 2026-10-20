@@ -65,6 +65,12 @@ def _load(
             cells[key] = row
     positions = sorted({position for position, _ in cells})
     percentages = sorted({coverage for _, coverage in cells})
+    if percentages and percentages[-1] < 100.0:
+        for position in positions:
+            cells[(position, 100.0)] = {
+                "success_probability": "1.0",
+            }
+        percentages.append(100.0)
     expected = {(position, coverage) for position in positions for coverage in percentages}
     missing = expected - cells.keys()
     if missing:
@@ -97,7 +103,7 @@ def _interpolated_raster(
         for column in range(width)
     ]
     y_samples = [
-        percentages[-1] - row * (percentages[-1] - percentages[0]) / (height - 1)
+        percentages[0] + row * (percentages[-1] - percentages[0]) / (height - 1)
         for row in range(height)
     ]
     x_brackets = [_bracket(positions, sample) for sample in x_samples]
@@ -164,7 +170,7 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
 
     def y_coordinate(coverage: float) -> float:
         return (
-            plot_y + (percentages[-1] - coverage) / (percentages[-1] - percentages[0]) * plot_height
+            plot_y + (coverage - percentages[0]) / (percentages[-1] - percentages[0]) * plot_height
         )
 
     parts = [
@@ -181,7 +187,7 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
         (
             '<desc id="description">Bilinearly interpolated random sparse candidate success rate. '
             "The horizontal axis is absolute token position and the vertical axis is requested K/V "
-            "coverage. Small points mark the actual measured position and coverage pairs.</desc>"
+            "history ignored. The dense endpoint is fixed at its known 100 percent hit rate.</desc>"
         ),
         '<rect width="100%" height="100%" fill="#10151c"/>',
         _text(
@@ -197,7 +203,7 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
         _text(
             width / 2,
             54,
-            "Bilinear interpolation of successful candidates / attempts; dots are measurements",
+            "Interpretive interpolation of successful candidates / attempts",
             fill="#aeb8c2",
             font_family="sans-serif",
             font_size="12",
@@ -229,7 +235,8 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
                 ),
             ]
         )
-    for coverage in percentages:
+    for ignored in range(0, 91, 10):
+        coverage = 100.0 - ignored
         y = y_coordinate(coverage)
         parts.extend(
             [
@@ -240,7 +247,7 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
                 _text(
                     plot_x - 10,
                     y + 4,
-                    f"{coverage:g}%",
+                    f"{ignored}%",
                     fill="#d9e0e6",
                     font_family="sans-serif",
                     font_size="10",
@@ -248,18 +255,6 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
                 ),
             ]
         )
-    for (position, coverage), row in cells.items():
-        probability = float(row["success_probability"])
-        title = (
-            f"token {position}; coverage {coverage:g}%; "
-            f"{row['success_count']}/{row['attempts']} hits ({100.0 * probability:.2f}%)"
-        )
-        parts.append(
-            f'<circle cx="{x_coordinate(position):.2f}" cy="{y_coordinate(coverage):.2f}" '
-            'r="1.25" fill="#ffffff" opacity="0.35">'
-            f"<title>{escape(title)}</title></circle>"
-        )
-
     parts.extend(
         [
             _text(
@@ -275,7 +270,7 @@ def _render_svg(source: Path, destination: Path, threshold: float) -> None:
                 f'<text x="24" y="{plot_y + plot_height / 2:.2f}" fill="#f2f5f7" '
                 'font-family="sans-serif" font-size="13" text-anchor="middle" '
                 f'transform="rotate(-90 24 {plot_y + plot_height / 2:.2f})">'
-                "Requested K/V coverage</text>"
+                "K/V history ignored</text>"
             ),
             _text(
                 colorbar_x + 10,
